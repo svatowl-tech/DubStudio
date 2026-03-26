@@ -1,0 +1,7 @@
+{
+  "name": "Polza Studio",
+  "description": "Гибридное кроссплатформенное десктопное приложение для студии озвучки и фандаба.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
