@@ -97,11 +97,14 @@ export default function ReleasePanel({ currentEpisode, onRefresh }: ReleasePanel
     };
 
     try {
+      const projectTitle = currentEpisode.project?.title || 'Project';
+      const subDir = `${projectTitle}/Episode_${currentEpisode.number}`;
+      
       await ipcRenderer.invoke(
         'bake-subtitles', 
-        './raw_video.mp4', 
-        './final_subs.ass', 
-        `./exports/${currentEpisode.project?.title}_ep${currentEpisode.number}_final.mp4`,
+        currentEpisode.rawPath, 
+        currentEpisode.subPath, 
+        `/uploads/${subDir}/final_release.mp4`,
         taskId
       );
       

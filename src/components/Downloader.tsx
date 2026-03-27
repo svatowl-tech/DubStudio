@@ -33,12 +33,15 @@ export default function Downloader({ currentEpisode, onRefresh }: DownloaderProp
       // Use project title if available, otherwise fallback to ID
       const projectTitle = currentEpisode.project?.title || 'Project';
       const subDir = `${projectTitle}/Episode_${currentEpisode.number}`;
-      const fileName = type === 'RAW' ? 'raw_video.mp4' : 'subtitles.ass';
+      
+      const originalExt = file.name.split('.').pop() || 'mp4';
+      const fileName = type === 'RAW' ? `raw_video.${originalExt}` : `subtitles.${originalExt}`;
 
       const formData = new FormData();
-      formData.append('file', file);
+      // Append text fields BEFORE the file so Multer can access them in destination/filename callbacks
       formData.append('subDir', subDir);
       formData.append('fileName', fileName);
+      formData.append('file', file);
 
       const res = await fetch('/api/upload-file', {
         method: 'POST',
@@ -228,6 +231,9 @@ export default function Downloader({ currentEpisode, onRefresh }: DownloaderProp
                     disabled={isUploading || !currentEpisode}
                   />
                 </label>
+                <p className="text-xs text-amber-500/70 mt-2">
+                  * Внимание: формат .mkv не поддерживается для воспроизведения в браузере. Используйте .mp4 или .webm
+                </p>
               </div>
 
               <div>

@@ -87,24 +87,20 @@ export default function RecordingStudio({ currentEpisode, onRefresh }: Recording
     setStatus('Загрузка записи на сервер...');
     
     try {
-      const reader = new FileReader();
-      const base64Audio = await new Promise<string>((resolve) => {
-        reader.onload = () => resolve(reader.result as string);
-        reader.readAsDataURL(audioBlob);
-      });
-
       const nickname = participants.find(p => p.id === selectedAssignment.dubberId)?.nickname || 'Unknown';
-      const subDir = `${currentEpisode.project?.title}/Episode_${currentEpisode.number}/Recordings/${nickname}`;
+      const projectTitle = currentEpisode.project?.title || 'Project';
+      const subDir = `${projectTitle}/Episode_${currentEpisode.number}/Recordings/${nickname}`;
       const fileName = `${selectedAssignment.characterName}_${Date.now()}.webm`;
       
-      // 1. Save file via IPC
-      const saveResponse = await fetch('/api/ipc/invoke', {
+      const formData = new FormData();
+      formData.append('subDir', subDir);
+      formData.append('fileName', fileName);
+      formData.append('file', audioBlob, fileName);
+
+      // 1. Save file via upload API
+      const saveResponse = await fetch('/api/upload-file', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          channel: 'save-file',
-          args: [fileName, base64Audio, subDir]
-        }),
+        body: formData,
       });
       
       const saveResult = await saveResponse.json();

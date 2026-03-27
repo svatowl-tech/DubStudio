@@ -43,6 +43,46 @@ export default function AssEditor({ currentEpisode, onRefresh }: AssEditorProps)
     }
   }, [currentEpisode]);
 
+  const handleAnalyzeExisting = async () => {
+    if (!currentEpisode?.subPath) return;
+    setStatus('Анализ существующих субтитров...');
+    try {
+      const response = await fetch(`/api/episodes/${currentEpisode.id}/parse-subs`, {
+        method: 'POST'
+      });
+      const result = await response.json();
+      if (result.success) {
+        const { actorMapping } = result.data;
+        const newActors = Object.keys(actorMapping);
+        setActors(newActors);
+        
+        // Merge with existing mapping and global mapping
+        const globalMapping = currentEpisode?.project?.globalMapping 
+          ? JSON.parse(currentEpisode.project.globalMapping) 
+          : {};
+          
+        const newMapping = { ...mapping };
+        newActors.forEach(actor => {
+          if (!newMapping[actor]) {
+            if (globalMapping[actor]) {
+              newMapping[actor] = globalMapping[actor];
+            } else if (actorMapping[actor]) {
+              newMapping[actor] = (actorMapping[actor] as Participant).id;
+            }
+          }
+        });
+        
+        setMapping(newMapping);
+        setStatus(`Анализ завершен. Найдено ${newActors.length} персонажей.`);
+      } else {
+        setStatus('Ошибка при анализе файла.');
+      }
+    } catch (error) {
+      console.error('Parse error:', error);
+      setStatus('Ошибка при анализе файла.');
+    }
+  };
+
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const uploadedFile = e.target.files?.[0];
     if (!uploadedFile) return;
@@ -51,19 +91,17 @@ export default function AssEditor({ currentEpisode, onRefresh }: AssEditorProps)
     setStatus('Файл загружен. Анализ...');
 
     try {
-      const reader = new FileReader();
-      const base64File = await new Promise<string>((resolve) => {
-        reader.onload = () => resolve(reader.result as string);
-        reader.readAsDataURL(uploadedFile);
-      });
+      const projectTitle = currentEpisode?.project?.title || 'Project';
+      const subDir = `${projectTitle}/Episode_${currentEpisode?.number || '0'}/Subtitles`;
+      
+      const formData = new FormData();
+      formData.append('subDir', subDir);
+      formData.append('fileName', uploadedFile.name);
+      formData.append('file', uploadedFile);
 
-      const uploadResponse = await fetch('/api/ipc/invoke', {
+      const uploadResponse = await fetch('/api/upload-file', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          channel: 'save-file',
-          args: [uploadedFile.name, base64File]
-        }),
+        body: formData,
       });
       
       const uploadResult = await uploadResponse.json();
@@ -74,7 +112,7 @@ export default function AssEditor({ currentEpisode, onRefresh }: AssEditorProps)
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           channel: 'split-subs',
-          args: [uploadResult.data.path, './uploads/output']
+          args: [uploadResult.data.path, `./uploads/${subDir}/output`]
         }),
       });
       
@@ -197,6 +235,22 @@ export default function AssEditor({ currentEpisode, onRefresh }: AssEditorProps)
               Загрузка файла
             </h2>
             
+            {currentEpisode?.subPath && (
+              <button
+                onClick={handleAnalyzeExisting}
+                className="w-full mb-4 px-4 py-3 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-medium transition-colors flex items-center justify-center gap-2 shadow-lg shadow-indigo-500/20"
+              >
+                <Scissors className="w-4 h-4" />
+                Анализировать загруженные субтитры
+              </button>
+            )}
+
+            <div className="flex items-center gap-4 mb-4">
+              <div className="h-px bg-neutral-800 flex-1"></div>
+              <span className="text-xs text-neutral-500 uppercase tracking-wider">Или загрузить новый</span>
+              <div className="h-px bg-neutral-800 flex-1"></div>
+            </div>
+
             <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-neutral-700 border-dashed rounded-lg cursor-pointer bg-neutral-950 hover:bg-neutral-800 transition-colors">
               <div className="flex flex-col items-center justify-center pt-5 pb-6">
                 <FileText className="w-8 h-8 text-neutral-500 mb-2" />

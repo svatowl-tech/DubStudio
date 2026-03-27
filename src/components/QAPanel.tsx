@@ -136,6 +136,28 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: dbStatus }),
       });
+
+      // Check if all assignments are approved
+      const allApproved = currentEpisode.assignments?.every(a => 
+        a.id === id ? dbStatus === 'APPROVED' : a.status === 'APPROVED'
+      ) || false;
+
+      const needsFixes = dbStatus === 'FIXES_NEEDED' || dbStatus === 'REJECTED';
+
+      if (allApproved) {
+        await fetch(`/api/episodes/${currentEpisode.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'SOUND_ENGINEERING' }),
+        });
+      } else if (needsFixes && currentEpisode.status !== 'FIXES') {
+        await fetch(`/api/episodes/${currentEpisode.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'FIXES' }),
+        });
+      }
+
       onRefresh();
     } catch (error) {
       console.error('Status update error:', error);
@@ -146,18 +168,19 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
     const file = e.target.files?.[0];
     if (!file || !currentEpisode) return;
 
-    const reader = new FileReader();
-    reader.onload = async (event) => {
-      const base64 = event.target?.result as string;
-      const fileName = `dub_${assignmentId}_${Date.now()}.wav`;
-      
-      const res = await fetch('/api/ipc/invoke', {
+    const projectTitle = currentEpisode.project?.title || 'Project';
+    const subDir = `${projectTitle}/Episode_${currentEpisode.number}/QAFixes`;
+    const fileName = `dub_${assignmentId}_${Date.now()}.${file.name.split('.').pop() || 'wav'}`;
+    
+    const formData = new FormData();
+    formData.append('subDir', subDir);
+    formData.append('fileName', fileName);
+    formData.append('file', file);
+
+    try {
+      const res = await fetch('/api/upload-file', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          channel: 'save-file',
-          args: [fileName, base64]
-        })
+        body: formData
       });
       const { data } = await res.json();
       
@@ -172,10 +195,31 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
           assignmentId
         })
       });
+
+      // Update assignment status to RECORDED
+      await fetch(`/api/assignments/${assignmentId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'RECORDED' }),
+      });
+
+      // Check if all assignments are recorded or approved
+      const allRecorded = currentEpisode.assignments?.every(a => 
+        a.id === assignmentId ? true : a.status === 'RECORDED' || a.status === 'APPROVED'
+      ) || false;
+      
+      if (allRecorded && currentEpisode.status === 'FIXES') {
+        await fetch(`/api/episodes/${currentEpisode.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'QA' }),
+        });
+      }
       
       onRefresh();
-    };
-    reader.readAsDataURL(file);
+    } catch (error) {
+      console.error('Upload error:', error);
+    }
   };
 
   if (!currentEpisode) {

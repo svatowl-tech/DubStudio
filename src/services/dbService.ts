@@ -38,22 +38,15 @@ export const exportParticipants = async (): Promise<string> => {
 
 export const importParticipants = async (json: string): Promise<void> => {
   const participants: Participant[] = JSON.parse(json);
-  for (const participant of participants) {
-    const response = await fetch('/api/participants', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        nickname: participant.nickname,
-        telegram: participant.telegram,
-        tgChannel: participant.tgChannel,
-        vkLink: participant.vkLink,
-        roles: participant.roles
-      }),
-    });
-    
-    if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(`Failed to import participant ${participant.nickname}: ${errorData.error || response.statusText}`);
-    }
+  
+  const response = await fetch('/api/participants/import', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(participants),
+  });
+  
+  if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(`Failed to import participants: ${errorData.error || response.statusText}`);
   }
 };

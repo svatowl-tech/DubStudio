@@ -158,6 +158,40 @@ async function startServer() {
     res.json(participants.map(parseUserRoles));
   });
 
+  app.post('/api/participants/import', async (req, res) => {
+    const participants = req.body;
+    if (!Array.isArray(participants)) {
+      return res.status(400).json({ error: 'Expected an array of participants' });
+    }
+
+    try {
+      let importedCount = 0;
+      for (const p of participants) {
+        const rolesStr = Array.isArray(p.roles) ? JSON.stringify(p.roles) : (p.roles || '[]');
+        await prisma.user.upsert({
+          where: { nickname: p.nickname },
+          update: {
+            telegram: p.telegram || '',
+            tgChannel: p.tgChannel || '',
+            vkLink: p.vkLink || '',
+            roles: rolesStr
+          },
+          create: {
+            nickname: p.nickname,
+            telegram: p.telegram || '',
+            tgChannel: p.tgChannel || '',
+            vkLink: p.vkLink || '',
+            roles: rolesStr
+          }
+        });
+        importedCount++;
+      }
+      res.json({ success: true, importedCount });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   app.post('/api/participants', async (req, res) => {
     const { nickname, telegram, tgChannel, vkLink, roles } = req.body;
     try {
@@ -202,6 +236,34 @@ async function startServer() {
   });
 
   // API для назначений ролей
+  app.post('/api/episodes/:id/parse-subs', async (req, res) => {
+    try {
+      const episode = await prisma.episode.findUnique({
+        where: { id: req.params.id },
+        include: { project: true }
+      });
+      if (!episode || !episode.subPath) {
+        return res.status(404).json({ error: 'Episode or subtitles not found' });
+      }
+
+      // Resolve absolute path from subPath
+      const relativePath = episode.subPath.startsWith('/uploads/') 
+        ? episode.subPath.substring(9) 
+        : episode.subPath;
+      const absolutePath = path.resolve(uploadsDir, relativePath);
+
+      // We need to split subs and get actors
+      const projectTitle = episode.project?.title || 'Project';
+      const subDir = `${projectTitle}/Episode_${episode.number}/Subtitles`;
+      const outputDirectory = path.join(uploadsDir, subDir, 'output');
+
+      const result = await splitSubsByActor(prisma, absolutePath, outputDirectory);
+      res.json({ success: true, data: result });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   app.post('/api/episodes/:episodeId/assignments', async (req, res) => {
     const { episodeId } = req.params;
     const { characterName, dubberId } = req.body;
@@ -395,16 +457,27 @@ async function startServer() {
       if (channel === 'bake-subtitles') {
         const [videoPath, finalAssPath, outputPath, taskId] = args;
         
+        // Resolve paths
+        const resolvePath = (p: string) => {
+          if (!p) return '';
+          const relative = p.startsWith('/uploads/') ? p.substring(9) : p;
+          return path.resolve(uploadsDir, relative);
+        };
+
+        const absVideoPath = resolvePath(videoPath);
+        const absAssPath = resolvePath(finalAssPath);
+        const absOutputPath = resolvePath(outputPath);
+        
         // В облачной среде FFmpeg может быть не установлен. 
         // Если это так, мы эмулируем процесс сборки, чтобы показать работу UI.
         try {
-          await bakeSubtitles(videoPath, finalAssPath, outputPath, (percent) => {
+          await bakeSubtitles(absVideoPath, absAssPath, absOutputPath, (percent) => {
             const client = progressClients.get(taskId);
             if (client) {
               client.write(`data: ${JSON.stringify({ percent })}\n\n`);
             }
           });
-          return res.json({ success: true, data: { outputPath } });
+          return res.json({ success: true, data: { outputPath: absOutputPath } });
         } catch (err: any) {
           console.warn('FFmpeg failed (likely missing binary in cloud env). Emulating progress...');
           
