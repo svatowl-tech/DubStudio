@@ -3,7 +3,7 @@ import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import fs from 'fs/promises';
 import multer from 'multer';
-import { splitSubsByActor } from './src/server/subtitleService';
+import { splitSubsByActor, getRawSubtitles, saveRawSubtitles, splitSubsByDubber } from './src/server/subtitleService';
 import { bakeSubtitles } from './src/server/ffmpegService';
 import { SocialMediaBot, ReleaseData } from './src/server/SocialMediaBot';
 import dotenv from 'dotenv';
@@ -235,6 +235,53 @@ async function startServer() {
     res.json({ success: true });
   });
 
+  app.get('/api/episodes/:id/subtitles/raw', async (req, res) => {
+    try {
+      const episode = await prisma.episode.findUnique({
+        where: { id: req.params.id }
+      });
+      if (!episode || !episode.subPath) {
+        return res.status(404).json({ error: 'Episode or subtitles not found' });
+      }
+
+      const relativePath = episode.subPath.startsWith('/uploads/') 
+        ? episode.subPath.substring(9) 
+        : episode.subPath;
+      const absolutePath = path.resolve(uploadsDir, relativePath);
+
+      const lines = await getRawSubtitles(absolutePath);
+      res.json(lines);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.put('/api/episodes/:id/subtitles/raw', async (req, res) => {
+    try {
+      const { updates } = req.body;
+      if (!Array.isArray(updates)) {
+        return res.status(400).json({ error: 'Expected updates array' });
+      }
+
+      const episode = await prisma.episode.findUnique({
+        where: { id: req.params.id }
+      });
+      if (!episode || !episode.subPath) {
+        return res.status(404).json({ error: 'Episode or subtitles not found' });
+      }
+
+      const relativePath = episode.subPath.startsWith('/uploads/') 
+        ? episode.subPath.substring(9) 
+        : episode.subPath;
+      const absolutePath = path.resolve(uploadsDir, relativePath);
+
+      await saveRawSubtitles(absolutePath, updates);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   // API для назначений ролей
   app.post('/api/episodes/:id/parse-subs', async (req, res) => {
     try {
@@ -264,6 +311,33 @@ async function startServer() {
     }
   });
 
+  app.post('/api/episodes/:id/split-subs', async (req, res) => {
+    try {
+      const { assignments } = req.body;
+      const episode = await prisma.episode.findUnique({
+        where: { id: req.params.id },
+        include: { project: true }
+      });
+      if (!episode || !episode.subPath) {
+        return res.status(404).json({ error: 'Episode or subtitles not found' });
+      }
+
+      const relativePath = episode.subPath.startsWith('/uploads/') 
+        ? episode.subPath.substring(9) 
+        : episode.subPath;
+      const absolutePath = path.resolve(uploadsDir, relativePath);
+
+      const projectTitle = episode.project?.title || 'Project';
+      const subDir = `${projectTitle}/Episode_${episode.number}/Subtitles`;
+      const outputDirectory = path.join(uploadsDir, subDir, 'output_dubbers');
+
+      const result = await splitSubsByDubber(prisma, absolutePath, outputDirectory, assignments);
+      res.json({ success: true, data: result });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   app.post('/api/episodes/:episodeId/assignments', async (req, res) => {
     const { episodeId } = req.params;
     const { characterName, dubberId } = req.body;
@@ -275,10 +349,10 @@ async function startServer() {
 
   app.put('/api/assignments/:id', async (req, res) => {
     const { id } = req.params;
-    const { status } = req.body;
+    const { status, substituteId } = req.body;
     const assignment = await (prisma.roleAssignment as any).update({
       where: { id },
-      data: { status },
+      data: { status, substituteId },
     });
     res.json(assignment);
   });

@@ -18,6 +18,7 @@ model User {
   roles     String   // Store as JSON string, e.g., ["DUBBER", "TIMER"]
   
   assignments RoleAssignment[]
+  substitutions RoleAssignment[] @relation("Substitute")
   uploads     UploadedFile[]
   
   createdAt DateTime @default(now())
@@ -65,6 +66,9 @@ model RoleAssignment {
   dubber        User    @relation(fields: [dubberId], references: [id], onDelete: Cascade)
   status        String  @default("PENDING") // "PENDING", "RECORDED", "APPROVED", "REJECTED", "FIXES_NEEDED"
   uploads       UploadedFile[]
+  
+  substituteId  String?
+  substitute    User?   @relation("Substitute", fields: [substituteId], references: [id])
 }
 
 model UploadedFile {

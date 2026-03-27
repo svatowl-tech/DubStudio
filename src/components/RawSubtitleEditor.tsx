@@ -1,0 +1,363 @@
+import React, { useState, useEffect, useRef } from "react";
+import { Save, Edit3, Loader2 } from "lucide-react";
+import { Episode } from "../types";
+
+interface RawSubtitleLine {
+  id: number;
+  start: string;
+  end: string;
+  style: string;
+  name: string;
+  text: string;
+  rawLineIndex: number;
+}
+
+interface RawSubtitleEditorProps {
+  currentEpisode: Episode | null;
+  onRefresh: () => void;
+}
+
+export default function RawSubtitleEditor({
+  currentEpisode,
+  onRefresh,
+}: RawSubtitleEditorProps) {
+  const [lines, setLines] = useState<RawSubtitleLine[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [status, setStatus] = useState("");
+  const [updates, setUpdates] = useState<Record<number, string>>({});
+
+  // For mass assignment
+  const [selectedLines, setSelectedLines] = useState<Set<number>>(new Set());
+  const [lastSelectedLine, setLastSelectedLine] = useState<number | null>(null);
+  const [massName, setMassName] = useState("");
+
+  useEffect(() => {
+    if (currentEpisode?.subPath) {
+      loadRawSubtitles();
+    } else {
+      setLines([]);
+      setUpdates({});
+      setSelectedLines(new Set());
+      setLastSelectedLine(null);
+    }
+  }, [currentEpisode]);
+
+  const loadRawSubtitles = async () => {
+    if (!currentEpisode) return;
+    setLoading(true);
+    setStatus("Загрузка субтитров...");
+    try {
+      const response = await fetch(
+        `/api/episodes/${currentEpisode.id}/subtitles/raw`,
+      );
+      if (!response.ok) throw new Error("Failed to load");
+      const data = await response.json();
+      setLines(data);
+      setUpdates({});
+      setSelectedLines(new Set());
+      setLastSelectedLine(null);
+      setStatus(`Загружено ${data.length} реплик.`);
+    } catch (error) {
+      console.error(error);
+      setStatus("Ошибка загрузки субтитров.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleNameChange = (rawLineIndex: number, newName: string) => {
+    setUpdates((prev) => ({ ...prev, [rawLineIndex]: newName }));
+  };
+
+  const toggleLineSelection = (
+    rawLineIndex: number,
+    isShiftKey: boolean = false,
+  ) => {
+    setSelectedLines((prev) => {
+      const next = new Set(prev);
+
+      if (isShiftKey && lastSelectedLine !== null) {
+        // Find indices in the lines array
+        const currentIndex = lines.findIndex(
+          (l) => l.rawLineIndex === rawLineIndex,
+        );
+        const lastIndex = lines.findIndex(
+          (l) => l.rawLineIndex === lastSelectedLine,
+        );
+
+        if (currentIndex !== -1 && lastIndex !== -1) {
+          const start = Math.min(currentIndex, lastIndex);
+          const end = Math.max(currentIndex, lastIndex);
+
+          // Add all lines in range
+          for (let i = start; i <= end; i++) {
+            next.add(lines[i].rawLineIndex);
+          }
+          return next;
+        }
+      }
+
+      if (next.has(rawLineIndex)) {
+        next.delete(rawLineIndex);
+      } else {
+        next.add(rawLineIndex);
+      }
+      return next;
+    });
+    setLastSelectedLine(rawLineIndex);
+  };
+
+  const handleMassAssign = () => {
+    if (selectedLines.size === 0 || !massName.trim()) return;
+
+    const newUpdates = { ...updates };
+    selectedLines.forEach((index) => {
+      newUpdates[index] = massName.trim();
+    });
+    setUpdates(newUpdates);
+    setSelectedLines(new Set());
+    setMassName("");
+  };
+
+  const handleSave = async () => {
+    if (!currentEpisode || Object.keys(updates).length === 0) return;
+    setSaving(true);
+    setStatus("Сохранение изменений...");
+
+    const updatesArray = Object.entries(updates).map(
+      ([rawLineIndex, name]) => ({
+        rawLineIndex: parseInt(rawLineIndex, 10),
+        name,
+      }),
+    );
+
+    try {
+      const response = await fetch(
+        `/api/episodes/${currentEpisode.id}/subtitles/raw`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ updates: updatesArray }),
+        },
+      );
+
+      if (!response.ok) throw new Error("Failed to save");
+
+      setStatus("Изменения сохранены!");
+      setUpdates({});
+      // Reload to reflect changes
+      await loadRawSubtitles();
+      onRefresh();
+    } catch (error) {
+      console.error(error);
+      setStatus("Ошибка при сохранении.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const uniqueNames = Array.from(
+    new Set([
+      ...lines.map((l) => l.name).filter((n) => n && n.trim() !== ""),
+      ...(Object.values(updates) as string[]).filter(
+        (n) => n && n.trim() !== "",
+      ),
+    ]),
+  ).sort();
+
+  const handleQuickAssign = (name: string) => {
+    if (selectedLines.size > 0) {
+      const newUpdates = { ...updates };
+      selectedLines.forEach((index) => {
+        newUpdates[index] = name;
+      });
+      setUpdates(newUpdates);
+      setSelectedLines(new Set());
+    } else {
+      setMassName(name);
+    }
+  };
+
+  if (!currentEpisode?.subPath) {
+    return (
+      <div className="flex flex-col items-center justify-center py-12 text-neutral-500">
+        <Edit3 className="w-12 h-12 opacity-20 mb-4" />
+        <p>Загрузите файл субтитров (.ass), чтобы начать разметку реплик.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col h-full space-y-4">
+      <div className="flex items-center justify-between bg-neutral-900 border border-neutral-800 p-4 rounded-xl shadow-lg">
+        <div className="flex items-center gap-4">
+          <button
+            onClick={loadRawSubtitles}
+            disabled={loading || saving}
+            className="px-4 py-2 bg-neutral-800 hover:bg-neutral-700 text-white rounded-lg text-sm transition-colors border border-neutral-700"
+          >
+            {loading ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              "Обновить"
+            )}
+          </button>
+          <span className="text-sm text-neutral-400">{status}</span>
+        </div>
+
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 border-r border-neutral-800 pr-4">
+            <input
+              type="text"
+              value={massName}
+              onChange={(e) => setMassName(e.target.value)}
+              placeholder="Имя персонажа"
+              className="bg-neutral-950 border border-neutral-700 text-white rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-indigo-500 w-40"
+            />
+            <button
+              onClick={handleMassAssign}
+              disabled={selectedLines.size === 0 || !massName.trim()}
+              className="px-3 py-1.5 bg-indigo-600/20 text-indigo-400 hover:bg-indigo-600/30 disabled:opacity-50 rounded-lg text-sm transition-colors border border-indigo-500/30"
+            >
+              Применить к ({selectedLines.size})
+            </button>
+          </div>
+
+          <button
+            onClick={handleSave}
+            disabled={Object.keys(updates).length === 0 || saving}
+            className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white rounded-lg text-sm font-medium transition-colors shadow-lg shadow-indigo-500/20"
+          >
+            {saving ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <Save className="w-4 h-4" />
+            )}
+            Сохранить ({Object.keys(updates).length})
+          </button>
+        </div>
+      </div>
+
+      {uniqueNames.length > 0 && (
+        <div className="bg-neutral-900 border border-neutral-800 p-3 rounded-xl shadow-lg flex flex-wrap gap-2 items-center">
+          <span className="text-xs text-neutral-500 uppercase tracking-wider mr-2">
+            Быстрый выбор:
+          </span>
+          {uniqueNames.map((name) => (
+            <button
+              key={name}
+              onClick={() => handleQuickAssign(name)}
+              className="px-2.5 py-1 bg-neutral-800 hover:bg-neutral-700 text-neutral-300 hover:text-white rounded text-xs transition-colors border border-neutral-700"
+              title={
+                selectedLines.size > 0
+                  ? `Применить к выбранным (${selectedLines.size})`
+                  : "Выбрать имя"
+              }
+            >
+              {name}
+            </button>
+          ))}
+        </div>
+      )}
+
+      <div className="flex-1 bg-neutral-900 border border-neutral-800 rounded-xl shadow-xl overflow-hidden flex flex-col min-h-[500px]">
+        <div className="grid grid-cols-[40px_100px_100px_150px_200px_1fr] gap-4 p-3 border-b border-neutral-800 bg-neutral-950/50 text-xs font-semibold text-neutral-400 uppercase tracking-wider">
+          <div className="text-center">
+            <input
+              type="checkbox"
+              checked={lines.length > 0 && selectedLines.size === lines.length}
+              onChange={(e) => {
+                if (e.target.checked) {
+                  setSelectedLines(new Set(lines.map((l) => l.rawLineIndex)));
+                } else {
+                  setSelectedLines(new Set());
+                }
+              }}
+              className="rounded border-neutral-700 bg-neutral-900 text-indigo-500 focus:ring-indigo-500/50"
+            />
+          </div>
+          <div>Start</div>
+          <div>End</div>
+          <div>Style</div>
+          <div>Actor / Name</div>
+          <div>Text</div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-2 space-y-1">
+          {lines.map((line) => {
+            const isSelected = selectedLines.has(line.rawLineIndex);
+            const currentName =
+              updates[line.rawLineIndex] !== undefined
+                ? updates[line.rawLineIndex]
+                : line.name;
+            const isModified = updates[line.rawLineIndex] !== undefined;
+
+            return (
+              <div
+                key={line.rawLineIndex}
+                onClick={(e) => {
+                  // Don't toggle if clicking on the input
+                  if ((e.target as HTMLElement).tagName === "INPUT") return;
+                  toggleLineSelection(line.rawLineIndex, e.shiftKey);
+                }}
+                className={`grid grid-cols-[40px_100px_100px_150px_200px_1fr] gap-4 p-2 items-center rounded-lg border transition-colors cursor-pointer ${
+                  isSelected
+                    ? "bg-indigo-500/10 border-indigo-500/30"
+                    : "bg-neutral-950 border-transparent hover:border-neutral-800 hover:bg-neutral-900"
+                }`}
+              >
+                <div className="text-center">
+                  <input
+                    type="checkbox"
+                    checked={isSelected}
+                    onChange={() => toggleLineSelection(line.rawLineIndex)}
+                    className="rounded border-neutral-700 bg-neutral-900 text-indigo-500 focus:ring-indigo-500/50 cursor-pointer"
+                  />
+                </div>
+                <div className="text-xs text-neutral-500 font-mono">
+                  {line.start}
+                </div>
+                <div className="text-xs text-neutral-500 font-mono">
+                  {line.end}
+                </div>
+                <div
+                  className="text-xs text-neutral-400 truncate"
+                  title={line.style}
+                >
+                  {line.style}
+                </div>
+                <div>
+                  <input
+                    type="text"
+                    value={currentName}
+                    onChange={(e) =>
+                      handleNameChange(line.rawLineIndex, e.target.value)
+                    }
+                    className={`w-full bg-neutral-900 border rounded px-2 py-1 text-sm focus:outline-none focus:border-indigo-500 transition-colors ${
+                      isModified
+                        ? "border-indigo-500/50 text-indigo-300"
+                        : "border-neutral-800 text-neutral-300"
+                    }`}
+                    placeholder="Имя..."
+                  />
+                </div>
+                <div
+                  className="text-sm text-neutral-200 truncate"
+                  title={line.text}
+                >
+                  {line.text}
+                </div>
+              </div>
+            );
+          })}
+          {lines.length === 0 && !loading && (
+            <div className="text-center py-8 text-neutral-500">
+              Нет реплик для отображения.
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}

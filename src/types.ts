@@ -30,6 +30,8 @@ export interface RoleAssignment {
   characterName: string;
   dubberId: string;
   dubber?: Participant;
+  substituteId?: string;
+  substitute?: Participant;
   status: string; // "PENDING", "RECORDED", "APPROVED", "REJECTED", "FIXES_NEEDED"
 }
 
