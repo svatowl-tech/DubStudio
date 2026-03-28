@@ -1,20 +1,56 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# Polza Studio
 
-# Run and deploy your AI Studio app
+Desktop application designed for voice-over and fandub studios to manage projects, subtitles, and dubber assignments efficiently.
 
-This contains everything you need to run your app locally.
+## Features
 
-View your app in AI Studio: https://ai.studio/apps/1b23cfa6-cab5-413b-a03f-be5067ec6830
+- **Project Management:** Organize voice-over projects and episodes.
+- **Subtitle Processing:** Split subtitles by actors or dubbers using FFmpeg.
+- **Assignment Management:** Assign characters to dubbers and track status.
+- **File Management:** Upload and manage audio/subtitle files.
+- **Cross-Platform:** Built with Electron for a native desktop experience.
 
-## Run Locally
+## Tech Stack
 
-**Prerequisites:**  Node.js
+- **Framework:** Electron
+- **Frontend:** React 18, TypeScript, Vite, Tailwind CSS
+- **Backend/Database:** Express, SQLite, Prisma ORM
+- **Media Processing:** FFmpeg (fluent-ffmpeg), Wavesurfer.js
+- **Styling:** Tailwind CSS
 
+## Prerequisites
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+- Node.js (v18 or higher recommended)
+- npm
+
+## Getting Started
+
+1. **Clone the repository:**
+   ```bash
+   git clone <repository-url>
+   cd polza-studio
+   ```
+
+2. **Install dependencies:**
+   ```bash
+   npm install
+   ```
+
+3. **Run in development mode:**
+   ```bash
+   npm run electron:dev
+   ```
+
+## Building
+
+To build the application for production:
+
+```bash
+npm run electron:build
+```
+
+The build output will be located in the `dist/electron` directory.
+
+## License
+
+[Add your license here]

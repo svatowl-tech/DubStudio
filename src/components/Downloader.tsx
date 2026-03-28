@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { Download, Search, HardDrive, FileVideo, Globe, Loader2, CheckCircle2, FileText } from 'lucide-react';
+import { Download, Search, HardDrive, FileVideo, Globe, Loader2, CheckCircle2, FileText, XCircle } from 'lucide-react';
+import { ipcRenderer } from '../lib/ipc';
 import { Episode } from '../types';
 
 interface DownloaderProps {
@@ -21,126 +22,77 @@ export default function Downloader({ currentEpisode, onRefresh }: DownloaderProp
   const [tasks, setTasks] = useState<DownloadTask[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [downloadType, setDownloadType] = useState<'RAW' | 'SUB'>('RAW');
-  const [isUploading, setIsUploading] = useState(false);
-
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>, type: 'RAW' | 'SUB') => {
-    const file = e.target.files?.[0];
-    if (!file || !currentEpisode) return;
-
-    setIsUploading(true);
-    
-    try {
-      // Use project title if available, otherwise fallback to ID
-      const projectTitle = currentEpisode.project?.title || 'Project';
-      const subDir = `${projectTitle}/Episode_${currentEpisode.number}`;
-      
-      const originalExt = file.name.split('.').pop() || 'mp4';
-      const fileName = type === 'RAW' ? `raw_video.${originalExt}` : `subtitles.${originalExt}`;
-
-      const formData = new FormData();
-      // Append text fields BEFORE the file so Multer can access them in destination/filename callbacks
-      formData.append('subDir', subDir);
-      formData.append('fileName', fileName);
-      formData.append('file', file);
-
-      const res = await fetch('/api/upload-file', {
-        method: 'POST',
-        body: formData
-      });
-
-      if (!res.ok) {
-        throw new Error(`Server responded with ${res.status}`);
-      }
-
-      const result = await res.json();
-      if (result.success) {
-        // Update episode in DB
-        const updateData: any = {};
-        if (type === 'RAW') updateData.rawPath = result.data.url;
-        else updateData.subPath = result.data.url;
-        
-        // If both exist, move to ROLES status
-        if ((type === 'RAW' && currentEpisode.subPath) || (type === 'SUB' && currentEpisode.rawPath)) {
-          updateData.status = 'ROLES';
-        }
-
-        await fetch(`/api/episodes/${currentEpisode.id}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(updateData)
-        });
-        
-        onRefresh();
-        alert(`${type === 'RAW' ? 'Видео' : 'Субтитры'} успешно загружены!`);
-      } else {
-        alert('Ошибка при сохранении файла: ' + result.error);
-      }
-    } catch (error) {
-      console.error('Upload error:', error);
-      alert('Ошибка при загрузке файла: ' + (error instanceof Error ? error.message : String(error)));
-    } finally {
-      setIsUploading(false);
-    }
-  };
-
-  const handleDownload = (e: React.FormEvent) => {
+  const handleDownload = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!url || !currentEpisode) return;
 
     setIsSearching(true);
     
-    setTimeout(() => {
-      setIsSearching(false);
-      const filename = downloadType === 'RAW' 
-        ? `${currentEpisode.project?.title}_ep${currentEpisode.number}_raw.mp4`
-        : `${currentEpisode.project?.title}_ep${currentEpisode.number}_subs.ass`;
+    // In a real app, we might search for the file first.
+    // For now, we assume the URL is direct or we just start the download.
+    
+    const fileName = downloadType === 'RAW' 
+      ? `${currentEpisode.project?.title}_ep${currentEpisode.number}_raw.mp4`
+      : `${currentEpisode.project?.title}_ep${currentEpisode.number}_subs.ass`;
 
-      const newTask: DownloadTask = {
-        id: Date.now().toString(),
-        filename,
-        progress: 0,
-        status: 'DOWNLOADING',
-        source: url.includes('nyaa') ? 'Nyaa.si' : url.includes('anime-365') ? 'Anime365' : 'Direct Link',
-        type: downloadType
-      };
+    const taskId = Date.now().toString();
+    const newTask: DownloadTask = {
+      id: taskId,
+      filename: fileName,
+      progress: 0,
+      status: 'DOWNLOADING',
+      source: url.includes('nyaa') ? 'Nyaa.si' : url.includes('anime-365') ? 'Anime365' : 'Прямая ссылка',
+      type: downloadType
+    };
+    
+    const downloadUrl = url;
+    setTasks(prev => [newTask, ...prev]);
+    setUrl('');
+    setIsSearching(false);
+
+    let removeListener: (() => void) | undefined;
+    if (ipcRenderer.on) {
+      removeListener = ipcRenderer.on('download-progress', (data: { url: string, progress: number }) => {
+        if (data.url === downloadUrl) {
+          setTasks(prev => prev.map(t => t.id === taskId ? { ...t, progress: data.progress } : t));
+        }
+      });
+    }
+
+    try {
+      const projectTitle = currentEpisode.project?.title || 'Project';
+      const targetDir = `${projectTitle}/Episode_${currentEpisode.number}`;
       
-      setTasks(prev => [newTask, ...prev]);
-      setUrl('');
-      simulateProgress(newTask.id, downloadType);
-    }, 1000);
-  };
+      const res = await ipcRenderer.invoke('download-file', {
+        url,
+        targetDir,
+        fileName
+      });
 
-  const simulateProgress = (taskId: string, type: 'RAW' | 'SUB') => {
-    let progress = 0;
-    const interval = setInterval(async () => {
-      progress += Math.floor(Math.random() * 20) + 10;
-      if (progress >= 100) {
-        progress = 100;
-        clearInterval(interval);
-        setTasks(prev => prev.map(t => t.id === taskId ? { ...t, progress, status: 'COMPLETED' } : t));
+      if (res.success) {
+        setTasks(prev => prev.map(t => t.id === taskId ? { ...t, progress: 100, status: 'COMPLETED' } : t));
         
         // Update episode in DB
-        if (currentEpisode) {
-          const updateData: any = {};
-          if (type === 'RAW') updateData.rawPath = `/uploads/${currentEpisode.project?.title}_ep${currentEpisode.number}_raw.mp4`;
-          else updateData.subPath = `/uploads/${currentEpisode.project?.title}_ep${currentEpisode.number}_subs.ass`;
-          
-          // If both exist, move to ROLES status
-          if ((type === 'RAW' && currentEpisode.subPath) || (type === 'SUB' && currentEpisode.rawPath)) {
-            updateData.status = 'ROLES';
-          }
-
-          await fetch(`/api/episodes/${currentEpisode.id}`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(updateData)
-          });
-          onRefresh();
+        const updateData: any = {};
+        if (downloadType === 'RAW') updateData.rawPath = res.data.path;
+        else updateData.subPath = res.data.path;
+        
+        // If both exist, move to ROLES status
+        if ((downloadType === 'RAW' && currentEpisode.subPath) || (downloadType === 'SUB' && currentEpisode.rawPath)) {
+          updateData.status = 'ROLES';
         }
+
+        await ipcRenderer.invoke('save-episode', { ...currentEpisode, ...updateData });
+        onRefresh();
       } else {
-        setTasks(prev => prev.map(t => t.id === taskId ? { ...t, progress } : t));
+        setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: 'ERROR' } : t));
       }
-    }, 800);
+    } catch (error) {
+      console.error('Download error:', error);
+      setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: 'ERROR' } : t));
+    } finally {
+      if (removeListener) removeListener();
+    }
   };
 
   return (
@@ -209,65 +161,6 @@ export default function Downloader({ currentEpisode, onRefresh }: DownloaderProp
               </button>
             </form>
           </div>
-
-          <div className="bg-neutral-900 border border-neutral-800 rounded-xl p-6 shadow-xl">
-            <h2 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
-              <HardDrive className="w-5 h-5 text-blue-400" />
-              Локальная загрузка
-            </h2>
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-neutral-400 mb-2">
-                  Видео файл (RAW)
-                </label>
-                <label className="flex items-center justify-center gap-2 w-full bg-neutral-950 border border-dashed border-neutral-800 hover:border-blue-500/50 text-neutral-400 hover:text-blue-400 px-4 py-4 rounded-lg cursor-pointer transition-all group">
-                  {isUploading ? <Loader2 className="w-5 h-5 animate-spin" /> : <FileVideo className="w-5 h-5 group-hover:scale-110 transition-transform" />}
-                  <span className="text-sm font-medium">{isUploading ? 'Загрузка...' : 'Выбрать видео'}</span>
-                  <input 
-                    type="file" 
-                    accept="video/*" 
-                    className="hidden" 
-                    onChange={(e) => handleFileUpload(e, 'RAW')}
-                    disabled={isUploading || !currentEpisode}
-                  />
-                </label>
-                <p className="text-xs text-amber-500/70 mt-2">
-                  * Внимание: формат .mkv не поддерживается для воспроизведения в браузере. Используйте .mp4 или .webm
-                </p>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-neutral-400 mb-2">
-                  Файл субтитров (.ass)
-                </label>
-                <label className="flex items-center justify-center gap-2 w-full bg-neutral-950 border border-dashed border-neutral-800 hover:border-indigo-500/50 text-neutral-400 hover:text-indigo-400 px-4 py-4 rounded-lg cursor-pointer transition-all group">
-                  {isUploading ? <Loader2 className="w-5 h-5 animate-spin" /> : <FileText className="w-5 h-5 group-hover:scale-110 transition-transform" />}
-                  <span className="text-sm font-medium">{isUploading ? 'Загрузка...' : 'Выбрать субтитры'}</span>
-                  <input 
-                    type="file" 
-                    accept=".ass,.srt" 
-                    className="hidden" 
-                    onChange={(e) => handleFileUpload(e, 'SUB')}
-                    disabled={isUploading || !currentEpisode}
-                  />
-                </label>
-              </div>
-            </div>
-          </div>
-
-          <div className="bg-neutral-900 border border-neutral-800 rounded-xl p-6 shadow-xl">
-            <h3 className="text-white font-medium mb-3">Статус эпизода</h3>
-            <div className="space-y-3">
-              <div className="flex items-center justify-between text-sm">
-                <span className="text-neutral-400">RAW Видео:</span>
-                {currentEpisode?.rawPath ? <CheckCircle2 className="w-4 h-4 text-green-500" /> : <XCircle className="w-4 h-4 text-red-500" />}
-              </div>
-              <div className="flex items-center justify-between text-sm">
-                <span className="text-neutral-400">Субтитры (.ass):</span>
-                {currentEpisode?.subPath ? <CheckCircle2 className="w-4 h-4 text-green-500" /> : <XCircle className="w-4 h-4 text-red-500" />}
-              </div>
-            </div>
-          </div>
         </div>
 
         <div className="lg:col-span-2">
@@ -326,4 +219,4 @@ export default function Downloader({ currentEpisode, onRefresh }: DownloaderProp
   );
 }
 
-import { XCircle } from 'lucide-react';
+

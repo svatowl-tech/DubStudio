@@ -1,17 +1,41 @@
-import { useState } from 'react';
-import { Settings, Save, Folder, Cpu, Key, Database } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { Settings, Save, Folder, Cpu, Database } from 'lucide-react';
+import { ipcRenderer } from '../lib/ipc';
 
 export default function SettingsPanel() {
   const [settings, setSettings] = useState({
     exportPath: 'C:/PolzaStudio/Exports',
     nvencDevice: '0',
-    geminiApiKey: 'AIzaSy...',
-    polzaApiKey: 'polza_...',
     dbPath: 'C:/PolzaStudio/data.db'
   });
 
-  const handleSave = () => {
-    alert('Настройки сохранены!');
+  const [gpus, setGpus] = useState<{ name: string, index: string }[]>([]);
+
+  useEffect(() => {
+    ipcRenderer.invoke('get-config').then(data => {
+      if (data) {
+        setSettings(prev => ({ ...prev, ...data }));
+      }
+    });
+
+    ipcRenderer.invoke('get-gpus').then(setGpus);
+  }, []);
+
+  const handleSelectFolder = async (key: 'exportPath' | 'dbPath') => {
+    const path = await ipcRenderer.invoke('select-folder');
+    if (path) {
+      setSettings(prev => ({ ...prev, [key]: path }));
+    }
+  };
+
+  const handleSave = async () => {
+    try {
+      await ipcRenderer.invoke('save-config', settings);
+      alert('Настройки сохранены!');
+    } catch (error) {
+      console.error('Failed to save settings:', error);
+      alert('Ошибка при сохранении настроек');
+    }
   };
 
   return (
@@ -33,21 +57,37 @@ export default function SettingsPanel() {
           <div className="grid gap-4">
             <div>
               <label className="block text-sm text-neutral-400 mb-2">Папка экспорта</label>
-              <input 
-                type="text" 
-                value={settings.exportPath}
-                onChange={(e) => setSettings({...settings, exportPath: e.target.value})}
-                className="w-full bg-neutral-950 border border-neutral-800 rounded-lg px-4 py-3 text-white focus:border-blue-500 outline-none"
-              />
+              <div className="flex gap-2">
+                <input 
+                  type="text" 
+                  value={settings.exportPath}
+                  onChange={(e) => setSettings({...settings, exportPath: e.target.value})}
+                  className="flex-1 bg-neutral-950 border border-neutral-800 rounded-lg px-4 py-3 text-white focus:border-blue-500 outline-none"
+                />
+                <button 
+                  onClick={() => handleSelectFolder('exportPath')}
+                  className="bg-neutral-800 hover:bg-neutral-700 text-white px-4 rounded-lg"
+                >
+                  <Folder className="w-5 h-5" />
+                </button>
+              </div>
             </div>
             <div>
               <label className="block text-sm text-neutral-400 mb-2">Путь к БД (SQLite)</label>
-              <input 
-                type="text" 
-                value={settings.dbPath}
-                onChange={(e) => setSettings({...settings, dbPath: e.target.value})}
-                className="w-full bg-neutral-950 border border-neutral-800 rounded-lg px-4 py-3 text-white focus:border-blue-500 outline-none"
-              />
+              <div className="flex gap-2">
+                <input 
+                  type="text" 
+                  value={settings.dbPath}
+                  onChange={(e) => setSettings({...settings, dbPath: e.target.value})}
+                  className="flex-1 bg-neutral-950 border border-neutral-800 rounded-lg px-4 py-3 text-white focus:border-blue-500 outline-none"
+                />
+                <button 
+                  onClick={() => handleSelectFolder('dbPath')}
+                  className="bg-neutral-800 hover:bg-neutral-700 text-white px-4 rounded-lg"
+                >
+                  <Folder className="w-5 h-5" />
+                </button>
+              </div>
             </div>
           </div>
         </section>
@@ -61,39 +101,13 @@ export default function SettingsPanel() {
           <select 
             value={settings.nvencDevice}
             onChange={(e) => setSettings({...settings, nvencDevice: e.target.value})}
-            className="w-full bg-neutral-950 border border-neutral-800 rounded-lg px-4 py-3 text-white focus:border-green-500 outline-none"
+            className="w-full bg-neutral-950 border border-neutral-800 rounded-xl px-4 py-3 text-white focus:border-green-500 outline-none appearance-none"
           >
-            <option value="0">GPU 0 (NVIDIA GeForce RTX 3060)</option>
-            <option value="1">GPU 1 (NVIDIA GeForce GTX 1660)</option>
+            {gpus.map(gpu => (
+              <option key={gpu.index} value={gpu.index}>GPU {gpu.index}: {gpu.name}</option>
+            ))}
+            {gpus.length === 0 && <option value="0">Видеокарта по умолчанию</option>}
           </select>
-        </section>
-
-        {/* API Ключи */}
-        <section>
-          <h2 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
-            <Key className="w-5 h-5 text-yellow-400" />
-            API Ключи
-          </h2>
-          <div className="grid gap-4">
-            <div>
-              <label className="block text-sm text-neutral-400 mb-2">Gemini API Key</label>
-              <input 
-                type="password" 
-                value={settings.geminiApiKey}
-                onChange={(e) => setSettings({...settings, geminiApiKey: e.target.value})}
-                className="w-full bg-neutral-950 border border-neutral-800 rounded-lg px-4 py-3 text-white focus:border-yellow-500 outline-none"
-              />
-            </div>
-            <div>
-              <label className="block text-sm text-neutral-400 mb-2">Polza.ai API Key</label>
-              <input 
-                type="password" 
-                value={settings.polzaApiKey}
-                onChange={(e) => setSettings({...settings, polzaApiKey: e.target.value})}
-                className="w-full bg-neutral-950 border border-neutral-800 rounded-lg px-4 py-3 text-white focus:border-yellow-500 outline-none"
-              />
-            </div>
-          </div>
         </section>
 
         <button 

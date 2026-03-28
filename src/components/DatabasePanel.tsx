@@ -35,7 +35,7 @@ export default function DatabasePanel() {
           alert('База импортирована!');
         } catch (error) {
           console.error('Import error:', error);
-          alert('Ошибка при импорте базы: ' + (error instanceof Error ? error.message : 'Unknown error'));
+          alert('Ошибка при импорте базы: ' + (error instanceof Error ? error.message : 'Неизвестная ошибка'));
         }
       };
       reader.readAsText(file);
@@ -50,6 +50,7 @@ export default function DatabasePanel() {
   };
 
   const handleDelete = async (id: string) => {
+    if (!window.confirm('Вы уверены, что хотите удалить этого участника?')) return;
     await deleteParticipant(id);
     const updated = await getParticipants();
     setParticipants(updated);

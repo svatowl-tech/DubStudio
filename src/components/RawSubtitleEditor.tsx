@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef } from "react";
-import { Save, Edit3, Loader2 } from "lucide-react";
+import { Save, Edit3, Loader2, Languages } from "lucide-react";
+import { ipcRenderer } from '../lib/ipc';
 import { Episode } from "../types";
+import { latinToCyrillic, polivanovToHepburn } from "../lib/translit";
 
 interface RawSubtitleLine {
   id: number;
@@ -48,16 +50,13 @@ export default function RawSubtitleEditor({
     setLoading(true);
     setStatus("Загрузка субтитров...");
     try {
-      const response = await fetch(
-        `/api/episodes/${currentEpisode.id}/subtitles/raw`,
-      );
-      if (!response.ok) throw new Error("Failed to load");
-      const data = await response.json();
-      setLines(data);
+      const data = await ipcRenderer.invoke('get-raw-subtitles', currentEpisode.subPath);
+      const subtitleLines = data.lines || data; // Fallback for safety
+      setLines(subtitleLines);
       setUpdates({});
       setSelectedLines(new Set());
       setLastSelectedLine(null);
-      setStatus(`Загружено ${data.length} реплик.`);
+      setStatus(`Загружено ${subtitleLines.length} реплик.`);
     } catch (error) {
       console.error(error);
       setStatus("Ошибка загрузки субтитров.");
@@ -120,6 +119,45 @@ export default function RawSubtitleEditor({
     setMassName("");
   };
 
+  const handleMassTransliterate = () => {
+    if (lines.length === 0) return;
+    
+    const newUpdates = { ...updates };
+    lines.forEach(line => {
+      const newName = latinToCyrillic(line.name);
+      const newText = latinToCyrillic(line.text);
+      
+      if (newName !== line.name) {
+        // We'll handle name updates if needed, but the current UI focuses on names
+        newUpdates[line.rawLineIndex] = newName;
+      }
+      
+      // Note: The current RawSubtitleEditor only allows editing names, not text.
+      // If we want to support text transliteration, we'd need to update the text in the file.
+      // For now, let's focus on names as that's what's editable in the UI.
+    });
+    
+    setUpdates(newUpdates);
+    setStatus("Имена персонажей транслитерированы.");
+  };
+
+  const handleMassPolivanovToHepburn = () => {
+    if (lines.length === 0) return;
+    
+    const newUpdates = { ...updates };
+    lines.forEach(line => {
+      const currentName = updates[line.rawLineIndex] !== undefined ? updates[line.rawLineIndex] : line.name;
+      const newName = polivanovToHepburn(currentName);
+      
+      if (newName !== currentName) {
+        newUpdates[line.rawLineIndex] = newName;
+      }
+    });
+    
+    setUpdates(newUpdates);
+    setStatus("Имена персонажей переведены на систему Хэпберна.");
+  };
+
   const handleSave = async () => {
     if (!currentEpisode || Object.keys(updates).length === 0) return;
     setSaving(true);
@@ -133,16 +171,10 @@ export default function RawSubtitleEditor({
     );
 
     try {
-      const response = await fetch(
-        `/api/episodes/${currentEpisode.id}/subtitles/raw`,
-        {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ updates: updatesArray }),
-        },
-      );
-
-      if (!response.ok) throw new Error("Failed to save");
+      await ipcRenderer.invoke('save-raw-subtitles', {
+        assFilePath: currentEpisode.subPath,
+        updates: updatesArray
+      });
 
       setStatus("Изменения сохранены!");
       setUpdates({});
@@ -190,6 +222,11 @@ export default function RawSubtitleEditor({
 
   return (
     <div className="flex flex-col h-full space-y-4">
+      {currentEpisode?.rawPath && (
+        <div className="bg-neutral-900 border border-neutral-800 rounded-xl p-4 shadow-lg">
+          <video src={currentEpisode.rawPath} controls className="w-full h-64 object-contain" />
+        </div>
+      )}
       <div className="flex items-center justify-between bg-neutral-900 border border-neutral-800 p-4 rounded-xl shadow-lg">
         <div className="flex items-center gap-4">
           <button
@@ -212,7 +249,8 @@ export default function RawSubtitleEditor({
               type="text"
               value={massName}
               onChange={(e) => setMassName(e.target.value)}
-              placeholder="Имя персонажа"
+              placeholder="Имя (или Имя1, Имя2)"
+              title="Можно указать несколько имен через запятую"
               className="bg-neutral-950 border border-neutral-700 text-white rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-indigo-500 w-40"
             />
             <button
@@ -223,6 +261,26 @@ export default function RawSubtitleEditor({
               Применить к ({selectedLines.size})
             </button>
           </div>
+
+          <button
+            onClick={handleMassTransliterate}
+            disabled={loading || saving || lines.length === 0}
+            className="flex items-center gap-2 bg-neutral-800 hover:bg-neutral-700 disabled:opacity-50 text-white px-4 py-2 rounded-lg font-medium transition-colors border border-neutral-700"
+            title="Транслитерация имен (Lat -> Cyr)"
+          >
+            <Languages className="w-4 h-4" />
+            Транслит
+          </button>
+
+          <button
+            onClick={handleMassPolivanovToHepburn}
+            disabled={loading || saving || lines.length === 0}
+            className="flex items-center gap-2 bg-neutral-800 hover:bg-neutral-700 disabled:opacity-50 text-white px-4 py-2 rounded-lg font-medium transition-colors border border-neutral-700"
+            title="Поливанов -> Хэпберн (Кириллица)"
+          >
+            <Languages className="w-4 h-4 text-amber-400" />
+            Хэпберн
+          </button>
 
           <button
             onClick={handleSave}
@@ -277,11 +335,11 @@ export default function RawSubtitleEditor({
               className="rounded border-neutral-700 bg-neutral-900 text-indigo-500 focus:ring-indigo-500/50"
             />
           </div>
-          <div>Start</div>
-          <div>End</div>
-          <div>Style</div>
-          <div>Actor / Name</div>
-          <div>Text</div>
+          <div>Начало</div>
+          <div>Конец</div>
+          <div>Стиль</div>
+          <div>Актер / Имя</div>
+          <div>Текст</div>
         </div>
 
         <div className="flex-1 overflow-y-auto p-2 space-y-1">
@@ -339,7 +397,8 @@ export default function RawSubtitleEditor({
                         ? "border-indigo-500/50 text-indigo-300"
                         : "border-neutral-800 text-neutral-300"
                     }`}
-                    placeholder="Имя..."
+                    placeholder="Имя (Имя1, Имя2)..."
+                    title="Можно указать несколько имен через запятую"
                   />
                 </div>
                 <div

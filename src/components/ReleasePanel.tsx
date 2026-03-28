@@ -85,28 +85,23 @@ export default function ReleasePanel({ currentEpisode, onRefresh }: ReleasePanel
     setBakeProgress(0);
     setBakeStatus('Запуск FFmpeg...');
     
-    const taskId = `bake_${currentEpisode.id}_${Date.now()}`;
-    const eventSource = new EventSource(`/api/ipc/progress/${taskId}`);
-    
-    eventSource.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      if (data.percent !== undefined) {
-        setBakeProgress(data.percent);
-        setBakeStatus(`Рендеринг: ${data.percent}%`);
-      }
-    };
+    let removeListener: (() => void) | undefined;
+    if (ipcRenderer.on) {
+      removeListener = ipcRenderer.on('ffmpeg-progress', (percent: number) => {
+        setBakeProgress(percent);
+        setBakeStatus(`Рендеринг: ${percent}%`);
+      });
+    }
 
     try {
       const projectTitle = currentEpisode.project?.title || 'Project';
       const subDir = `${projectTitle}/Episode_${currentEpisode.number}`;
       
-      await ipcRenderer.invoke(
-        'bake-subtitles', 
-        currentEpisode.rawPath, 
-        currentEpisode.subPath, 
-        `/uploads/${subDir}/final_release.mp4`,
-        taskId
-      );
+      await ipcRenderer.invoke('bake-subtitles', {
+        videoPath: currentEpisode.rawPath, 
+        finalAssPath: currentEpisode.subPath, 
+        outputPath: `${subDir}/final_release.mp4`
+      });
       
       setBakeStatus('Видео успешно отрендерено!');
       setBakeProgress(100);
@@ -114,7 +109,7 @@ export default function ReleasePanel({ currentEpisode, onRefresh }: ReleasePanel
       setBakeStatus(`Ошибка: ${err.message}`);
     } finally {
       setIsBaking(false);
-      eventSource.close();
+      if (removeListener) removeListener();
     }
   };
 
@@ -123,13 +118,13 @@ export default function ReleasePanel({ currentEpisode, onRefresh }: ReleasePanel
     setIsGenerating(true);
     
     const releaseData = {
-      projectTitle: currentEpisode.project?.title || 'Unknown',
+      projectTitle: currentEpisode.project?.title || 'Неизвестно',
       episodeNumber: currentEpisode.number,
-      dubbers: currentEpisode.assignments?.map(a => participants.find(p => p.id === a.dubberId)?.nickname || 'Unknown') || []
+      dubbers: currentEpisode.assignments?.map(a => participants.find(p => p.id === a.dubberId)?.nickname || 'Неизвестно') || []
     };
 
     try {
-      const res = await ipcRenderer.invoke('generate-post', releaseData);
+      const res = await ipcRenderer.invoke('generate-release-post', { apiKey: '', data: releaseData });
       setPostContent(res.postText);
     } catch (err: any) {
       setPostContent(`Ошибка генерации: ${err.message}`);
@@ -148,47 +143,55 @@ export default function ReleasePanel({ currentEpisode, onRefresh }: ReleasePanel
 
     try {
       const subDir = `${currentEpisode.project?.title}/Episode_${currentEpisode.number}/SoundEngineer`;
-      addLog(`Создание директории: /uploads/${subDir}/`);
+      addLog(`Создание директории: ${subDir}`);
       setExportStatus('Подготовка папки...');
       
-      await fetch('/api/ipc/invoke', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          channel: 'create-dir',
-          args: [subDir]
-        })
-      });
+      const resDir = await ipcRenderer.invoke('create-dir', subDir);
+      if (!resDir.success) throw new Error(resDir.error);
 
-      await new Promise(r => setTimeout(r, 1000));
       setExportProgress(10);
 
       addLog('Экспорт дорожек даберов:');
       for (const a of currentEpisode.assignments || []) {
-        const nickname = participants.find(p => p.id === a.dubberId)?.nickname || 'Unknown';
-        addLog(` ├─ ${nickname}. ${currentEpisode.project?.title}[${currentEpisode.number.toString().padStart(2, '0')}].wav`);
+        const nickname = participants.find(p => p.id === a.dubberId)?.nickname || 'Неизвестно';
+        const dubberFile = currentEpisode.uploads?.find(u => u.assignmentId === a.id && u.type === 'DUBBER_FILE');
+        
+        if (dubberFile) {
+          const fileName = `${nickname}. ${currentEpisode.project?.title}[${currentEpisode.number.toString().padStart(2, '0')}].wav`;
+          addLog(` ├─ Копирование: ${fileName}`);
+          await ipcRenderer.invoke('copy-file', {
+            sourcePath: dubberFile.path,
+            targetDir: subDir,
+            fileName
+          });
+        } else {
+          addLog(` ├─ Пропуск: ${nickname} (файл не найден)`);
+        }
       }
       
       setExportStatus('Копирование аудио...');
-      await new Promise(r => setTimeout(r, 1500));
       setExportProgress(40);
 
       setExportStatus('Рендеринг видео с надписями...');
-      for (let i = 40; i <= 95; i += 5) {
-        await new Promise(r => setTimeout(r, 300));
-        setExportProgress(i);
+      // In a real app, we might bake subtitles with specific sound engineer overlays
+      // For now, we'll just bake the regular ones if they exist
+      if (currentEpisode.rawPath && currentEpisode.subPath) {
+        const outputPath = `${subDir}/final_release_for_se.mp4`;
+        await ipcRenderer.invoke('bake-subtitles', {
+          videoPath: currentEpisode.rawPath,
+          finalAssPath: currentEpisode.subPath,
+          outputPath
+        });
       }
+      
+      setExportProgress(95);
 
-      addLog(`Пакет успешно собран в: /uploads/${subDir}/`);
+      addLog(`Пакет успешно собран в: ${subDir}`);
       setExportStatus('Экспорт завершен!');
       setExportProgress(100);
       
       // Update status to SOUND_ENGINEERING
-      await fetch(`/api/episodes/${currentEpisode.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: 'SOUND_ENGINEERING' }),
-      });
+      await ipcRenderer.invoke('save-episode', { ...currentEpisode, status: 'SOUND_ENGINEERING' });
       onRefresh();
     } catch (err: any) {
       setExportStatus(`Ошибка: ${err.message}`);
@@ -208,48 +211,51 @@ export default function ReleasePanel({ currentEpisode, onRefresh }: ReleasePanel
 
     try {
       const subDir = `${currentEpisode.project?.title}/Episode_${currentEpisode.number}/Dubbing`;
-      addLog(`Создание директории: /uploads/${subDir}/`);
+      addLog(`Создание директории: ${subDir}`);
       setExportDubStatus('Подготовка папки...');
       
-      await fetch('/api/ipc/invoke', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          channel: 'create-dir',
-          args: [subDir]
-        })
-      });
+      const resDir = await ipcRenderer.invoke('create-dir', subDir);
+      if (!resDir.success) throw new Error(resDir.error);
 
-      await new Promise(r => setTimeout(r, 800));
       setExportDubProgress(10);
 
       addLog('Генерация индивидуальных субтитров (.ass):');
-      for (const a of currentEpisode.assignments || []) {
-        const nickname = participants.find(p => p.id === a.dubberId)?.nickname || 'Unknown';
-        addLog(` ├─ ${nickname}_subs.ass`);
-        // Here we would normally call splitSubsByActor and save the files in the subDir
+      if (currentEpisode.subPath) {
+        const assignments = currentEpisode.assignments || [];
+        const resSplit = await ipcRenderer.invoke('split-subs-by-dubber', {
+          assPath: currentEpisode.subPath,
+          assignments,
+          outputDir: subDir
+        });
+        
+        if (resSplit.success) {
+          addLog(' ├─ Субтитры успешно разделены по даберам');
+        } else {
+          addLog(` ├─ Ошибка разделения: ${resSplit.error}`);
+        }
+      } else {
+        addLog(' ├─ Ошибка: Файл субтитров не найден');
       }
       
       setExportDubStatus('Экспорт субтитров...');
-      await new Promise(r => setTimeout(r, 1200));
       setExportDubProgress(30);
 
       setExportDubStatus('FFmpeg (Аппаратный рендеринг референса)...');
-      for (let i = 30; i <= 95; i += 10) {
-        await new Promise(r => setTimeout(r, 400));
-        setExportDubProgress(i);
+      if (currentEpisode.rawPath && currentEpisode.subPath) {
+        const outputPath = `${subDir}/Dub_ref.mp4`;
+        await ipcRenderer.invoke('bake-subtitles', {
+          videoPath: currentEpisode.rawPath,
+          finalAssPath: currentEpisode.subPath,
+          outputPath
+        });
       }
 
-      addLog(`Видео успешно сохранено в: /uploads/${subDir}/Dub_ref.mp4`);
+      addLog(`Видео успешно сохранено в: ${subDir}/Dub_ref.mp4`);
       setExportDubStatus('Экспорт завершен!');
       setExportDubProgress(100);
       
       // Update status to RECORDING
-      await fetch(`/api/episodes/${currentEpisode.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: 'RECORDING' }),
-      });
+      await ipcRenderer.invoke('save-episode', { ...currentEpisode, status: 'RECORDING' });
       onRefresh();
     } catch (err: any) {
       setExportDubStatus(`Ошибка: ${err.message}`);
@@ -262,11 +268,7 @@ export default function ReleasePanel({ currentEpisode, onRefresh }: ReleasePanel
   const handleFinishRelease = async () => {
     if (!currentEpisode) return;
     try {
-      await fetch(`/api/episodes/${currentEpisode.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: 'FINISHED' }),
-      });
+      await ipcRenderer.invoke('save-episode', { ...currentEpisode, status: 'FINISHED' });
       onRefresh();
       alert('Релиз успешно завершен!');
     } catch (error) {
@@ -278,21 +280,16 @@ export default function ReleasePanel({ currentEpisode, onRefresh }: ReleasePanel
     if (!currentEpisode) return;
     try {
       // Update episode deadline
-      await fetch(`/api/episodes/${currentEpisode.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ deadline }),
-      });
+      await ipcRenderer.invoke('save-episode', { ...currentEpisode, deadline });
       
       // Update project totalEpisodes and links
-      await fetch(`/api/projects/${currentEpisode.projectId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
+      if (currentEpisode.project) {
+        await ipcRenderer.invoke('save-project', { 
+          ...currentEpisode.project,
           totalEpisodes, 
           links: JSON.stringify(links) 
-        }),
-      });
+        });
+      }
       
       onRefresh();
       alert('Настройки релиза сохранены!');

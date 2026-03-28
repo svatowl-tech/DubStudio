@@ -9,11 +9,15 @@ import {
   Edit3,
   Download,
   FileUp,
+  Languages,
+  Trash2,
 } from "lucide-react";
 import { Participant, Episode, RoleAssignment } from "../types";
 import { getParticipants } from "../services/dbService";
 import RawSubtitleEditor from "./RawSubtitleEditor";
 import { exportMappingToJson, importMappingFromJson } from "../lib/mappingExport";
+import { ipcRenderer } from "../lib/ipc";
+import { latinToCyrillic, polivanovToHepburn } from "../lib/translit";
 
 interface AssLine {
   id: string;
@@ -40,65 +44,107 @@ export default function AssEditor({
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [isSaving, setIsSaving] = useState(false);
   const [activeTab, setActiveTab] = useState<"roles" | "raw">("roles");
+  const lastAnalyzedEpisodeId = React.useRef<string | null>(null);
 
   useEffect(() => {
     getParticipants().then(setParticipants);
   }, []);
 
-  // Load existing assignments if currentEpisode changes
-  useEffect(() => {
-    if (currentEpisode?.assignments) {
-      setAssignments(currentEpisode.assignments);
-      if (currentEpisode.assignments.length > 0) {
-        setActors(currentEpisode.assignments.map(a => a.characterName));
+  const saveToDatabase = async (currentAssignments: RoleAssignment[]) => {
+    if (!currentEpisode) return;
+    
+    try {
+      const cleanAssignments = currentAssignments.map(a => {
+        const { dubber, substitute, ...rest } = a;
+        return rest;
+      });
+
+      const updatedEpisode = {
+        ...currentEpisode,
+        assignments: cleanAssignments
+      };
+      
+      await ipcRenderer.invoke('save-episode', updatedEpisode);
+      
+      // Also update global mapping if needed
+      if (currentEpisode.projectId && currentEpisode.project) {
+        const mapping = currentAssignments.reduce((acc, a) => {
+          if (a.dubberId) acc[a.characterName] = a.dubberId;
+          return acc;
+        }, {} as Record<string, string>);
+        
+        const updatedProject = {
+          ...currentEpisode.project,
+          globalMapping: JSON.stringify(mapping)
+        };
+        await ipcRenderer.invoke('save-project', updatedProject);
       }
+      
+      onRefresh();
+    } catch (error) {
+      console.error("Auto-save error:", error);
     }
-  }, [currentEpisode]);
+  };
 
   const handleAnalyzeExisting = async () => {
     if (!currentEpisode?.subPath) return;
+    
+    // Prevent redundant analysis for the same episode if we already have assignments
+    if (lastAnalyzedEpisodeId.current === currentEpisode.id && assignments.length > 0) {
+      return;
+    }
+
     setStatus("Анализ существующих субтитров...");
     try {
-      const response = await fetch(
-        `/api/episodes/${currentEpisode.id}/parse-subs`,
-        {
-          method: "POST",
-        },
-      );
-      const result = await response.json();
-      if (result.success) {
-        const { actorMapping } = result.data;
-        const newActors = Object.keys(actorMapping);
+      const result = await ipcRenderer.invoke('get-raw-subtitles', currentEpisode.subPath);
+      
+      if (result && result.actors) {
+        const newActors = result.actors;
         setActors(newActors);
 
-        // Merge with existing assignments and global mapping
         const globalMapping = currentEpisode?.project?.globalMapping
           ? JSON.parse(currentEpisode.project.globalMapping)
           : {};
 
-        const newAssignments = [...assignments];
-        newActors.forEach((actor) => {
-          if (!newAssignments.find(a => a.characterName === actor)) {
-            let dubberId = "";
-            if (globalMapping[actor]) {
-              dubberId = globalMapping[actor];
-            } else if (actorMapping[actor]) {
-              dubberId = (actorMapping[actor] as Participant).id;
-            }
-            
-            if (dubberId) {
-              newAssignments.push({
-                id: Math.random().toString(), // Temporary ID
+        setAssignments(prev => {
+          const existingNames = new Set(prev.map(a => a.characterName));
+          const toAdd = newActors.filter((name: string) => !existingNames.has(name));
+          
+          if (toAdd.length > 0) {
+            const newAssignments = toAdd.map((actor: string) => {
+              // Priority 1: Global mapping
+              let dubberId = globalMapping[actor] || "";
+              
+              // Priority 2: Case-insensitive nickname match if no global mapping
+              if (!dubberId) {
+                const matchedParticipant = participants.find(
+                  p => p.nickname.toLowerCase() === actor.toLowerCase()
+                );
+                if (matchedParticipant) {
+                  dubberId = matchedParticipant.id;
+                }
+              }
+
+              const dubber = participants.find(p => p.id === dubberId);
+              return {
+                id: Math.random().toString(),
                 episodeId: currentEpisode.id,
                 characterName: actor,
                 dubberId: dubberId,
-                status: "PENDING"
-              });
-            }
+                dubber: dubber,
+                status: "PENDING" as const
+              };
+            });
+
+            const updated = [...prev, ...newAssignments];
+            // Auto-save the combined assignments
+            saveToDatabase(updated);
+            return updated;
           }
+          return prev;
         });
 
-        setAssignments(newAssignments);
+        lastAnalyzedEpisodeId.current = currentEpisode.id;
         setStatus(`Анализ завершен. Найдено ${newActors.length} персонажей.`);
       } else {
         setStatus("Ошибка при анализе файла.");
@@ -109,88 +155,50 @@ export default function AssEditor({
     }
   };
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const uploadedFile = e.target.files?.[0];
-    if (!uploadedFile || !currentEpisode) return;
+  // Load existing assignments if currentEpisode changes
+  useEffect(() => {
+    if (!currentEpisode) return;
 
-    setFile(uploadedFile);
-    setStatus("Файл загружен. Анализ...");
-
-    try {
-      const projectTitle = currentEpisode.project?.title || "Project";
-      const subDir = `${projectTitle}/Episode_${currentEpisode.number || "0"}/Subtitles`;
-
-      const formData = new FormData();
-      formData.append("subDir", subDir);
-      formData.append("fileName", uploadedFile.name);
-      formData.append("file", uploadedFile);
-
-      const uploadResponse = await fetch("/api/upload-file", {
-        method: "POST",
-        body: formData,
-      });
-
-      const uploadResult = await uploadResponse.json();
-      if (!uploadResult.success) throw new Error("Upload failed");
-
-      // Update episode with new subPath
-      await fetch(`/api/episodes/${currentEpisode.id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ subPath: uploadResult.data.path }),
-      });
-      onRefresh(); // Refresh to update currentEpisode in parent
-
-      // Now call parse-subs endpoint instead of IPC
-      const response = await fetch(
-        `/api/episodes/${currentEpisode.id}/parse-subs`,
-        {
-          method: "POST",
-        },
-      );
-
-      const result = await response.json();
-      if (result.success) {
-        const { actorMapping } = result.data;
-        const newActors = Object.keys(actorMapping);
-        setActors(newActors);
-
-        // Merge with existing assignments and global mapping
-        const globalMapping = currentEpisode?.project?.globalMapping
-          ? JSON.parse(currentEpisode.project.globalMapping)
-          : {};
-
-        const newAssignments = [...assignments];
-        newActors.forEach((actor) => {
-          if (!newAssignments.find(a => a.characterName === actor)) {
-            let dubberId = "";
-            if (globalMapping[actor]) {
-              dubberId = globalMapping[actor];
-            } else if (actorMapping[actor]) {
-              dubberId = (actorMapping[actor] as Participant).id;
-            }
-            
-            if (dubberId) {
-              newAssignments.push({
-                id: Math.random().toString(), // Temporary ID
-                episodeId: currentEpisode.id,
-                characterName: actor,
-                dubberId: dubberId,
-                status: "PENDING"
-              });
-            }
-          }
-        });
-
-        setAssignments(newAssignments);
-        setStatus(`Анализ завершен. Найдено ${newActors.length} персонажей.`);
-      } else {
-        setStatus("Ошибка при анализе файла.");
+    if (currentEpisode.assignments && currentEpisode.assignments.length > 0) {
+      setAssignments(currentEpisode.assignments);
+      setActors(currentEpisode.assignments.map(a => a.characterName));
+      lastAnalyzedEpisodeId.current = currentEpisode.id;
+    } else {
+      // Only clear if it's a different episode
+      if (lastAnalyzedEpisodeId.current !== currentEpisode.id) {
+        setAssignments([]);
+        setActors([]);
+        if (currentEpisode.subPath) {
+          handleAnalyzeExisting();
+        }
       }
-    } catch (error) {
-      console.error("Import error:", error);
-      setStatus("Ошибка при анализе файла.");
     }
+  }, [currentEpisode?.id, currentEpisode?.subPath]);
+
+  const handleTransliterateNames = () => {
+    if (assignments.length === 0) return;
+    
+    const newAssignments = assignments.map(a => ({
+      ...a,
+      characterName: latinToCyrillic(a.characterName)
+    }));
+    
+    setAssignments(newAssignments);
+    saveToDatabase(newAssignments);
+    setStatus("Имена персонажей транслитерированы.");
+  };
+
+  const handlePolivanovToHepburn = () => {
+    if (assignments.length === 0) return;
+    
+    const newAssignments = assignments.map(a => ({
+      ...a,
+      characterName: polivanovToHepburn(a.characterName)
+    }));
+    
+    setAssignments(newAssignments);
+    saveToDatabase(newAssignments);
+    setStatus("Имена персонажей переведены на систему Хэпберна.");
   };
 
   const handleExportMapping = () => {
@@ -221,101 +229,117 @@ export default function AssEditor({
     reader.readAsText(file);
   };
 
-  const handleAssign = (actor: string, dubberId: string) => {
-    setAssignments(prev => prev.map(a => a.characterName === actor ? {...a, dubberId} : a));
-  };
-
-  const handleSetSubstitute = async (assignmentId: string, substituteId: string) => {
-    try {
-      const response = await fetch(`/api/assignments/${assignmentId}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ substituteId }),
-      });
-      
-      if (response.ok) {
-        setAssignments(prev => prev.map(a => a.id === assignmentId ? {...a, substituteId} : a));
-        setStatus("Замена назначена!");
-      } else {
-        setStatus("Ошибка при назначении замены.");
-      }
-    } catch (error) {
-      console.error("Substitution error:", error);
-      setStatus("Ошибка при назначении замены.");
+  const handleAssign = async (actor: string, dubberId: string) => {
+    const dubber = participants.find(p => p.id === dubberId);
+    const newAssignments = assignments.map(a => a.characterName === actor ? {...a, dubberId, dubber} : a);
+    setAssignments(newAssignments);
+    
+    // Auto-save
+    if (currentEpisode) {
+      await saveToDatabase(newAssignments);
     }
   };
 
-  const handleSaveAssignments = async () => {
+  const handleSetSubstitute = async (assignmentId: string, substituteId: string) => {
+    const newAssignments = assignments.map(a => a.id === assignmentId ? {...a, substituteId} : a);
+    setAssignments(newAssignments);
+    
+    // Auto-save
+    if (currentEpisode) {
+      await saveToDatabase(newAssignments);
+    }
+  };
+
+
+  const handleClearAssignments = async () => {
+    if (!window.confirm("Вы уверены, что хотите очистить ВСЕ распределения ролей для этого эпизода?")) return;
+    setAssignments([]);
+    setActors([]);
+    if (currentEpisode) {
+      await saveToDatabase([]);
+    }
+    setStatus("Все распределения ролей очищены.");
+  };
+
+  const handleStartRecording = async () => {
     if (!currentEpisode) return;
 
     setIsSaving(true);
-    setStatus("Сохранение распределения ролей...");
+    setStatus("Перевод эпизода в статус 'ЗАПИСЬ'...");
 
     try {
-      // Save each assignment to the database
-      const promises = assignments.map(
-        (assignment) => {
-          return fetch(`/api/episodes/${currentEpisode.id}/assignments`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(assignment),
-          });
-        },
-      );
-
-      await Promise.all(promises);
-
-      // Update episode status to RECORDING
-      await fetch(`/api/episodes/${currentEpisode.id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: "RECORDING" }),
-      });
-
-      // Update project global mapping
-      if (currentEpisode.projectId) {
-        await fetch(`/api/projects/${currentEpisode.projectId}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ globalMapping: JSON.stringify(assignments.reduce((acc, a) => ({ ...acc, [a.characterName]: a.dubberId }), {})) }),
-        });
-      }
-
-      setStatus("Распределение ролей сохранено! Переход к записи.");
+      const updatedEpisode = {
+        ...currentEpisode,
+        status: "RECORDING" as const
+      };
+      await ipcRenderer.invoke('save-episode', updatedEpisode);
+      setStatus("Статус обновлен! Теперь можно приступать к записи.");
       onRefresh();
     } catch (error) {
-      console.error("Save error:", error);
-      setStatus("Ошибка при сохранении.");
+      console.error("Status update error:", error);
+      setStatus("Ошибка при обновлении статуса.");
     } finally {
       setIsSaving(false);
     }
   };
 
   const handleSplitAss = async () => {
-    if (!currentEpisode) return;
+    if (!currentEpisode || !currentEpisode.subPath) return;
     setStatus("Генерация разделенных файлов...");
 
     try {
-      const response = await fetch(
-        `/api/episodes/${currentEpisode.id}/split-subs`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ assignments }),
-        },
-      );
+      const projectTitle = currentEpisode.project?.title || "Project";
+      const subDir = `${projectTitle}/Episode_${currentEpisode.number || "0"}/Subtitles/output_dubbers`;
+      
+      const config = await ipcRenderer.invoke('get-config');
+      const baseDir = config.baseDir || '';
+      const outputDirectory = `${baseDir}/${subDir}`;
 
-      const data = await response.json();
-      if (data.success) {
+      const data = await ipcRenderer.invoke('split-subs-by-dubber', {
+        assFilePath: currentEpisode.subPath,
+        outputDirectory,
+        assignments
+      });
+
+      if (data && data.success) {
         setStatus(
-          `Файлы успешно разделены и сохранены в папке output_dubbers! Сгенерировано файлов: ${data.data.generatedFiles.length}`,
+          `Файлы успешно разделены и сохранены в папке output_dubbers! Сгенерировано файлов: ${data.generatedFiles.length}`,
         );
       } else {
-        setStatus("Ошибка при разделении файлов: " + data.error);
+        setStatus("Ошибка при разделении файлов: " + (data?.error || 'Неизвестная ошибка'));
       }
     } catch (error) {
       console.error("Split error:", error);
       setStatus("Ошибка при разделении файлов.");
+    }
+  };
+
+  const handleExportFullAss = async () => {
+    if (!currentEpisode || !currentEpisode.subPath) return;
+    setStatus("Экспорт полного файла с ролями...");
+
+    try {
+      const projectTitle = currentEpisode.project?.title || "Project";
+      const subDir = `${projectTitle}/Episode_${currentEpisode.number || "0"}/Subtitles`;
+      
+      const config = await ipcRenderer.invoke('get-config');
+      const baseDir = config.baseDir || '';
+      const outputPath = `${baseDir}/${subDir}/${projectTitle}_Ep${currentEpisode.number}_Full_Roles.ass`;
+
+      const result = await ipcRenderer.invoke('export-full-ass-with-roles', {
+        assFilePath: currentEpisode.subPath,
+        outputPath,
+        assignments
+      });
+
+      if (result) {
+        setStatus(`Полный файл успешно экспортирован: ${outputPath}`);
+      } else {
+        setStatus("Ошибка при экспорте полного файла.");
+      }
+    } catch (error) {
+      console.error("Export error:", error);
+      setStatus("Ошибка при экспорте полного файла.");
     }
   };
 
@@ -392,41 +416,6 @@ export default function AssEditor({
                 </button>
               )}
 
-              <div className="flex items-center gap-4 mb-4">
-                <div className="h-px bg-neutral-800 flex-1"></div>
-                <span className="text-xs text-neutral-500 uppercase tracking-wider">
-                  Или загрузить новый
-                </span>
-                <div className="h-px bg-neutral-800 flex-1"></div>
-              </div>
-
-              <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-neutral-700 border-dashed rounded-lg cursor-pointer bg-neutral-950 hover:bg-neutral-800 transition-colors">
-                <div className="flex flex-col items-center justify-center pt-5 pb-6">
-                  <FileText className="w-8 h-8 text-neutral-500 mb-2" />
-                  <p className="text-sm text-neutral-400">
-                    <span className="font-semibold text-indigo-400">
-                      Нажмите для загрузки
-                    </span>{" "}
-                    или перетащите
-                  </p>
-                  <p className="text-xs text-neutral-500 mt-1">
-                    Только .ass файлы
-                  </p>
-                </div>
-                <input
-                  type="file"
-                  accept=".ass"
-                  className="hidden"
-                  onChange={handleFileUpload}
-                />
-              </label>
-
-              {file && (
-                <div className="mt-4 p-3 bg-indigo-500/10 border border-indigo-500/20 rounded-lg text-sm text-indigo-300 truncate">
-                  {file.name}
-                </div>
-              )}
-
               {status && (
                 <p className="mt-4 text-sm text-neutral-400">{status}</p>
               )}
@@ -452,20 +441,21 @@ export default function AssEditor({
                     )}
                   </div>
                   <span className="text-sm text-neutral-300 group-hover:text-white transition-colors">
-                    Checkall (Генерировать для всех)
+                    Выбрать все (Генерировать для всех)
                   </span>
                 </label>
 
                 <button
-                  onClick={handleSaveAssignments}
+                  onClick={handleStartRecording}
                   disabled={
                     !currentEpisode ||
                     assignments.length === 0 ||
-                    isSaving
+                    isSaving ||
+                    currentEpisode.status === "RECORDING"
                   }
                   className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white px-4 py-2.5 rounded-lg font-medium transition-colors shadow-lg shadow-indigo-500/20"
                 >
-                  {isSaving ? "Сохранение..." : "Сохранить роли"}
+                  {isSaving ? "Обработка..." : currentEpisode?.status === "RECORDING" ? "Уже в записи" : "Начать запись (Статус)"}
                 </button>
 
                 <div className="grid grid-cols-2 gap-2">
@@ -484,11 +474,50 @@ export default function AssEditor({
                 </div>
 
                 <button
-                  onClick={handleSplitAss}
-                  disabled={!file || assignments.length === 0}
-                  className="w-full bg-neutral-800 hover:bg-neutral-700 disabled:opacity-50 text-white px-4 py-2.5 rounded-lg font-medium transition-colors border border-neutral-700"
+                  onClick={handleExportFullAss}
+                  disabled={!currentEpisode?.subPath || assignments.length === 0}
+                  className="w-full bg-neutral-800 hover:bg-neutral-700 disabled:opacity-50 text-white px-4 py-2.5 rounded-lg font-medium transition-colors border border-neutral-700 flex items-center justify-center gap-2"
                 >
-                  Разделить субтитры
+                  <FileText className="w-4 h-4" />
+                  Экспортировать полный ASS
+                </button>
+
+                <button
+                  onClick={handleClearAssignments}
+                  disabled={assignments.length === 0}
+                  className="w-full bg-red-900/20 hover:bg-red-900/40 text-red-400 px-4 py-2.5 rounded-lg font-medium transition-colors border border-red-900/50 flex items-center justify-center gap-2"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  Очистить все роли
+                </button>
+
+                <button
+                  onClick={handleSplitAss}
+                  disabled={!currentEpisode?.subPath || assignments.length === 0}
+                  className="w-full bg-neutral-800 hover:bg-neutral-700 disabled:opacity-50 text-white px-4 py-2.5 rounded-lg font-medium transition-colors border border-neutral-700 flex items-center justify-center gap-2"
+                >
+                  <Scissors className="w-4 h-4" />
+                  Разделить по актерам (Пак)
+                </button>
+
+                <button
+                  onClick={handleTransliterateNames}
+                  disabled={assignments.length === 0}
+                  className="w-full bg-neutral-800 hover:bg-neutral-700 disabled:opacity-50 text-white px-4 py-2.5 rounded-lg font-medium transition-colors border border-neutral-700 flex items-center justify-center gap-2"
+                  title="Транслитерация имен (Латиница -> Кириллица)"
+                >
+                  <Languages className="w-4 h-4" />
+                  Транслит (Lat &rarr; Cyr)
+                </button>
+
+                <button
+                  onClick={handlePolivanovToHepburn}
+                  disabled={assignments.length === 0}
+                  className="w-full bg-neutral-800 hover:bg-neutral-700 disabled:opacity-50 text-white px-4 py-2.5 rounded-lg font-medium transition-colors border border-neutral-700 flex items-center justify-center gap-2"
+                  title="Поливанов -> Хэпберн (Кириллица)"
+                >
+                  <Languages className="w-4 h-4 text-amber-400" />
+                  Поливанов &rarr; Хэпберн
                 </button>
               </div>
             </div>
@@ -536,11 +565,17 @@ export default function AssEditor({
                             <option value="" disabled>
                               -- Выберите дабера --
                             </option>
-                            {participants.map((user) => (
-                              <option key={user.id} value={user.id}>
-                                {user.nickname}
-                              </option>
-                            ))}
+                            {participants
+                              .filter(p => 
+                                !currentEpisode?.project?.assignedDubberIds || 
+                                currentEpisode.project.assignedDubberIds.length === 0 ||
+                                currentEpisode.project.assignedDubberIds.includes(p.id)
+                              )
+                              .map((user) => (
+                                <option key={user.id} value={user.id}>
+                                  {user.nickname}
+                                </option>
+                              ))}
                           </select>
                           
                           <select

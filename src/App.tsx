@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react';
-import { LayoutDashboard, Scissors, Settings, Mic2, Activity, Mic, PlaySquare, Download, Database } from 'lucide-react';
+import { LayoutDashboard, Scissors, Settings, Mic2, Activity, PlaySquare, Database } from 'lucide-react';
 import Dashboard from './components/Dashboard';
-import RecordingStudio from './components/RecordingStudio';
 import QAPanel from './components/QAPanel';
 import ReleasePanel from './components/ReleasePanel';
 import AssEditor from './components/AssEditor';
@@ -9,9 +8,10 @@ import Downloader from './components/Downloader';
 import DatabasePanel from './components/DatabasePanel';
 import SettingsPanel from './components/SettingsPanel';
 import { Project, Episode } from './types';
+import { ipcRenderer } from './lib/ipc';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'subtitles' | 'studio' | 'qa' | 'release' | 'downloader' | 'settings' | 'database'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'subtitles' | 'qa' | 'release' | 'downloader' | 'settings' | 'database'>('dashboard');
   const [savedAudioUrl, setSavedAudioUrl] = useState<string | null>(null);
   
   const [projects, setProjects] = useState<Project[]>([]);
@@ -23,8 +23,7 @@ export default function App() {
   }, []);
 
   const loadProjects = async () => {
-    const res = await fetch('/api/projects');
-    const data = await res.json();
+    const data = await ipcRenderer.invoke('get-projects');
     setProjects(data);
     
     // Auto-select first project if none selected
@@ -69,12 +68,11 @@ export default function App() {
 
   const handleEpisodeSelect = async (episodeNumber: number) => {
     if (!selectedProjectId) return;
-    await fetch(`/api/projects/${selectedProjectId}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ lastActiveEpisode: episodeNumber })
-    });
-    await loadProjects();
+    const project = projects.find(p => p.id === selectedProjectId);
+    if (project) {
+      await ipcRenderer.invoke('save-project', { ...project, lastActiveEpisode: episodeNumber });
+      await loadProjects();
+    }
   };
 
   return (
@@ -102,30 +100,6 @@ export default function App() {
           </button>
 
           <button
-            onClick={() => setActiveTab('database')}
-            className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-colors ${
-              activeTab === 'database' 
-                ? 'bg-blue-600/10 text-blue-400' 
-                : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200'
-            }`}
-          >
-            <Database className="w-5 h-5" />
-            База участников
-          </button>
-          
-          <button
-            onClick={() => setActiveTab('downloader')}
-            className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-colors ${
-              activeTab === 'downloader' 
-                ? 'bg-teal-600/10 text-teal-400' 
-                : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200'
-            }`}
-          >
-            <Download className="w-5 h-5" />
-            Загрузка (Равки)
-          </button>
-          
-          <button
             onClick={() => setActiveTab('subtitles')}
             className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-colors ${
               activeTab === 'subtitles' 
@@ -135,18 +109,6 @@ export default function App() {
           >
             <Scissors className="w-5 h-5" />
             Утилиты (ASS)
-          </button>
-
-          <button
-            onClick={() => setActiveTab('studio')}
-            className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-colors ${
-              activeTab === 'studio' 
-                ? 'bg-blue-600/10 text-blue-400' 
-                : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200'
-            }`}
-          >
-            <Mic className="w-5 h-5" />
-            Студия записи
           </button>
 
           <button
@@ -174,7 +136,18 @@ export default function App() {
           </button>
         </nav>
 
-        <div className="p-4 border-t border-neutral-800">
+        <div className="p-4 border-t border-neutral-800 space-y-1">
+          <button
+            onClick={() => setActiveTab('database')}
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-colors ${
+              activeTab === 'database' 
+                ? 'bg-blue-600/10 text-blue-400' 
+                : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200'
+            }`}
+          >
+            <Database className="w-5 h-5" />
+            База участников
+          </button>
           <button
             onClick={() => setActiveTab('settings')}
             className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-colors ${
@@ -207,12 +180,6 @@ export default function App() {
         {activeTab === 'release' && <ReleasePanel currentEpisode={currentEpisode} onRefresh={loadProjects} />}
         {activeTab === 'database' && <DatabasePanel />}
         {activeTab === 'settings' && <SettingsPanel />}
-        {activeTab === 'studio' && (
-          <RecordingStudio 
-            currentEpisode={currentEpisode}
-            onRefresh={loadProjects}
-          />
-        )}
         {activeTab === 'qa' && <QAPanel currentEpisode={currentEpisode} onRefresh={loadProjects} />}
       </main>
     </div>

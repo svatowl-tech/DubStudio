@@ -1,34 +1,16 @@
 import { Participant } from '../types';
+import { ipcRenderer } from '../lib/ipc';
 
 export const getParticipants = async (): Promise<Participant[]> => {
-  const response = await fetch('/api/participants');
-  return response.json();
+  return await ipcRenderer.invoke('get-participants');
 };
 
 export const saveParticipant = async (participant: Participant): Promise<void> => {
-  let response;
-  if (participant.id) {
-    response = await fetch(`/api/participants/${participant.id}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(participant),
-    });
-  } else {
-    response = await fetch('/api/participants', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(participant),
-    });
-  }
-  
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}));
-    throw new Error(errorData.error || `Failed to save participant: ${response.statusText}`);
-  }
+  return await ipcRenderer.invoke('save-participant', participant);
 };
 
 export const deleteParticipant = async (id: string): Promise<void> => {
-  await fetch(`/api/participants/${id}`, { method: 'DELETE' });
+  return await ipcRenderer.invoke('delete-participant', id);
 };
 
 export const exportParticipants = async (): Promise<string> => {
@@ -38,15 +20,5 @@ export const exportParticipants = async (): Promise<string> => {
 
 export const importParticipants = async (json: string): Promise<void> => {
   const participants: Participant[] = JSON.parse(json);
-  
-  const response = await fetch('/api/participants/import', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(participants),
-  });
-  
-  if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      throw new Error(`Failed to import participants: ${errorData.error || response.statusText}`);
-  }
+  return await ipcRenderer.invoke('import-participants', participants);
 };

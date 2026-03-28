@@ -7,6 +7,15 @@ export interface Participant {
   roles: string[];
 }
 
+declare global {
+  interface Window {
+    electronAPI: {
+      invoke: (channel: string, ...args: any[]) => Promise<any>;
+      on: (channel: string, callback: (...args: any[]) => void) => () => void;
+    };
+  }
+}
+
 export type EpisodeStatus = "UPLOAD" | "ROLES" | "RECORDING" | "QA" | "FIXES" | "SOUND_ENGINEERING" | "FINISHED";
 
 export interface Episode {
@@ -33,6 +42,7 @@ export interface RoleAssignment {
   substituteId?: string;
   substitute?: Participant;
   status: string; // "PENDING", "RECORDED", "APPROVED", "REJECTED", "FIXES_NEEDED"
+  comments?: string; // JSON string
 }
 
 export interface UploadedFile {
@@ -52,6 +62,7 @@ export interface Project {
   status: "ACTIVE" | "COMPLETED";
   lastActiveEpisode: number;
   totalEpisodes: number;
+  assignedDubberIds: string[];
   links?: string; // JSON string
   globalMapping?: string; // JSON string
   episodes: Episode[];

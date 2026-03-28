@@ -63,14 +63,14 @@ export const generateStatusMessage = (episode: Episode, participants: Participan
 
   const roadsMentions = pendingRoads.map(a => {
     const d = participants.find(p => p.id === a.dubberId);
-    if (!d) return '• Unknown';
+    if (!d) return '• Неизвестно';
     const mention = d.telegram.startsWith('@') ? d.telegram : `@${d.telegram}`;
     return `• ${mention}`;
   }).join('\n');
 
   const fixesMentions = pendingFixes.map(a => {
     const d = participants.find(p => p.id === a.dubberId);
-    if (!d) return '• Unknown';
+    if (!d) return '• Неизвестно';
     const mention = d.telegram.startsWith('@') ? d.telegram : `@${d.telegram}`;
     return `• ${mention}`;
   }).join('\n');

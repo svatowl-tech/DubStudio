@@ -1,18 +1,9 @@
-export interface ReleaseData {
-  projectTitle: string;
-  episodeNumber: number | string;
-  dubbers: string[];
-}
-
 /**
  * Сервис для обращения к API Polza.ai (Main Process).
  * Формирует JSON-запрос для генерации красивого поста для Telegram/VK.
  */
-export class SocialMediaBot {
-  private apiKey: string;
-  private apiUrl: string;
-
-  constructor(apiKey: string) {
+class SocialMediaBot {
+  constructor(apiKey) {
     this.apiKey = apiKey;
     // Пример базового URL для API Polza.ai (совместимого с OpenAI форматом)
     this.apiUrl = 'https://api.polza.ai/v1/chat/completions';
@@ -21,7 +12,7 @@ export class SocialMediaBot {
   /**
    * Генерирует текст поста на основе данных о релизе.
    */
-  async generateReleasePost(data: ReleaseData): Promise<string> {
+  async generateReleasePost(data) {
     const prompt = `Создай красивый, эмоциональный и вовлекающий пост для Telegram и VK о выходе новой серии в нашей студии озвучки.
     
 Детали релиза:
@@ -79,3 +70,7 @@ export class SocialMediaBot {
     }
   }
 }
+
+module.exports = {
+  SocialMediaBot
+};
