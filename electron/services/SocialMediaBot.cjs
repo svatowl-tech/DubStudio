@@ -35,7 +35,7 @@ class SocialMediaBot {
           'Authorization': `Bearer ${this.apiKey}`,
         },
         body: JSON.stringify({
-          model: 'polza-pro', // Пример названия модели Polza.ai
+          model: 'polza-pro',
           messages: [
             { 
               role: 'system', 
@@ -51,14 +51,9 @@ class SocialMediaBot {
         }),
       });
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(`Polza.ai API Error (${response.status}): ${errorData.error?.message || response.statusText}`);
-      }
-
+      if (!response.ok) throw new Error('API Error');
       const result = await response.json();
       
-      // Возвращаем сгенерированный текст
       if (result.choices && result.choices.length > 0) {
         return result.choices[0].message.content.trim();
       } else {
@@ -66,6 +61,58 @@ class SocialMediaBot {
       }
     } catch (error) {
       console.error('Ошибка при генерации поста через Polza.ai:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Извлекает список персонажей из текста субтитров или описания.
+   */
+  async extractCharacters(text) {
+    const prompt = `Проанализируй следующий текст (фрагмент субтитров или описание проекта) и извлеки из него список уникальных персонажей.
+    
+Текст для анализа:
+${text.slice(0, 4000)} // Ограничиваем объем текста
+
+Требования:
+1. Верни только список имен через запятую.
+2. Имена должны быть в именительном падеже.
+3. Если персонаж имеет несколько имен/прозвищ, выбери основное.
+4. Не пиши ничего, кроме имен.`;
+
+    try {
+      const response = await fetch(this.apiUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: 'polza-pro',
+          messages: [
+            { 
+              role: 'system', 
+              content: 'Ты эксперт по анализу текстов и аниме-контента.' 
+            },
+            { 
+              role: 'user', 
+              content: prompt 
+            }
+          ],
+          temperature: 0.3,
+        }),
+      });
+
+      if (!response.ok) throw new Error('API Error');
+      const result = await response.json();
+      
+      if (result.choices && result.choices.length > 0) {
+        const content = result.choices[0].message.content.trim();
+        return content.split(',').map(s => s.trim()).filter(s => s.length > 0);
+      }
+      return [];
+    } catch (error) {
+      console.error('Ошибка при извлечении персонажей:', error);
       throw error;
     }
   }

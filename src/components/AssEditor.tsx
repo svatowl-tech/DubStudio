@@ -11,13 +11,20 @@ import {
   FileUp,
   Languages,
   Trash2,
+  Plus,
+  MessageSquare,
+  Settings2,
+  Loader2,
+  X,
 } from "lucide-react";
+import TranslatePanel from "./TranslatePanel";
 import { Participant, Episode, RoleAssignment } from "../types";
 import { getParticipants } from "../services/dbService";
 import RawSubtitleEditor from "./RawSubtitleEditor";
 import { exportMappingToJson, importMappingFromJson } from "../lib/mappingExport";
-import { ipcRenderer } from "../lib/ipc";
+import { ipcSafe } from "../lib/ipcSafe";
 import { latinToCyrillic, polivanovToHepburn } from "../lib/translit";
+import { generateStartEpisodeMessage } from "../lib/templates";
 
 interface AssLine {
   id: string;
@@ -43,8 +50,18 @@ export default function AssEditor({
   const [status, setStatus] = useState("");
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [isSaving, setIsSaving] = useState(false);
-  const [activeTab, setActiveTab] = useState<"roles" | "raw">("roles");
+  const [activeTab, setActiveTab] = useState<"roles" | "raw" | "translate">("roles");
+  const [linkingCharacter, setLinkingCharacter] = useState<string | null>(null);
   const lastAnalyzedEpisodeId = React.useRef<string | null>(null);
+
+  // Splitter state
+  const [distributeGroups, setDistributeGroups] = useState(false);
+  const [distributeMultipleRoles, setDistributeMultipleRoles] = useState(false);
+  const [saveSignsInAss, setSaveSignsInAss] = useState(false);
+  const [outputFormat, setOutputFormat] = useState<"ass" | "srt">("ass");
+  const [isSplitting, setIsSplitting] = useState(false);
+  const [isMessageModalOpen, setIsMessageModalOpen] = useState(false);
+  const [generatedMessage, setGeneratedMessage] = useState("");
 
   useEffect(() => {
     getParticipants().then(setParticipants);
@@ -64,20 +81,32 @@ export default function AssEditor({
         assignments: cleanAssignments
       };
       
-      await ipcRenderer.invoke('save-episode', updatedEpisode);
+      await ipcSafe.invoke('save-episode', updatedEpisode);
       
       // Also update global mapping if needed
       if (currentEpisode.projectId && currentEpisode.project) {
-        const mapping = currentAssignments.reduce((acc, a) => {
-          if (a.dubberId) acc[a.characterName] = a.dubberId;
-          return acc;
-        }, {} as Record<string, string>);
+        const currentMapping: {characterName: string, dubberId: string}[] = currentAssignments
+          .filter(a => a.dubberId)
+          .map(a => ({ characterName: a.characterName, dubberId: a.dubberId }));
         
+        // Merge with existing global mapping
+        const existingMappingRaw = currentEpisode.project.globalMapping || '[]';
+        const existingMapping: {characterName: string, dubberId: string}[] = Array.isArray(JSON.parse(existingMappingRaw))
+          ? JSON.parse(existingMappingRaw)
+          : Object.entries(JSON.parse(existingMappingRaw)).map(([k, v]) => ({ characterName: k, dubberId: v as string }));
+
+        const mergedMapping = [...existingMapping];
+        currentMapping.forEach(m => {
+          const idx = mergedMapping.findIndex(em => em.characterName === m.characterName);
+          if (idx === -1) mergedMapping.push(m);
+          else mergedMapping[idx].dubberId = m.dubberId;
+        });
+
         const updatedProject = {
           ...currentEpisode.project,
-          globalMapping: JSON.stringify(mapping)
+          globalMapping: JSON.stringify(mergedMapping)
         };
-        await ipcRenderer.invoke('save-project', updatedProject);
+        await ipcSafe.invoke('save-project', updatedProject);
       }
       
       onRefresh();
@@ -86,72 +115,93 @@ export default function AssEditor({
     }
   };
 
-  const handleAnalyzeExisting = async () => {
-    if (!currentEpisode?.subPath) return;
+  const handleAnalyzeExisting = async (): Promise<RoleAssignment[]> => {
+    if (!currentEpisode?.subPath) return [];
     
-    // Prevent redundant analysis for the same episode if we already have assignments
-    if (lastAnalyzedEpisodeId.current === currentEpisode.id && assignments.length > 0) {
-      return;
-    }
-
     setStatus("Анализ существующих субтитров...");
     try {
-      const result = await ipcRenderer.invoke('get-raw-subtitles', currentEpisode.subPath);
+      const result = await ipcSafe.invoke('get-raw-subtitles', currentEpisode.subPath);
       
       if (result && result.actors) {
-        const newActors = result.actors;
-        setActors(newActors);
-
-        const globalMapping = currentEpisode?.project?.globalMapping
-          ? JSON.parse(currentEpisode.project.globalMapping)
-          : {};
-
-        setAssignments(prev => {
-          const existingNames = new Set(prev.map(a => a.characterName));
-          const toAdd = newActors.filter((name: string) => !existingNames.has(name));
-          
-          if (toAdd.length > 0) {
-            const newAssignments = toAdd.map((actor: string) => {
-              // Priority 1: Global mapping
-              let dubberId = globalMapping[actor] || "";
-              
-              // Priority 2: Case-insensitive nickname match if no global mapping
-              if (!dubberId) {
-                const matchedParticipant = participants.find(
-                  p => p.nickname.toLowerCase() === actor.toLowerCase()
-                );
-                if (matchedParticipant) {
-                  dubberId = matchedParticipant.id;
-                }
-              }
-
-              const dubber = participants.find(p => p.id === dubberId);
-              return {
-                id: Math.random().toString(),
-                episodeId: currentEpisode.id,
-                characterName: actor,
-                dubberId: dubberId,
-                dubber: dubber,
-                status: "PENDING" as const
-              };
-            });
-
-            const updated = [...prev, ...newAssignments];
-            // Auto-save the combined assignments
-            saveToDatabase(updated);
-            return updated;
-          }
-          return prev;
+        const aliases: Record<string, string> = JSON.parse(currentEpisode?.project?.characterAliases || '{}');
+        const rawActors: string[] = result.actors;
+        const lines: any[] = result.lines || [];
+        
+        // Calculate line counts per main character
+        const lineCounts: Record<string, number> = {};
+        lines.forEach(line => {
+          const nameToUse = line.name || line.style || "Unknown";
+          const mainName = aliases[nameToUse] || nameToUse;
+          lineCounts[mainName] = (lineCounts[mainName] || 0) + 1;
         });
 
+        // Map to main names and deduplicate
+        const mainActors = Array.from(new Set(rawActors.map(name => {
+          const nameToUse = name || "Unknown";
+          return aliases[nameToUse] || nameToUse;
+        })));
+        setActors(mainActors);
+
+        const globalMappingRaw = currentEpisode?.project?.globalMapping || '[]';
+        const globalMapping: {characterName: string, dubberId: string}[] = Array.isArray(JSON.parse(globalMappingRaw)) 
+          ? JSON.parse(globalMappingRaw) 
+          : Object.entries(JSON.parse(globalMappingRaw)).map(([k, v]) => ({ characterName: k, dubberId: v as string }));
+
+        const existingAssignments = assignments;
+        const existingNames = new Set(existingAssignments.map(a => a.characterName));
+        const toAdd = mainActors.filter((name: string) => !existingNames.has(name));
+        
+        const updatedPrev = existingAssignments.map(a => ({
+          ...a,
+          lineCount: lineCounts[a.characterName] || 0
+        }));
+
+        let finalAssignments: RoleAssignment[] = [];
+        if (toAdd.length > 0) {
+          const newAssignments = toAdd.map((actor: string) => {
+            // Priority 1: Global mapping
+            const mappingEntry = globalMapping.find(m => m.characterName === actor);
+            let dubberId = mappingEntry?.dubberId || "";
+            
+            // Priority 2: Case-insensitive nickname match if no global mapping
+            if (!dubberId) {
+              const matchedParticipant = participants.find(
+                p => p.nickname.toLowerCase() === actor.toLowerCase()
+              );
+              if (matchedParticipant) {
+                dubberId = matchedParticipant.id;
+              }
+            }
+
+            const dubber = participants.find(p => p.id === dubberId);
+            return {
+              id: Math.random().toString(),
+              episodeId: currentEpisode.id,
+              characterName: actor,
+              dubberId: dubberId,
+              dubber: dubber,
+              status: "PENDING" as const,
+              lineCount: lineCounts[actor] || 0
+            };
+          });
+
+          finalAssignments = [...updatedPrev, ...newAssignments];
+        } else {
+          finalAssignments = updatedPrev;
+        }
+
+        setAssignments(finalAssignments);
+        saveToDatabase(finalAssignments);
+
         lastAnalyzedEpisodeId.current = currentEpisode.id;
-        setStatus(`Анализ завершен. Найдено ${newActors.length} персонажей.`);
-      } else {
-        setStatus("Ошибка при анализе файла.");
+        setStatus(`Анализ завершен. Найдено ${mainActors.length} персонажей.`);
+        return finalAssignments;
       }
+      return assignments;
     } catch (error) {
       console.error("Parse error:", error);
       setStatus("Ошибка при анализе файла.");
+      return assignments;
     }
   };
 
@@ -163,6 +213,12 @@ export default function AssEditor({
       setAssignments(currentEpisode.assignments);
       setActors(currentEpisode.assignments.map(a => a.characterName));
       lastAnalyzedEpisodeId.current = currentEpisode.id;
+      
+      // If line counts are missing, trigger analysis
+      const hasLineCounts = currentEpisode.assignments.some(a => (a.lineCount || 0) > 0);
+      if (!hasLineCounts && currentEpisode.subPath) {
+        handleAnalyzeExisting();
+      }
     } else {
       // Only clear if it's a different episode
       if (lastAnalyzedEpisodeId.current !== currentEpisode.id) {
@@ -229,9 +285,9 @@ export default function AssEditor({
     reader.readAsText(file);
   };
 
-  const handleAssign = async (actor: string, dubberId: string) => {
+  const handleAssignById = async (assignmentId: string, dubberId: string) => {
     const dubber = participants.find(p => p.id === dubberId);
-    const newAssignments = assignments.map(a => a.characterName === actor ? {...a, dubberId, dubber} : a);
+    const newAssignments = assignments.map(a => a.id === assignmentId ? {...a, dubberId, dubber} : a);
     setAssignments(newAssignments);
     
     // Auto-save
@@ -239,6 +295,47 @@ export default function AssEditor({
       await saveToDatabase(newAssignments);
     }
   };
+
+  const handleAddDubberToCharacter = async (characterName: string) => {
+    const newAssignment: RoleAssignment = {
+      id: Math.random().toString(),
+      episodeId: currentEpisode!.id,
+      characterName,
+      dubberId: "",
+      status: "PENDING"
+    };
+    const newAssignments = [...assignments, newAssignment];
+    setAssignments(newAssignments);
+    
+    if (currentEpisode) {
+      await saveToDatabase(newAssignments);
+    }
+  };
+
+  const handleRemoveAssignment = async (assignmentId: string, characterName: string) => {
+    const charAssignments = assignments.filter(a => a.characterName === characterName);
+    let newAssignments;
+    if (charAssignments.length === 1) {
+      newAssignments = assignments.map(a => a.id === assignmentId ? { ...a, dubberId: "", dubber: undefined, substituteId: undefined, substitute: undefined } : a);
+    } else {
+      newAssignments = assignments.filter(a => a.id !== assignmentId);
+    }
+    setAssignments(newAssignments);
+    
+    if (currentEpisode) {
+      await saveToDatabase(newAssignments);
+    }
+  };
+
+  interface RawSubtitleLine {
+    id: number;
+    start: string;
+    end: string;
+    style: string;
+    name: string;
+    text: string;
+    rawLineIndex: number;
+  }
 
   const handleSetSubstitute = async (assignmentId: string, substituteId: string) => {
     const newAssignments = assignments.map(a => a.id === assignmentId ? {...a, substituteId} : a);
@@ -250,6 +347,114 @@ export default function AssEditor({
     }
   };
 
+  const checkConsecutiveDubberLines = async (currentAssignments: RoleAssignment[]) => {
+    if (!currentEpisode?.subPath) return;
+
+    try {
+      const lines: RawSubtitleLine[] = await ipcSafe.invoke('get-raw-subtitles', currentEpisode.subPath);
+      
+      const warnings: string[] = [];
+      
+      for (let i = 0; i < lines.length - 1; i++) {
+        const line1 = lines[i];
+        const line2 = lines[i + 1];
+        
+        if (!line1.name || !line2.name || line1.name === line2.name) continue;
+        
+        const assignment1 = currentAssignments.find(a => a.characterName === line1.name);
+        const assignment2 = currentAssignments.find(a => a.characterName === line2.name);
+        
+        if (assignment1 && assignment2 && assignment1.dubberId && assignment2.dubberId && assignment1.dubberId === assignment2.dubberId) {
+          warnings.push(`Дабер ${assignment1.dubber?.nickname || assignment1.dubberId} озвучивает подряд персонажей ${line1.name} и ${line2.name} (строки ${line1.rawLineIndex} и ${line2.rawLineIndex})`);
+        }
+      }
+      
+      if (warnings.length > 0) {
+        setStatus(`Внимание: ${warnings.length} случаев подряд озвучки одним дабером!`);
+        console.warn("Consecutive dubber lines:", warnings);
+      } else {
+        setStatus("Распределение ролей корректно.");
+      }
+    } catch (error) {
+      console.error("Error checking consecutive lines:", error);
+    }
+  };
+
+
+
+  useEffect(() => {
+    if (assignments.length > 0) {
+      checkConsecutiveDubberLines(assignments);
+    }
+  }, [assignments]);
+
+  const handleLinkAsAlias = async (aliasName: string, mainName: string) => {
+    if (!currentEpisode || !currentEpisode.project) return;
+    if (aliasName === mainName) return;
+
+    const confirmed = window.confirm(`Связать "${aliasName}" как алиас для "${mainName}"? Все реплики "${aliasName}" будут переназначены на "${mainName}".`);
+    if (!confirmed) return;
+
+    try {
+      // 1. Update project aliases
+      const currentAliases: Record<string, string> = JSON.parse(currentEpisode.project.characterAliases || '{}');
+      currentAliases[aliasName] = mainName;
+      
+      const updatedProject = {
+        ...currentEpisode.project,
+        characterAliases: JSON.stringify(currentAliases)
+      };
+      await ipcSafe.invoke('save-project', updatedProject);
+
+      // 2. Merge assignments in current episode
+      const aliasAssignments = assignments.filter(a => a.characterName === aliasName);
+      let updatedAssignments = assignments.filter(a => a.characterName !== aliasName);
+      
+      aliasAssignments.forEach(aa => {
+        const alreadyHasDubber = updatedAssignments.some(a => a.characterName === mainName && a.dubberId === aa.dubberId);
+        if (!alreadyHasDubber && aa.dubberId) {
+           updatedAssignments.push({
+             ...aa,
+             characterName: mainName,
+             id: Math.random().toString()
+           });
+        }
+      });
+
+      if (updatedAssignments.filter(a => a.characterName === mainName).length === 0) {
+        if (aliasAssignments.length > 0) {
+          aliasAssignments.forEach(aa => {
+            updatedAssignments.push({
+              ...aa,
+              characterName: mainName,
+              id: Math.random().toString()
+            });
+          });
+        } else {
+          updatedAssignments.push({
+            id: Math.random().toString(),
+            episodeId: currentEpisode.id,
+            characterName: mainName,
+            dubberId: "",
+            status: "PENDING"
+          });
+        }
+      }
+
+      setAssignments(updatedAssignments);
+      await saveToDatabase(updatedAssignments);
+      
+      // 3. Update actors list
+      setActors(prev => prev.filter(a => a !== aliasName));
+      
+      setLinkingCharacter(null);
+      setStatus(`Персонаж "${aliasName}" успешно связан с "${mainName}".`);
+      onRefresh();
+    } catch (error) {
+      console.error("Link alias error:", error);
+      setStatus("Ошибка при связывании алиаса.");
+    }
+  };
 
   const handleClearAssignments = async () => {
     if (!window.confirm("Вы уверены, что хотите очистить ВСЕ распределения ролей для этого эпизода?")) return;
@@ -272,7 +477,7 @@ export default function AssEditor({
         ...currentEpisode,
         status: "RECORDING" as const
       };
-      await ipcRenderer.invoke('save-episode', updatedEpisode);
+      await ipcSafe.invoke('save-episode', updatedEpisode);
       setStatus("Статус обновлен! Теперь можно приступать к записи.");
       onRefresh();
     } catch (error) {
@@ -285,20 +490,29 @@ export default function AssEditor({
 
   const handleSplitAss = async () => {
     if (!currentEpisode || !currentEpisode.subPath) return;
+    setIsSplitting(true);
     setStatus("Генерация разделенных файлов...");
 
     try {
       const projectTitle = currentEpisode.project?.title || "Project";
       const subDir = `${projectTitle}/Episode_${currentEpisode.number || "0"}/Subtitles/output_dubbers`;
       
-      const config = await ipcRenderer.invoke('get-config');
+      const config = await ipcSafe.invoke('get-config');
       const baseDir = config.baseDir || '';
       const outputDirectory = `${baseDir}/${subDir}`;
 
-      const data = await ipcRenderer.invoke('split-subs-by-dubber', {
+      const options = {
+        distributeGroups,
+        distributeMultipleRoles,
+        saveSignsInAss,
+        outputFormat
+      };
+
+      const data = await ipcSafe.invoke('split-subs-by-dubber', {
         assFilePath: currentEpisode.subPath,
         outputDirectory,
-        assignments
+        assignments,
+        options
       });
 
       if (data && data.success) {
@@ -311,6 +525,108 @@ export default function AssEditor({
     } catch (error) {
       console.error("Split error:", error);
       setStatus("Ошибка при разделении файлов.");
+    } finally {
+      setIsSplitting(false);
+    }
+  };
+
+  const handleGenerateStartMessage = async () => {
+    if (!currentEpisode) return;
+    
+    let currentAssignments = assignments;
+    // Refresh line counts before generating if they are all zero
+    const hasLineCounts = assignments.some(a => (a.lineCount || 0) > 0);
+    if (!hasLineCounts && currentEpisode.subPath) {
+      currentAssignments = await handleAnalyzeExisting();
+    }
+    
+    const msg = generateStartEpisodeMessage({ ...currentEpisode, assignments: currentAssignments }, participants);
+    setGeneratedMessage(msg);
+    setIsMessageModalOpen(true);
+  };
+
+  const [showConsecutiveWarnings, setShowConsecutiveWarnings] = useState(false);
+  const [consecutiveWarnings, setConsecutiveWarnings] = useState<any[]>([]);
+
+  const parseAssTime = (timeStr: string) => {
+    const parts = timeStr.split(':');
+    if (parts.length === 3) {
+      const hours = parseInt(parts[0], 10);
+      const minutes = parseInt(parts[1], 10);
+      const seconds = parseFloat(parts[2]);
+      return (hours * 3600) + (minutes * 60) + seconds;
+    }
+    return 0;
+  };
+
+  const handleCheckConsecutiveLines = async () => {
+    if (!currentEpisode?.subPath) return;
+    setStatus("Проверка на склейки...");
+    try {
+      const result = await ipcSafe.invoke('get-raw-subtitles', currentEpisode.subPath);
+      if (!result || !result.lines) {
+        setStatus("Ошибка при чтении субтитров.");
+        return;
+      }
+
+      const aliases: Record<string, string> = JSON.parse(currentEpisode?.project?.characterAliases || '{}');
+      
+      const linesWithDubbers = result.lines.map((line: any) => {
+        const charName = aliases[line.name] || line.name;
+        const assignment = assignments.find(a => a.characterName === charName);
+        const dubberId = assignment?.substituteId || assignment?.dubberId;
+        const dubber = participants.find(p => p.id === dubberId);
+        return {
+          ...line,
+          mainCharacter: charName,
+          dubberId: dubberId,
+          dubberName: dubber?.nickname || "Неизвестно",
+          startTime: parseAssTime(line.start),
+          endTime: parseAssTime(line.end)
+        };
+      }).filter((l: any) => l.dubberId && l.mainCharacter);
+
+      linesWithDubbers.sort((a: any, b: any) => a.startTime - b.startTime);
+
+      const warnings: any[] = [];
+      const dubberLines: Record<string, any[]> = {};
+      linesWithDubbers.forEach((l: any) => {
+        if (!dubberLines[l.dubberId]) dubberLines[l.dubberId] = [];
+        dubberLines[l.dubberId].push(l);
+      });
+
+      for (const dubberId in dubberLines) {
+        const dLines = dubberLines[dubberId];
+        for (let i = 0; i < dLines.length - 1; i++) {
+          const current = dLines[i];
+          const next = dLines[i+1];
+          
+          if (current.mainCharacter !== next.mainCharacter) {
+            const gap = next.startTime - current.endTime;
+            if (gap < 2) {
+              warnings.push({
+                dubberName: current.dubberName,
+                char1: current.mainCharacter,
+                char2: next.mainCharacter,
+                time1: current.start,
+                end1: current.end,
+                time2: next.start,
+                end2: next.end,
+                text1: current.text,
+                text2: next.text,
+                gap: gap
+              });
+            }
+          }
+        }
+      }
+
+      setConsecutiveWarnings(warnings);
+      setShowConsecutiveWarnings(true);
+      setStatus(`Проверка завершена. Найдено склеек: ${warnings.length}`);
+    } catch (error) {
+      console.error(error);
+      setStatus("Ошибка при проверке склеек.");
     }
   };
 
@@ -322,11 +638,11 @@ export default function AssEditor({
       const projectTitle = currentEpisode.project?.title || "Project";
       const subDir = `${projectTitle}/Episode_${currentEpisode.number || "0"}/Subtitles`;
       
-      const config = await ipcRenderer.invoke('get-config');
+      const config = await ipcSafe.invoke('get-config');
       const baseDir = config.baseDir || '';
       const outputPath = `${baseDir}/${subDir}/${projectTitle}_Ep${currentEpisode.number}_Full_Roles.ass`;
 
-      const result = await ipcRenderer.invoke('export-full-ass-with-roles', {
+      const result = await ipcSafe.invoke('export-full-ass-with-roles', {
         assFilePath: currentEpisode.subPath,
         outputPath,
         assignments
@@ -344,8 +660,8 @@ export default function AssEditor({
   };
 
   return (
-    <div className="p-8 max-w-6xl mx-auto w-full space-y-8">
-      <div className="flex items-center justify-between mb-8">
+    <div className="max-w-6xl mx-auto w-full h-full flex flex-col space-y-4 pb-8 overflow-hidden">
+      <div className="flex items-center justify-between shrink-0">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-xl flex items-center justify-center shadow-lg">
             <Scissors className="w-5 h-5 text-white" />
@@ -369,6 +685,7 @@ export default function AssEditor({
         <div className="flex bg-neutral-900 rounded-lg p-1 border border-neutral-800">
           <button
             onClick={() => setActiveTab("raw")}
+            title="Переключиться на редактор разметки реплик"
             className={`flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-colors ${
               activeTab === "raw"
                 ? "bg-neutral-800 text-white shadow-sm"
@@ -380,6 +697,7 @@ export default function AssEditor({
           </button>
           <button
             onClick={() => setActiveTab("roles")}
+            title="Переключиться на распределение ролей"
             className={`flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-colors ${
               activeTab === "roles"
                 ? "bg-neutral-800 text-white shadow-sm"
@@ -389,16 +707,32 @@ export default function AssEditor({
             <User className="w-4 h-4" />
             Распределение ролей
           </button>
+          <button
+            onClick={() => setActiveTab("translate")}
+            title="Переключиться на панель перевода"
+            className={`flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+              activeTab === "translate"
+                ? "bg-neutral-800 text-white shadow-sm"
+                : "text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800/50"
+            }`}
+          >
+            <Languages className="w-4 h-4" />
+            Перевод
+          </button>
         </div>
       </div>
 
       {activeTab === "raw" ? (
-        <RawSubtitleEditor
-          currentEpisode={currentEpisode}
-          onRefresh={onRefresh}
-        />
+        <div className="flex-1 overflow-hidden">
+          <RawSubtitleEditor
+            currentEpisode={currentEpisode}
+            onRefresh={onRefresh}
+          />
+        </div>
+      ) : activeTab === "translate" ? (
+        <TranslatePanel currentEpisode={currentEpisode} />
       ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 flex-1 overflow-y-auto min-h-0 pb-4 pr-2">
           <div className="lg:col-span-1 space-y-6">
             <div className="bg-neutral-900 border border-neutral-800 rounded-xl p-6 shadow-xl">
               <h2 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
@@ -409,6 +743,7 @@ export default function AssEditor({
               {currentEpisode?.subPath && (
                 <button
                   onClick={handleAnalyzeExisting}
+                  title="Проанализировать загруженный файл субтитров"
                   className="w-full mb-4 px-4 py-3 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-medium transition-colors flex items-center justify-center gap-2 shadow-lg shadow-indigo-500/20"
                 >
                   <Scissors className="w-4 h-4" />
@@ -447,6 +782,7 @@ export default function AssEditor({
 
                 <button
                   onClick={handleStartRecording}
+                  title="Перевести эпизод в статус 'ЗАПИСЬ'"
                   disabled={
                     !currentEpisode ||
                     assignments.length === 0 ||
@@ -458,15 +794,79 @@ export default function AssEditor({
                   {isSaving ? "Обработка..." : currentEpisode?.status === "RECORDING" ? "Уже в записи" : "Начать запись (Статус)"}
                 </button>
 
+                <div className="p-4 bg-neutral-950 border border-neutral-800 rounded-lg space-y-3">
+                  <h3 className="text-xs font-bold text-neutral-500 uppercase tracking-wider flex items-center gap-2">
+                    <Settings2 className="w-3 h-3" />
+                    Настройки разделения
+                  </h3>
+                  <div className="space-y-2">
+                    <label className="flex items-center gap-2 cursor-pointer group">
+                      <input
+                        type="checkbox"
+                        checked={distributeGroups}
+                        onChange={(e) => setDistributeGroups(e.target.checked)}
+                        className="w-3.5 h-3.5 bg-neutral-900 border-neutral-700 rounded text-indigo-500 focus:ring-0"
+                      />
+                      <span className="text-[11px] text-neutral-400 group-hover:text-neutral-200">Распределять 'гуры/все'</span>
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer group">
+                      <input
+                        type="checkbox"
+                        checked={distributeMultipleRoles}
+                        onChange={(e) => setDistributeMultipleRoles(e.target.checked)}
+                        className="w-3.5 h-3.5 bg-neutral-900 border-neutral-700 rounded text-indigo-500 focus:ring-0"
+                      />
+                      <span className="text-[11px] text-neutral-400 group-hover:text-neutral-200">Множественные роли</span>
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer group">
+                      <input
+                        type="checkbox"
+                        checked={saveSignsInAss}
+                        onChange={(e) => setSaveSignsInAss(e.target.checked)}
+                        className="w-3.5 h-3.5 bg-neutral-900 border-neutral-700 rounded text-indigo-500 focus:ring-0"
+                      />
+                      <span className="text-[11px] text-neutral-400 group-hover:text-neutral-200">Сохранять надписи в .ass</span>
+                    </label>
+                    <div className="flex gap-3 pt-1">
+                      <label className="flex items-center gap-1.5 cursor-pointer">
+                        <input
+                          type="radio"
+                          name="outputFormat"
+                          value="ass"
+                          checked={outputFormat === "ass"}
+                          onChange={() => setOutputFormat("ass")}
+                          className="w-3 h-3 text-indigo-500 bg-neutral-900 border-neutral-700"
+                        />
+                        <span className="text-[11px] text-white">.ass</span>
+                      </label>
+                      <label className="flex items-center gap-1.5 cursor-pointer">
+                        <input
+                          type="radio"
+                          name="outputFormat"
+                          value="srt"
+                          checked={outputFormat === "srt"}
+                          onChange={() => setOutputFormat("srt")}
+                          className="w-3 h-3 text-indigo-500 bg-neutral-900 border-neutral-700"
+                        />
+                        <span className="text-[11px] text-white">.srt</span>
+                      </label>
+                    </div>
+                  </div>
+                </div>
+
                 <div className="grid grid-cols-2 gap-2">
                   <button
                     onClick={handleExportMapping}
+                    title="Экспортировать распределение ролей в JSON"
                     className="flex items-center justify-center gap-2 bg-neutral-800 hover:bg-neutral-700 text-white px-4 py-2.5 rounded-lg font-medium transition-colors border border-neutral-700"
                   >
                     <Download className="w-4 h-4" />
                     Экспорт
                   </button>
-                  <label className="flex items-center justify-center gap-2 bg-neutral-800 hover:bg-neutral-700 text-white px-4 py-2.5 rounded-lg font-medium transition-colors border border-neutral-700 cursor-pointer">
+                  <label 
+                    title="Импортировать распределение ролей из JSON"
+                    className="flex items-center justify-center gap-2 bg-neutral-800 hover:bg-neutral-700 text-white px-4 py-2.5 rounded-lg font-medium transition-colors border border-neutral-700 cursor-pointer"
+                  >
                     <FileUp className="w-4 h-4" />
                     Импорт
                     <input type="file" accept=".json" className="hidden" onChange={handleImportMapping} />
@@ -474,7 +874,18 @@ export default function AssEditor({
                 </div>
 
                 <button
+                  onClick={handleCheckConsecutiveLines}
+                  disabled={!currentEpisode?.subPath || assignments.length === 0}
+                  className="w-full bg-amber-900/20 hover:bg-amber-900/40 text-amber-400 px-4 py-2.5 rounded-lg font-medium transition-colors border border-amber-900/50 flex items-center justify-center gap-2"
+                  title="Проверить, нет ли подряд идущих реплик разных персонажей у одного дабера"
+                >
+                  <Edit3 className="w-4 h-4" />
+                  Проверить склейки
+                </button>
+
+                <button
                   onClick={handleExportFullAss}
+                  title="Экспортировать полный файл субтитров с ролями"
                   disabled={!currentEpisode?.subPath || assignments.length === 0}
                   className="w-full bg-neutral-800 hover:bg-neutral-700 disabled:opacity-50 text-white px-4 py-2.5 rounded-lg font-medium transition-colors border border-neutral-700 flex items-center justify-center gap-2"
                 >
@@ -484,20 +895,12 @@ export default function AssEditor({
 
                 <button
                   onClick={handleClearAssignments}
+                  title="Очистить все распределения ролей для этого эпизода"
                   disabled={assignments.length === 0}
                   className="w-full bg-red-900/20 hover:bg-red-900/40 text-red-400 px-4 py-2.5 rounded-lg font-medium transition-colors border border-red-900/50 flex items-center justify-center gap-2"
                 >
                   <Trash2 className="w-4 h-4" />
                   Очистить все роли
-                </button>
-
-                <button
-                  onClick={handleSplitAss}
-                  disabled={!currentEpisode?.subPath || assignments.length === 0}
-                  className="w-full bg-neutral-800 hover:bg-neutral-700 disabled:opacity-50 text-white px-4 py-2.5 rounded-lg font-medium transition-colors border border-neutral-700 flex items-center justify-center gap-2"
-                >
-                  <Scissors className="w-4 h-4" />
-                  Разделить по актерам (Пак)
                 </button>
 
                 <button
@@ -519,17 +922,39 @@ export default function AssEditor({
                   <Languages className="w-4 h-4 text-amber-400" />
                   Поливанов &rarr; Хэпберн
                 </button>
+
+                <div className="h-px bg-neutral-800 my-2" />
+
+                <button
+                  onClick={handleSplitAss}
+                  disabled={!currentEpisode?.subPath || assignments.length === 0 || isSplitting}
+                  className="w-full bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white px-4 py-2.5 rounded-lg font-medium transition-colors shadow-lg shadow-amber-500/20 flex items-center justify-center gap-2"
+                  title="Разделить реплики по даберам"
+                >
+                  <Scissors className="w-4 h-4" />
+                  {isSplitting ? "Разделение..." : "Разделить роли"}
+                </button>
+
+                <button
+                  onClick={handleGenerateStartMessage}
+                  disabled={assignments.length === 0}
+                  className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white px-4 py-2.5 rounded-lg font-medium transition-colors shadow-lg shadow-indigo-500/20 flex items-center justify-center gap-2"
+                  title="Сгенерировать сообщение для начала работы над серией"
+                >
+                  <MessageSquare className="w-4 h-4" />
+                  Сообщение старт серии
+                </button>
               </div>
             </div>
           </div>
 
           <div className="lg:col-span-2">
             <div className="bg-neutral-900 border border-neutral-800 rounded-xl shadow-xl overflow-hidden h-full flex flex-col">
-              <div className="p-4 border-b border-neutral-800 bg-neutral-950/50">
-                <h2 className="text-lg font-semibold text-white flex items-center gap-2">
-                  <User className="w-5 h-5 text-indigo-400" />
-                  Распределение ролей
-                </h2>
+              <div className="p-4 border-b border-neutral-800 flex items-center justify-between shrink-0">
+                <div className="flex items-center gap-2">
+                  <User className="w-5 h-5 text-indigo-500" />
+                  <h3 className="font-bold text-white">Распределение ролей</h3>
+                </div>
               </div>
 
               <div className="p-4 flex-1 overflow-y-auto">
@@ -539,65 +964,228 @@ export default function AssEditor({
                     <p>Загрузите файл для начала работы</p>
                   </div>
                 ) : (
-                  <div className="space-y-2">
-                    {assignments.map((assignment) => (
-                      <div
-                        key={assignment.id}
-                        className="flex items-center justify-between bg-neutral-950 border border-neutral-800 p-4 rounded-lg hover:border-neutral-700 transition-colors"
-                      >
-                        <div className="flex-1">
-                          <h4 className="text-neutral-200 font-medium">
-                            {assignment.characterName}
-                          </h4>
-                          <p className="text-xs text-neutral-500">
-                            Дабер: {assignment.dubber?.nickname || "Не назначен"}
-                          </p>
-                        </div>
-
-                        <div className="flex gap-2">
-                          <select
-                            value={assignment.dubberId}
-                            onChange={(e) =>
-                              handleAssign(assignment.characterName, e.target.value)
-                            }
-                            className="bg-neutral-900 border border-neutral-700 text-white rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500 transition-all appearance-none"
-                          >
-                            <option value="" disabled>
-                              -- Выберите дабера --
-                            </option>
-                            {participants
-                              .filter(p => 
-                                !currentEpisode?.project?.assignedDubberIds || 
-                                currentEpisode.project.assignedDubberIds.length === 0 ||
-                                currentEpisode.project.assignedDubberIds.includes(p.id)
-                              )
-                              .map((user) => (
-                                <option key={user.id} value={user.id}>
-                                  {user.nickname}
-                                </option>
-                              ))}
-                          </select>
+                  <div className="space-y-6">
+                    {/* Группировка по даберам */}
+                    {Object.entries(
+                      assignments.reduce((acc: Record<string, RoleAssignment[]>, curr: RoleAssignment) => {
+                        const dubberId = curr.dubberId || "unassigned";
+                        if (!acc[dubberId]) acc[dubberId] = [];
+                        acc[dubberId].push(curr);
+                        return acc;
+                      }, {} as Record<string, RoleAssignment[]>)
+                    ).map(([dubberId, dubberAssignments]: [string, RoleAssignment[]]) => {
+                      const dubber = participants.find(p => p.id === dubberId);
+                      const totalLines = dubberAssignments.reduce((sum: number, a: RoleAssignment) => sum + (a.lineCount || 0), 0);
+                      
+                      return (
+                        <div key={dubberId} className="bg-neutral-950 border border-neutral-800 rounded-lg overflow-hidden">
+                          <div className="bg-neutral-900/50 px-4 py-2 border-b border-neutral-800 flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                              <span className={`font-semibold ${dubberId === 'unassigned' ? 'text-amber-500' : 'text-indigo-400'}`}>
+                                {dubber?.nickname || (dubberId === 'unassigned' ? "Не распределено" : "Неизвестный")}
+                              </span>
+                              <span className="text-[10px] bg-neutral-800 text-neutral-400 px-2 py-0.5 rounded-full border border-neutral-700">
+                                {totalLines} реплик
+                              </span>
+                            </div>
+                          </div>
                           
-                          <select
-                            value={assignment.substituteId || ""}
-                            onChange={(e) =>
-                              handleSetSubstitute(assignment.id, e.target.value)
-                            }
-                            className="bg-neutral-900 border border-neutral-700 text-white rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500/50 focus:border-purple-500 transition-all appearance-none"
-                          >
-                            <option value="">-- Замена --</option>
-                            {participants.map((user) => (
-                              <option key={user.id} value={user.id}>
-                                {user.nickname}
-                              </option>
+                          <div className="p-3 space-y-3">
+                            {dubberAssignments.map((assignment: RoleAssignment) => (
+                              <div key={assignment.id} className="flex flex-col gap-1.5 p-2 bg-neutral-900/30 rounded border border-neutral-800/50">
+                                <div className="flex items-center justify-between">
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-sm text-neutral-200 font-medium">{assignment.characterName}</span>
+                                    <span className="text-[10px] text-neutral-500">({assignment.lineCount || 0} реп.)</span>
+                                    <button
+                                      onClick={() => setLinkingCharacter(linkingCharacter === assignment.characterName ? null : assignment.characterName)}
+                                      className={`text-[10px] px-1 rounded transition-colors ${
+                                        linkingCharacter === assignment.characterName 
+                                          ? 'bg-amber-500/20 text-amber-400' 
+                                          : 'text-neutral-600 hover:text-amber-400'
+                                      }`}
+                                    >
+                                      Связать
+                                    </button>
+                                  </div>
+                                  <button
+                                    onClick={() => handleAddDubberToCharacter(assignment.characterName)}
+                                    className="text-[10px] text-indigo-500 hover:text-indigo-400 flex items-center gap-0.5"
+                                  >
+                                    <Plus className="w-2.5 h-2.5" />
+                                    Даббер
+                                  </button>
+                                </div>
+
+                                {linkingCharacter === assignment.characterName && (
+                                  <div className="my-2 p-2 bg-neutral-900 border border-amber-500/30 rounded text-[10px]">
+                                    <p className="text-amber-400 mb-1">Основной персонаж:</p>
+                                    <div className="flex flex-wrap gap-1">
+                                      {Array.from(new Set(assignments.map(a => a.characterName)))
+                                        .filter(name => name !== assignment.characterName)
+                                        .map((name: string) => (
+                                          <button
+                                            key={name}
+                                            onClick={() => handleLinkAsAlias(assignment.characterName, name)}
+                                            className="px-1.5 py-0.5 bg-neutral-800 hover:bg-amber-500/20 text-neutral-300 rounded border border-neutral-700"
+                                          >
+                                            {name}
+                                          </button>
+                                        ))}
+                                    </div>
+                                  </div>
+                                )}
+
+                                <div className="flex gap-2">
+                                  <select
+                                    value={assignment.dubberId}
+                                    onChange={(e) => handleAssignById(assignment.id, e.target.value)}
+                                    className="flex-1 bg-neutral-900 border border-neutral-700 text-white rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500 transition-all"
+                                  >
+                                    <option value="">-- Выберите дабера --</option>
+                                    {participants.map((user) => (
+                                      <option key={user.id} value={user.id}>
+                                        {user.nickname}
+                                      </option>
+                                    ))}
+                                  </select>
+                                  
+                                  <select
+                                    value={assignment.substituteId || ""}
+                                    onChange={(e) => handleSetSubstitute(assignment.id, e.target.value)}
+                                    className="w-1/3 bg-neutral-900 border border-neutral-700 text-white rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-purple-500 transition-all"
+                                  >
+                                    <option value="">-- Замена --</option>
+                                    {participants.map((user) => (
+                                      <option key={user.id} value={user.id}>
+                                        {user.nickname}
+                                      </option>
+                                    ))}
+                                  </select>
+
+                                  <button
+                                    onClick={() => handleRemoveAssignment(assignment.id, assignment.characterName)}
+                                    className="p-1 text-neutral-500 hover:text-red-400 transition-colors"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                              </div>
                             ))}
-                          </select>
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showConsecutiveWarnings && (
+        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
+          <div className="bg-neutral-900 border border-neutral-800 rounded-xl p-6 max-w-4xl w-full max-h-[80vh] flex flex-col shadow-2xl">
+            <div className="flex items-center justify-between mb-6 shrink-0">
+              <h2 className="text-xl font-bold text-white flex items-center gap-2">
+                <Edit3 className="w-6 h-6 text-amber-500" />
+                Проверка на склейки
+              </h2>
+              <button 
+                onClick={() => setShowConsecutiveWarnings(false)}
+                className="text-neutral-500 hover:text-white transition-colors"
+              >
+                Закрыть
+              </button>
+            </div>
+            
+            <div className="flex-1 overflow-y-auto min-h-0 space-y-4 pr-2">
+              {consecutiveWarnings.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-12 text-green-500">
+                  <CheckSquare className="w-12 h-12 mb-4 opacity-50" />
+                  <p className="text-lg font-medium">Склеек не найдено!</p>
+                  <p className="text-sm text-neutral-400 mt-2">Все даберы имеют достаточно времени между репликами разных персонажей.</p>
+                </div>
+              ) : (
+                <>
+                  <p className="text-sm text-amber-400 mb-4">
+                    Найдено {consecutiveWarnings.length} потенциальных склеек (разрыв менее 2 секунд между репликами разных персонажей у одного дабера).
+                  </p>
+                  {consecutiveWarnings.map((w, i) => (
+                    <div key={i} className="bg-neutral-950 border border-neutral-800 rounded-lg p-4">
+                      <div className="flex items-center gap-2 mb-3">
+                        <span className="px-2 py-1 bg-indigo-500/20 text-indigo-400 rounded text-xs font-bold">
+                          {w.dubberName}
+                        </span>
+                        <span className="text-neutral-500 text-xs">
+                          зазор: <span className={w.gap < 0 ? "text-red-400 font-bold" : "text-amber-400 font-bold"}>{w.gap.toFixed(2)}с</span>
+                        </span>
+                      </div>
+                      
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="bg-neutral-900 border border-neutral-800 p-3 rounded">
+                          <div className="flex justify-between items-center mb-1">
+                            <span className="text-xs font-bold text-blue-400">{w.char1}</span>
+                            <span className="text-[10px] text-neutral-500 font-mono">{w.time1} - {w.end1}</span>
+                          </div>
+                          <p className="text-sm text-neutral-300">{w.text1}</p>
+                        </div>
+                        <div className="bg-neutral-900 border border-neutral-800 p-3 rounded">
+                          <div className="flex justify-between items-center mb-1">
+                            <span className="text-xs font-bold text-purple-400">{w.char2}</span>
+                            <span className="text-[10px] text-neutral-500 font-mono">{w.time2} - {w.end2}</span>
+                          </div>
+                          <p className="text-sm text-neutral-300">{w.text2}</p>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Message Modal */}
+      {isMessageModalOpen && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-[60] p-4">
+          <div className="bg-neutral-900 border border-neutral-800 rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden flex flex-col max-h-[80vh]">
+            <div className="p-4 border-b border-neutral-800 flex items-center justify-between bg-neutral-950/50">
+              <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                <MessageSquare className="w-5 h-5 text-blue-400" />
+                Сгенерированное сообщение
+              </h3>
+              <button 
+                onClick={() => setIsMessageModalOpen(false)}
+                className="text-neutral-500 hover:text-white transition-colors"
+              >
+                <X className="w-6 h-6" />
+              </button>
+            </div>
+            <div className="p-6 overflow-y-auto">
+              <textarea
+                readOnly
+                value={generatedMessage}
+                className="w-full h-64 bg-neutral-950 border border-neutral-800 rounded-xl p-4 text-neutral-300 font-mono text-sm focus:outline-none focus:border-blue-500 resize-none"
+              />
+            </div>
+            <div className="p-4 border-t border-neutral-800 bg-neutral-950/50 flex gap-3">
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(generatedMessage);
+                  setStatus("Сообщение скопировано в буфер обмена!");
+                }}
+                className="flex-1 px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-medium transition-colors flex items-center justify-center gap-2"
+              >
+                Копировать
+              </button>
+              <button
+                onClick={() => setIsMessageModalOpen(false)}
+                className="flex-1 px-4 py-2.5 bg-neutral-800 hover:bg-neutral-700 text-white rounded-lg font-medium transition-colors"
+              >
+                Закрыть
+              </button>
             </div>
           </div>
         </div>

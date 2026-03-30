@@ -11,11 +11,23 @@ export const formatDeadline = (dateStr?: string) => {
 };
 
 export const generateStartEpisodeMessage = (episode: Episode, participants: Participant[]) => {
-  const dubbers = episode.assignments
-    .map(a => participants.find(p => p.id === a.dubberId))
-    .filter(Boolean) as Participant[];
+  const dubberLineCounts: Record<string, number> = {};
   
-  const dubberMentions = dubbers.map(d => d.telegram.startsWith('@') ? d.telegram : `@${d.telegram}`).join('\n');
+  // Calculate line counts per dubber from assignments
+  episode.assignments?.forEach(as => {
+    if (as.dubberId && typeof as.lineCount === 'number') {
+      dubberLineCounts[as.dubberId] = (dubberLineCounts[as.dubberId] || 0) + as.lineCount;
+    }
+  });
+
+  const assignedDubberIds = new Set(episode.assignments?.map(a => a.dubberId).filter(Boolean) || []);
+  const assignedDubbers = participants.filter(p => assignedDubberIds.has(p.id));
+  
+  const dubberMentions = assignedDubbers.map(d => {
+    const mention = d.telegram.startsWith('@') ? d.telegram : `@${d.telegram}`;
+    const count = dubberLineCounts[d.id] || 0;
+    return `${d.nickname} (${mention}) — ${count} реп.`;
+  }).join('\n');
 
   return `📢 ${episode.project?.title}
 👾Серия: #${episode.number}
@@ -24,23 +36,63 @@ export const generateStartEpisodeMessage = (episode: Episode, participants: Part
 Если вы по каким то причинам не успеваете в дедлайн и знаете об этом, напишите об этом сразу, чтобы я мог найти вам замену или распределить сабы.
 
 В серии учавствуют:
-${dubberMentions}`;
+${dubberMentions || '• Даберы не назначены'}`;
 };
 
 export const generateFixesIssuedMessage = (episode: Episode, participants: Participant[]) => {
-  const assignmentsWithFixes = episode.assignments.filter(a => a.status === 'FIXES_NEEDED');
-  const dubbersWithFixes = assignmentsWithFixes
-    .map(a => participants.find(p => p.id === a.dubberId))
-    .filter(Boolean) as Participant[];
+  const assignments = episode.assignments || [];
   
-  // Unique dubbers
-  const uniqueDubbers = Array.from(new Set(dubbersWithFixes.map(d => d.id)))
-    .map(id => dubbersWithFixes.find(d => d.id === id)!);
+  // Group by dubber
+  const dubberFixes: Record<string, { dubber: Participant, fixes: { character: string, comments: any[] }[] }> = {};
+  
+  assignments.forEach(as => {
+    const dubberId = as.dubberId;
+    if (!dubberId) return;
+    
+    // Only include assignments that actually need fixes
+    if (as.status !== 'FIXES_NEEDED') return;
+    
+    const dubber = participants.find(p => p.id === dubberId);
+    if (!dubber) return;
+    
+    let comments = [];
+    try {
+      comments = JSON.parse(as.comments || '[]');
+    } catch (e) {
+      console.error('Failed to parse comments for assignment', as.id, e);
+    }
+    
+    if (!Array.isArray(comments) || comments.length === 0) return;
 
-  const dubberSections = uniqueDubbers.map(d => {
-    const mention = d.telegram.startsWith('@') ? d.telegram : `@${d.telegram}`;
-    return `${mention}:\n\n\n\n`;
-  }).join('\n');
+    if (!dubberFixes[dubberId]) {
+      dubberFixes[dubberId] = { dubber, fixes: [] };
+    }
+    
+    dubberFixes[dubberId].fixes.push({
+      character: as.characterName,
+      comments
+    });
+  });
+
+  const dubberIds = Object.keys(dubberFixes);
+  if (dubberIds.length === 0) return null;
+
+  const dubberSections = dubberIds.map(id => {
+    const { dubber, fixes } = dubberFixes[id];
+    const mention = dubber.telegram.startsWith('@') ? dubber.telegram : `@${dubber.telegram}`;
+    
+    const fixesText = fixes.map(f => {
+      const characterFixes = f.comments.map(c => {
+        const time = typeof c.timestamp === 'number' 
+          ? new Date(c.timestamp * 1000).toISOString().substr(14, 5)
+          : '??:??';
+        return `  • [${time}] ${c.text}`;
+      }).join('\n');
+      return `🔹 ${f.character}:\n${characterFixes}`;
+    }).join('\n\n');
+
+    return `${dubber.nickname} (${mention}):\n${fixesText}`;
+  }).join('\n\n');
 
   const projectSlug = episode.project?.title.toLowerCase().replace(/\s+/g, '_') || 'project';
 
@@ -51,6 +103,7 @@ export const generateFixesIssuedMessage = (episode: Episode, participants: Parti
 Ребята, ознакомьтесь с правками и исправьте их до дедлайна! 🎙
 
 ${dubberSections}
+
 ━━━━━━ ◦ ❖ ◦ ━━━━━━
 
 #${projectSlug}_fix
@@ -58,22 +111,22 @@ ${dubberSections}
 };
 
 export const generateStatusMessage = (episode: Episode, participants: Participant[]) => {
-  const pendingRoads = episode.assignments.filter(a => a.status === 'PENDING');
-  const pendingFixes = episode.assignments.filter(a => a.status === 'FIXES_NEEDED');
+  const assignedDubberIds = new Set(episode.assignments?.map(a => a.dubberId) || []);
+  const assignedDubbers = participants.filter(p => assignedDubberIds.has(p.id));
 
-  const roadsMentions = pendingRoads.map(a => {
-    const d = participants.find(p => p.id === a.dubberId);
-    if (!d) return '• Неизвестно';
-    const mention = d.telegram.startsWith('@') ? d.telegram : `@${d.telegram}`;
-    return `• ${mention}`;
-  }).join('\n');
+  const roadsMentions = assignedDubbers
+    .filter(p => (episode.assignments || []).some(a => a.dubberId === p.id && a.status === 'PENDING'))
+    .map(p => {
+      const mention = p.telegram.startsWith('@') ? p.telegram : `@${p.telegram}`;
+      return `• ${mention}`;
+    }).join('\n');
 
-  const fixesMentions = pendingFixes.map(a => {
-    const d = participants.find(p => p.id === a.dubberId);
-    if (!d) return '• Неизвестно';
-    const mention = d.telegram.startsWith('@') ? d.telegram : `@${d.telegram}`;
-    return `• ${mention}`;
-  }).join('\n');
+  const fixesMentions = assignedDubbers
+    .filter(p => (episode.assignments || []).some(a => a.dubberId === p.id && a.status === 'FIXES_NEEDED'))
+    .map(p => {
+      const mention = p.telegram.startsWith('@') ? p.telegram : `@${p.telegram}`;
+      return `• ${mention}`;
+    }).join('\n');
 
   return `📢 ${episode.project?.title}
 👾 Серия: ${episode.number}
@@ -105,16 +158,23 @@ export const generateTGPostMessage = (episode: Episode, participants: Participan
   const projectSlug = episode.project?.title.toLowerCase().replace(/\s+/g, '_') || 'project';
   const total = episode.project?.totalEpisodes || 12;
 
-  return `${episode.project?.title}
-👾${episode.number}/${total}👾
+  const seId = episode.project?.soundEngineerId;
+  const se = seId ? participants.find(p => p.id === seId) : null;
+  const seMention = se ? (se.telegram.startsWith('@') ? se.telegram : `@${se.telegram}`) : '@Tenmag';
 
+  const emoji = episode.project?.emoji || '📢';
+  const releaseType = episode.project?.releaseType === 'VOICEOVER' ? 'Закадр' : episode.project?.releaseType === 'RECAST' ? 'Рекаст' : 'Редаб';
+
+  return `${emoji} ${episode.project?.title} (${releaseType})
+👾${episode.number}/${total}👾
+ 
 ━━━━━━ ◦ ❖ ◦ ━━━━━━
 Роли озвучили:
  
 ${dubberLinks}
-
+ 
 Тайминг и работа со звуком: 
-@Tenmag
+${seMention}
 ━━━━━━ ◦ ❖ ◦ ━━━━━━
 #${projectSlug}`;
 };
@@ -135,13 +195,20 @@ export const generateVKPostMessage = (episode: Episode, participants: Participan
   const total = episode.project?.totalEpisodes || 12;
   const links = episode.project?.links ? JSON.parse(episode.project.links) : {};
 
-  return `${episode.project?.title}
+  const seId = episode.project?.soundEngineerId;
+  const se = seId ? participants.find(p => p.id === seId) : null;
+  const seName = se ? se.nickname : 'Tenmag';
+
+  const emoji = episode.project?.emoji || '📢';
+  const releaseType = episode.project?.releaseType === 'VOICEOVER' ? 'Закадр' : episode.project?.releaseType === 'RECAST' ? 'Рекаст' : 'Редаб';
+
+  return `${emoji} ${episode.project?.title} (${releaseType})
 👾${episode.number}/${total}👾
-
+ 
 | Роли озвучили: ${dubberInfo}
-
-| Тайминг и работа со звуком: @Tenmag
-
+ 
+| Тайминг и работа со звуком: ${seName}
+ 
 ➪ Аниме 365: : ${links.anime365 || ''}
 ➪ Телеграмм:: ${links.tg || ''}
 ➪ Kodik: : ${links.kodik || ''}`;

@@ -3,9 +3,12 @@ const path = require('path');
 const fs = require('fs/promises');
 const axios = require('axios');
 const { exec } = require('child_process');
-const { bakeSubtitles, transcodeToMp4 } = require('./services/ffmpegService.cjs');
-const { getRawSubtitles, saveRawSubtitles, splitSubsByActor, splitSubsByDubber, exportFullAssWithRoles } = require('./services/subtitleService.cjs');
+const { bakeSubtitles, transcodeToMp4, setCustomFfmpegPath } = require('./services/ffmpegService.cjs');
+const { getRawSubtitles, saveRawSubtitles, saveTranslatedSubtitles, splitSubsByActor, splitSubsByDubber, exportFullAssWithRoles } = require('./services/subtitleService.cjs');
+
+const { translateText } = require('./services/translateService.cjs');
 const { SocialMediaBot } = require('./services/SocialMediaBot.cjs');
+
 
 let mainWindow = null;
 
@@ -104,6 +107,9 @@ ipcMain.handle('get-config', async () => {
 
 ipcMain.handle('save-config', async (event, config) => {
   await saveData('config.json', config);
+  if (config.ffmpegPath) {
+    setCustomFfmpegPath(config.ffmpegPath);
+  }
 });
 
 ipcMain.handle('select-folder', async () => {
@@ -133,7 +139,7 @@ ipcMain.handle('copy-file', async (event, { sourcePath, targetDir, fileName }) =
   try {
     const config = await getData('config.json');
     const baseDir = config.baseDir || app.getPath('userData');
-    const fullTargetDir = path.join(baseDir, targetDir);
+    const fullTargetDir = path.isAbsolute(targetDir) ? targetDir : path.join(baseDir, targetDir);
     
     await fs.mkdir(fullTargetDir, { recursive: true });
     const targetPath = path.join(fullTargetDir, fileName);
@@ -150,7 +156,7 @@ ipcMain.handle('save-file-buffer', async (event, { buffer, targetDir, fileName }
   try {
     const config = await getData('config.json');
     const baseDir = config.baseDir || app.getPath('userData');
-    const fullTargetDir = path.join(baseDir, targetDir);
+    const fullTargetDir = path.isAbsolute(targetDir) ? targetDir : path.join(baseDir, targetDir);
     
     await fs.mkdir(fullTargetDir, { recursive: true });
     const targetPath = path.join(fullTargetDir, fileName);
@@ -172,7 +178,7 @@ ipcMain.handle('create-dir', async (event, dirPath) => {
   try {
     const config = await getData('config.json');
     const baseDir = config.baseDir || app.getPath('userData');
-    const fullDir = path.join(baseDir, dirPath);
+    const fullDir = path.isAbsolute(dirPath) ? dirPath : path.join(baseDir, dirPath);
     await fs.mkdir(fullDir, { recursive: true });
     return { success: true, data: { path: fullDir } };
   } catch (error) {
@@ -277,13 +283,13 @@ ipcMain.handle('get-raw-subtitles', async (event, assFilePath) => {
   return await getRawSubtitles(assFilePath);
 });
 
-ipcMain.handle('save-raw-subtitles', async (event, { assFilePath, updates }) => {
-  await saveRawSubtitles(assFilePath, updates);
+ipcMain.handle('save-translated-subtitles', async (event, { assFilePath, translatedLines }) => {
+  await saveTranslatedSubtitles(assFilePath, translatedLines);
 });
 
-ipcMain.handle('split-subs-by-actor', async (event, { assFilePath, outputDirectory }) => {
-  const participantsData = await getData('participants.json');
-  return await splitSubsByActor(assFilePath, outputDirectory, participantsData);
+
+ipcMain.handle('split-subs-by-actor', async (event, { assFilePath, outputDirectory, options }) => {
+  return await splitSubsByActor(assFilePath, outputDirectory, options);
 });
 
 ipcMain.handle('split-subs-by-dubber', async (event, { assFilePath, outputDirectory, assignments }) => {
@@ -297,6 +303,92 @@ ipcMain.handle('export-full-ass-with-roles', async (event, { assFilePath, output
 });
 
 // Social Media Bot Handlers
+ipcMain.handle('generate-release-post', async (event, { apiKey, data }) => {
+  try {
+    const config = await getData('config.json');
+    const keyToUse = apiKey || config.polzaApiKey || '';
+    
+    if (!keyToUse) {
+      throw new Error('API ключ Polza.ai не настроен');
+    }
+
+    const bot = new SocialMediaBot(keyToUse);
+    const postText = await bot.generateReleasePost(data);
+    return { success: true, postText };
+  } catch (error) {
+    console.error('Generate post error:', error);
+    throw error;
+  }
+});
+
+// Export Handlers
+ipcMain.handle('export-dabber-files', async (event, { episode, targetDir }) => {
+  try {
+    const config = await getData('config.json');
+    const baseDir = config.baseDir || app.getPath('userData');
+    const exportDir = path.isAbsolute(targetDir) ? targetDir : path.join(baseDir, targetDir);
+    
+    // 1. Copy lightweight video
+    if (episode.rawPath) {
+      const videoName = path.basename(episode.rawPath);
+      await fs.mkdir(exportDir, { recursive: true });
+      await fs.copyFile(episode.rawPath, path.join(exportDir, videoName));
+    }
+
+    // 2. Copy general subtitles
+    if (episode.subPath) {
+      const subName = path.basename(episode.subPath);
+      await fs.copyFile(episode.subPath, path.join(exportDir, subName));
+    }
+
+    // 3. Generate and copy per-dubber subtitles
+    const participantsData = await getData('participants.json');
+    await splitSubsByDubber(episode.subPath, exportDir, episode.assignments, participantsData);
+
+    return { success: true };
+  } catch (error) {
+    console.error('Export dabber files error:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('export-sound-engineer-files', async (event, { episode, targetDir }) => {
+  try {
+    const config = await getData('config.json');
+    const baseDir = config.baseDir || app.getPath('userData');
+    const exportDir = path.isAbsolute(targetDir) ? targetDir : path.join(baseDir, targetDir);
+    await fs.mkdir(exportDir, { recursive: true });
+
+    // 1. Bake subtitles into video
+    const videoName = path.basename(episode.rawPath);
+    const bakedVideoPath = path.join(exportDir, `baked_${videoName}`);
+    await bakeSubtitles(episode.rawPath, episode.subPath, bakedVideoPath, () => {}, { useNvenc: config.useNvenc, gpuIndex: config.gpuIndex });
+
+    // 2. Copy dabber audio tracks
+    for (const upload of episode.uploads) {
+      if (upload.type === 'DUBBER_FILE') {
+        const fileName = path.basename(upload.path);
+        await fs.copyFile(upload.path, path.join(exportDir, fileName));
+      }
+    }
+
+    return { success: true };
+  } catch (error) {
+    console.error('Export sound engineer files error:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('generate-post', async (event, data) => {
+  const config = await getData('config.json');
+  const bot = new SocialMediaBot(config.polzaApiKey);
+  return await bot.generateReleasePost(data);
+});
+
+ipcMain.handle('translate-text', async (event, { text, sourceLang, destLang }) => {
+  return await translateText(text, sourceLang, destLang);
+});
+
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -316,7 +408,12 @@ function createWindow() {
   }
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  const config = await getData('config.json');
+  if (config && config.ffmpegPath) {
+    setCustomFfmpegPath(config.ffmpegPath);
+  }
+  
   createWindow();
 
   app.on('activate', () => {

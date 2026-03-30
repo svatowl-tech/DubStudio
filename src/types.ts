@@ -17,6 +17,7 @@ declare global {
 }
 
 export type EpisodeStatus = "UPLOAD" | "ROLES" | "RECORDING" | "QA" | "FIXES" | "SOUND_ENGINEERING" | "FINISHED";
+export type ReleaseType = "VOICEOVER" | "RECAST" | "REDUB";
 
 export interface Episode {
   id: string;
@@ -43,6 +44,7 @@ export interface RoleAssignment {
   substitute?: Participant;
   status: string; // "PENDING", "RECORDED", "APPROVED", "REJECTED", "FIXES_NEEDED"
   comments?: string; // JSON string
+  lineCount?: number;
 }
 
 export interface UploadedFile {
@@ -59,12 +61,20 @@ export interface UploadedFile {
 export interface Project {
   id: string;
   title: string;
+  originalTitle?: string;
   status: "ACTIVE" | "COMPLETED";
   lastActiveEpisode: number;
   totalEpisodes: number;
   assignedDubberIds: string[];
+  soundEngineerId?: string;
+  releaseType?: ReleaseType;
+  emoji?: string;
+  isOngoing?: boolean;
+  synopsis?: string;
+  posterUrl?: string;
   links?: string; // JSON string
   globalMapping?: string; // JSON string
+  characterAliases?: string; // JSON string: Record<string, string> (alias -> mainName)
   episodes: Episode[];
   createdAt: string;
   updatedAt: string;

@@ -6,7 +6,8 @@ export default function SettingsPanel() {
   const [settings, setSettings] = useState({
     exportPath: 'C:/PolzaStudio/Exports',
     nvencDevice: '0',
-    dbPath: 'C:/PolzaStudio/data.db'
+    dbPath: 'C:/PolzaStudio/data.db',
+    ffmpegPath: ''
   });
 
   const [gpus, setGpus] = useState<{ name: string, index: string }[]>([]);
@@ -83,6 +84,31 @@ export default function SettingsPanel() {
                 />
                 <button 
                   onClick={() => handleSelectFolder('dbPath')}
+                  className="bg-neutral-800 hover:bg-neutral-700 text-white px-4 rounded-lg"
+                >
+                  <Folder className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+            <div>
+              <label className="block text-sm text-neutral-400 mb-2">Путь к FFmpeg (ffmpeg.exe)</label>
+              <div className="flex gap-2">
+                <input 
+                  type="text" 
+                  value={settings.ffmpegPath}
+                  onChange={(e) => setSettings({...settings, ffmpegPath: e.target.value})}
+                  className="flex-1 bg-neutral-950 border border-neutral-800 rounded-lg px-4 py-3 text-white focus:border-blue-500 outline-none"
+                  placeholder="Оставьте пустым для использования встроенного"
+                />
+                <button 
+                  onClick={async () => {
+                    const res = await ipcRenderer.invoke('select-file', {
+                      filters: [{ name: 'Executables', extensions: ['exe', 'bin', 'sh'] }]
+                    });
+                    if (res.success) {
+                      setSettings({...settings, ffmpegPath: res.data.path});
+                    }
+                  }}
                   className="bg-neutral-800 hover:bg-neutral-700 text-white px-4 rounded-lg"
                 >
                   <Folder className="w-5 h-5" />

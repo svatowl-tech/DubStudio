@@ -1,4 +1,4 @@
-# Polza Studio
+# Anime Dub Manager
 
 Desktop application designed for voice-over and fandub studios to manage projects, subtitles, and dubber assignments efficiently.
 

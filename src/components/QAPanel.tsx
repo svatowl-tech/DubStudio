@@ -1,8 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import WaveSurfer from 'wavesurfer.js';
-import { Play, Pause, CheckCircle, XCircle, AlertCircle, MessageSquare, Volume2, Check, X, Activity, Download, User, Clock, FileAudio, Send, Video, Trash2 } from 'lucide-react';
+import { Play, Pause, CheckCircle, XCircle, AlertCircle, MessageSquare, Volume2, Check, X, Activity, Download, User, Clock, FileAudio, Send, Video, Trash2, Mic, Sparkles, Save } from 'lucide-react';
 import { ipcRenderer } from '../lib/ipc';
-import { Episode, RoleAssignment } from '../types';
+import { Episode, RoleAssignment, Participant } from '../types';
+import { STATUS_MAP } from '../constants';
+import { TrackSidebar } from './qa/TrackSidebar';
+import { generateFixesIssuedMessage, generateStatusMessage } from '../lib/templates';
+import { getParticipants } from '../services/dbService';
+import { ExportModal } from './ExportModal';
 
 interface QAPanelProps {
   currentEpisode: Episode | null;
@@ -14,7 +19,8 @@ interface Track {
   participant: string;
   character: string;
   status: 'pending' | 'approved' | 'rejected' | 'fixes_needed';
-  fileUrl?: string;
+  files: { id: string; path: string; createdAt: string }[];
+  selectedFileId?: string;
   comments: Comment[];
 }
 
@@ -25,28 +31,52 @@ interface Comment {
   author: string;
 }
 
-const STATUS_MAP: Record<string, string> = {
-  pending: 'Ожидает',
-  approved: 'Одобрено',
-  rejected: 'Отклонено',
-  fixes_needed: 'Нужны правки'
-};
-
 export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
   const [tracks, setTracks] = useState<Track[]>([]);
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
   const [newComment, setNewComment] = useState('');
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
-  const [volume, setVolume] = useState(0.8);
+  const [volumes, setVolumes] = useState<Record<string, number>>({});
   const [originalVolume, setOriginalVolume] = useState(0.5);
   const [isPlaying, setIsPlaying] = useState(false);
   const [subLines, setSubLines] = useState<any[]>([]);
   const [currentCharacter, setCurrentCharacter] = useState<string | null>(null);
+  const [currentDubberNickname, setCurrentDubberNickname] = useState<string | null>(null);
+  const [currentSubtitleText, setCurrentSubtitleText] = useState<string | null>(null);
   const [isMuted, setIsMuted] = useState(false);
+  const [participants, setParticipants] = useState<Participant[]>([]);
+  const [generatedMessage, setGeneratedMessage] = useState<string | null>(null);
+  const [isMessageModalOpen, setIsMessageModalOpen] = useState(false);
+  const [isExportModalOpen, setIsExportModalOpen] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
+  const [isBaking, setIsBaking] = useState(false);
+  const [bakeProgress, setBakeProgress] = useState(0);
+  const [bakeStatus, setBakeStatus] = useState('');
+
+  useEffect(() => {
+    loadParticipants();
+  }, []);
+
+  const loadParticipants = async () => {
+    const p = await getParticipants();
+    setParticipants(p);
+  };
+
+  const parseAssTime = (timeStr: string) => {
+    const parts = timeStr.split(':');
+    if (parts.length === 3) {
+      const hours = parseInt(parts[0], 10);
+      const minutes = parseInt(parts[1], 10);
+      const seconds = parseFloat(parts[2]);
+      return (hours * 3600) + (minutes * 60) + seconds;
+    }
+    return 0;
+  };
 
   const wavesurferRef = useRef<WaveSurfer | null>(null);
   const audioRefs = useRef<Record<string, HTMLAudioElement>>({});
+  const [audioRefsUpdated, setAudioRefsUpdated] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
 
@@ -65,16 +95,24 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
         audio.play().catch(e => console.error('Audio play error', e));
       }
     });
-  }, [isPlaying]);
+  }, [isPlaying, audioRefsUpdated]);
 
   // Update audio volumes
   useEffect(() => {
+    console.log('Updating audio volumes', { volumes, isMuted, selectedTrackId, audioRefs: Object.keys(audioRefs.current) });
     Object.entries(audioRefs.current).forEach(([id, audio]) => {
       if (audio instanceof HTMLAudioElement) {
-        audio.volume = isMuted ? 0 : volume;
+        const volume = isMuted ? 0 : (volumes[id] ?? 0.8);
+        console.log(`Setting volume for ${id} to ${volume}`);
+        audio.volume = volume;
       }
     });
-  }, [volume, isMuted]);
+    if (wavesurferRef.current && selectedTrackId) {
+      const volume = isMuted ? 0 : (volumes[selectedTrackId] ?? 0.8);
+      console.log(`Setting wavesurfer volume to ${volume}`);
+      wavesurferRef.current.setVolume(volume);
+    }
+  }, [volumes, isMuted, selectedTrackId, audioRefsUpdated]);
 
   // Clean up audio elements on unmount or track change
   useEffect(() => {
@@ -86,6 +124,7 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
         }
       });
       audioRefs.current = {};
+      setAudioRefsUpdated(prev => prev + 1);
     };
   }, [currentEpisode?.id]);
 
@@ -93,27 +132,37 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
   useEffect(() => {
     if (!currentEpisode) return;
     
+    let updated = false;
     tracks.forEach(track => {
-      if (track.id === selectedTrackId) {
+      // If we are viewing a specific track, we ONLY want to hear that track (via wavesurfer)
+      // So we should not create/play audio elements for other tracks unless we are in 'all' mode
+      if (selectedTrackId !== 'all' || track.id === selectedTrackId) {
         // If it was previously in audioRefs, remove it
         if (audioRefs.current[track.id]) {
           audioRefs.current[track.id].pause();
           delete audioRefs.current[track.id];
+          updated = true;
         }
         return;
       }
 
-      if (track.fileUrl && !audioRefs.current[track.id]) {
-        const audio = new Audio(track.fileUrl);
-        audio.volume = volume;
+      const selectedFile = track.files.find(f => f.id === track.selectedFileId) || track.files[0];
+      if (selectedFile && !audioRefs.current[track.id]) {
+        const audioUrl = selectedFile.path.startsWith('file://') || selectedFile.path.startsWith('http') ? selectedFile.path : `file://${selectedFile.path}`;
+        const audio = new Audio(audioUrl);
+        audio.volume = volumes[track.id] ?? 0.8;
         audioRefs.current[track.id] = audio;
-      } else if (track.fileUrl && audioRefs.current[track.id]) {
+        updated = true;
+      } else if (selectedFile && audioRefs.current[track.id]) {
+        const audioUrl = selectedFile.path.startsWith('file://') || selectedFile.path.startsWith('http') ? selectedFile.path : `file://${selectedFile.path}`;
         // Update source if it changed
-        if (audioRefs.current[track.id].src !== track.fileUrl) {
-          audioRefs.current[track.id].src = track.fileUrl;
+        if (audioRefs.current[track.id].src !== audioUrl) {
+          audioRefs.current[track.id].src = audioUrl;
+          updated = true;
         }
       }
     });
+    if (updated) setAudioRefsUpdated(prev => prev + 1);
   }, [tracks, currentEpisode, selectedTrackId]);
 
   // Map assignments to tracks (grouped by dubber)
@@ -126,12 +175,11 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
       const dubberId = as.dubberId;
       const dubberName = as.dubber?.nickname || 'Неизвестно';
       
-      // Find the latest DUBBER_FILE for this dubber in this episode
-      // Note: We look for uploads linked to ANY assignment of this dubber
-      const dubberFile = currentEpisode.uploads?.find(u => 
+      // Find ALL DUBBER_FILEs for this dubber in this episode
+      const dubberFiles = currentEpisode.uploads?.filter(u => 
         u.type === 'DUBBER_FILE' && 
         (u.assignmentId === as.id || currentEpisode.assignments?.find(a => a.id === u.assignmentId)?.dubberId === dubberId)
-      );
+      ).map(u => ({ id: u.id, path: u.path, createdAt: u.createdAt })) || [];
       
       let comments: Comment[] = [];
       if (as.comments) {
@@ -148,7 +196,8 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
           participant: dubberName,
           character: as.characterName,
           status: (as.status?.toLowerCase() || 'pending') as Track['status'],
-          fileUrl: dubberFile?.path,
+          files: dubberFiles,
+          selectedFileId: dubberFiles.length > 0 ? dubberFiles[0].id : undefined,
           comments
         };
       } else {
@@ -156,6 +205,12 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
         if (!dubberTracks[dubberId].character.includes(as.characterName)) {
           dubberTracks[dubberId].character += `, ${as.characterName}`;
         }
+        // Merge files (avoid duplicates)
+        dubberFiles.forEach(f => {
+          if (!dubberTracks[dubberId].files.find(existing => existing.id === f.id)) {
+            dubberTracks[dubberId].files.push(f);
+          }
+        });
         // Merge comments
         dubberTracks[dubberId].comments = [...dubberTracks[dubberId].comments, ...comments];
       }
@@ -187,14 +242,57 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
 
   // Track current character based on time
   useEffect(() => {
-    const line = subLines.find(l => currentTime >= l.Start && currentTime <= l.End);
-    setCurrentCharacter(line ? line.Name : null);
-  }, [currentTime, subLines]);
+    if (subLines.length === 0) return;
+
+    // Find the last subtitle that has started
+    const sortedSubs = [...subLines].sort((a, b) => {
+      const startA = typeof a.start === 'number' ? a.start : parseAssTime(a.start || '');
+      const startB = typeof b.start === 'number' ? b.start : parseAssTime(b.start || '');
+      return startA - startB;
+    });
+
+    const lastStartedSub = [...sortedSubs].reverse().find(l => {
+      const start = typeof l.start === 'number' ? l.start : parseAssTime(l.start || '');
+      return currentTime >= start;
+    });
+
+    if (lastStartedSub) {
+      const aliases: Record<string, string> = JSON.parse(currentEpisode?.project?.characterAliases || '{}');
+      const mainName = aliases[lastStartedSub.name] || lastStartedSub.name;
+      setCurrentCharacter(mainName);
+      
+      // Find dubber nickname for this character
+      const assignment = currentEpisode?.assignments?.find(a => a.characterName.toLowerCase() === mainName.toLowerCase());
+      if (assignment) {
+        setCurrentDubberNickname(assignment.dubber?.nickname || null);
+      } else {
+        setCurrentDubberNickname(null);
+      }
+
+      // Only show text if we are within the subtitle duration
+      const end = typeof lastStartedSub.end === 'number' ? lastStartedSub.end : parseAssTime(lastStartedSub.end || '');
+      if (currentTime <= end) {
+        setCurrentSubtitleText(lastStartedSub.text);
+      } else {
+        setCurrentSubtitleText(null);
+      }
+    } else {
+      setCurrentCharacter(null);
+      setCurrentDubberNickname(null);
+      setCurrentSubtitleText(null);
+    }
+  }, [currentTime, subLines, currentEpisode?.project?.characterAliases, currentEpisode?.assignments]);
 
   const selectedTrack = tracks.find(t => t.id === selectedTrackId);
 
   useEffect(() => {
-    if (!containerRef.current || !selectedTrack?.fileUrl) return;
+    if (!containerRef.current || !selectedTrack?.fileUrl) {
+      if (wavesurferRef.current) {
+        wavesurferRef.current.destroy();
+        wavesurferRef.current = null;
+      }
+      return;
+    }
 
     if (wavesurferRef.current) {
       wavesurferRef.current.destroy();
@@ -211,7 +309,11 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
       normalize: true,
     });
 
-    wavesurferRef.current.load(selectedTrack.fileUrl);
+    const selectedFile = selectedTrack.files.find(f => f.id === selectedTrack.selectedFileId) || selectedTrack.files[0];
+    if (!selectedFile) return;
+
+    const audioUrl = selectedFile.path.startsWith('file://') || selectedFile.path.startsWith('http') ? selectedFile.path : `file://${selectedFile.path}`;
+    wavesurferRef.current.load(audioUrl);
 
     wavesurferRef.current.on('ready', () => {
       setDuration(wavesurferRef.current?.getDuration() || 0);
@@ -220,7 +322,11 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
     wavesurferRef.current.on('audioprocess', () => {
       const time = wavesurferRef.current?.getCurrentTime() || 0;
       setCurrentTime(time);
-      if (videoRef.current) videoRef.current.currentTime = time;
+      
+      // Throttle video sync
+      if (videoRef.current && Math.abs(videoRef.current.currentTime - time) > 0.1) {
+        videoRef.current.currentTime = time;
+      }
     });
 
     wavesurferRef.current.on('play', () => setIsPlaying(true));
@@ -255,6 +361,15 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
     });
   };
 
+  const handlePause = () => {
+    setIsPlaying(false);
+    if (wavesurferRef.current) wavesurferRef.current.pause();
+    if (videoRef.current) videoRef.current.pause();
+    Object.values(audioRefs.current).forEach(audio => {
+      if (audio instanceof HTMLAudioElement) audio.pause();
+    });
+  };
+
   const handleStop = () => {
     setIsPlaying(false);
     setCurrentTime(0);
@@ -277,20 +392,35 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
   const handleAddComment = async () => {
     if (!newComment.trim() || !currentEpisode) return;
 
-    // Auto-detect track based on current character at this timestamp
-    let targetTrackId = selectedTrackId;
-    if (currentCharacter) {
-      const matchingAssignment = currentEpisode.assignments?.find(
+    // Use selected track if available, otherwise try to auto-detect
+    let targetTrackId = selectedTrackId === 'all' ? null : selectedTrackId;
+    
+    // If we have a detected character, we can use it to find the specific assignment
+    // but we should stay on the selected track if it's one of the dubber's roles
+    const dubberAssignments = targetTrackId ? (currentEpisode.assignments?.filter(a => a.dubberId === targetTrackId) || []) : [];
+    const matchingAssignment = dubberAssignments.find(
+      a => currentCharacter && a.characterName.toLowerCase() === currentCharacter.toLowerCase()
+    );
+
+    // If no track selected or 'all' selected, try to auto-detect from character
+    if (!targetTrackId && currentCharacter) {
+      const autoAssignment = currentEpisode.assignments?.find(
         a => a.characterName.toLowerCase() === currentCharacter.toLowerCase()
       );
-      if (matchingAssignment) {
-        targetTrackId = matchingAssignment.dubberId; // Use dubberId as track ID
-        // Switch view to this track so the curator sees where it went
-        setSelectedTrackId(targetTrackId);
+      if (autoAssignment) {
+        targetTrackId = autoAssignment.dubberId;
       }
     }
 
-    if (!targetTrackId) return;
+    if (!targetTrackId) {
+      // Fallback: if we have tracks, use the first one
+      if (tracks.length > 0) {
+        targetTrackId = tracks[0].id;
+      } else {
+        alert("Не удалось определить дабера для фикса. Выберите дорожку вручную.");
+        return;
+      }
+    }
 
     const comment: Comment = {
       id: Math.random().toString(36).substr(2, 9),
@@ -299,6 +429,7 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
       author: 'Куратор'
     };
 
+    // Update local state immediately for responsiveness
     const updatedTracks = tracks.map(t => 
       t.id === targetTrackId ? { 
         ...t, 
@@ -310,14 +441,20 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
     setTracks(updatedTracks);
     setNewComment('');
 
-    // Save to DB (add comment to the specific assignment matching the character, or the first one if not found)
+    // Save to DB
     try {
+      // Determine which assignment to attach the comment to
+      // If the dubber has multiple roles, we try to match the current character,
+      // otherwise we use the first assignment of that dubber.
+      const targetDubberAssignments = currentEpisode.assignments?.filter(a => a.dubberId === targetTrackId) || [];
+      const bestAssignmentMatch = targetDubberAssignments.find(
+        a => currentCharacter && a.characterName.toLowerCase() === currentCharacter.toLowerCase()
+      ) || targetDubberAssignments[0];
+
+      if (!bestAssignmentMatch) return;
+
       const updatedAssignments = currentEpisode.assignments?.map(a => {
-        const isTargetDubber = a.dubberId === targetTrackId;
-        const isCurrentChar = currentCharacter && a.characterName.toLowerCase() === currentCharacter.toLowerCase();
-        
-        if (isTargetDubber && (isCurrentChar || !currentCharacter)) {
-          // We found the assignment to attach the comment to
+        if (a.id === bestAssignmentMatch.id) {
           let existingComments: Comment[] = [];
           try {
             existingComments = JSON.parse(a.comments || '[]');
@@ -337,8 +474,75 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
         assignments: updatedAssignments,
         status: currentEpisode.status === 'FINISHED' ? 'FINISHED' : 'FIXES'
       });
+      onRefresh();
     } catch (error) {
       console.error('Save comment error:', error);
+    }
+  };
+
+  const handleGenerateFixesMessage = () => {
+    if (!currentEpisode) return;
+    const msg = generateFixesIssuedMessage(currentEpisode, participants);
+    if (msg) {
+      setGeneratedMessage(msg);
+      setIsMessageModalOpen(true);
+    } else {
+      setGeneratedMessage(`✏️ ВЫПИСАНЫ ФИКСЫ: ${currentEpisode.project?.title}\n👾 Серия: ${currentEpisode.number}\n\n✅ Фиксов не обнаружено! Все даберы молодцы! ✨`);
+      setIsMessageModalOpen(true);
+    }
+  };
+
+  const handleGenerateReminderMessage = () => {
+    if (!currentEpisode) return;
+    const msg = generateStatusMessage(currentEpisode, participants);
+    setGeneratedMessage(msg);
+    setIsMessageModalOpen(true);
+  };
+
+  const handleExportSoundEngineer = async (targetDir: string) => {
+    if (!currentEpisode) return;
+    setIsUploading(true);
+    const res = await ipcRenderer.invoke('export-sound-engineer-files', { episode: currentEpisode, targetDir });
+    setIsUploading(false);
+    setIsExportModalOpen(false);
+    if (res.success) {
+      alert('Экспорт для звукорежиссера успешно завершен!');
+    } else {
+      alert('Ошибка экспорта: ' + res.error);
+    }
+  };
+
+  const handleBakeSubtitles = async () => {
+    if (!currentEpisode) return;
+    setIsBaking(true);
+    setBakeProgress(0);
+    setBakeStatus('Запуск FFmpeg...');
+    
+    let removeListener: (() => void) | undefined;
+    if (ipcRenderer.on) {
+      removeListener = ipcRenderer.on('ffmpeg-progress', (percent: number) => {
+        setBakeProgress(percent);
+        setBakeStatus(`Рендеринг: ${percent}%`);
+      });
+    }
+
+    try {
+      const projectTitle = currentEpisode.project?.title || 'Project';
+      const subDir = `${projectTitle}/Episode_${currentEpisode.number}`;
+      
+      await ipcRenderer.invoke('bake-subtitles', {
+        videoPath: currentEpisode.rawPath, 
+        finalAssPath: currentEpisode.subPath, 
+        outputPath: `${subDir}/final_release.mp4`
+      });
+      
+      setBakeStatus('Видео успешно отрендерено!');
+      setBakeProgress(100);
+    } catch (err: any) {
+      setBakeStatus(`Ошибка: ${err.message}`);
+    } finally {
+      setIsBaking(false);
+      if (removeListener) removeListener();
     }
   };
 
@@ -369,6 +573,7 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
         ...currentEpisode, 
         assignments: updatedAssignments 
       });
+      onRefresh();
     } catch (error) {
       console.error('Delete comment error:', error);
     }
@@ -403,7 +608,7 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
     
     try {
       const updatedAssignments = currentEpisode.assignments?.map(a => 
-        a.id === id ? { ...a, status: dbStatus } : a
+        a.dubberId === id ? { ...a, status: dbStatus } : a
       ) || [];
 
       // Check if all assignments are approved
@@ -508,67 +713,171 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
   }
 
   return (
+    <>
     <div className="flex h-full bg-neutral-950 overflow-hidden w-full">
-      {/* Sidebar - Tracks List */}
-      <div className="w-80 border-r border-neutral-800 flex flex-col">
-        <div className="p-4 border-b border-neutral-800 flex items-center justify-between">
-          <h2 className="font-bold text-white">Список дорожек</h2>
-          <div className="flex items-center gap-2">
-            <button 
-              onClick={handleApproveAll}
-              title="Одобрить все"
-              className="p-1.5 hover:bg-green-600/20 text-green-500 rounded-md transition-colors"
-            >
-              <Check className="w-4 h-4" />
-            </button>
-            <span className="text-xs text-neutral-500">{tracks.length} ролей</span>
-          </div>
-        </div>
-        <div className="flex-1 overflow-y-auto p-2 space-y-2">
-          {tracks.map(track => (
-            <button
-              key={track.id}
-              onClick={() => setSelectedTrackId(track.id)}
-              className={`w-full p-3 rounded-lg text-left transition-all border ${
-                selectedTrackId === track.id 
-                  ? 'bg-blue-600/10 border-blue-500/50' 
-                  : 'bg-neutral-900/50 border-transparent hover:border-neutral-700'
-              }`}
-            >
-              <div className="flex justify-between items-start mb-1">
-                <span className={`text-[10px] font-bold uppercase tracking-wider ${
-                  track.status === 'approved' ? 'text-green-400' :
-                  track.status === 'rejected' ? 'text-red-400' :
-                  track.status === 'fixes_needed' ? 'text-yellow-400' : 'text-blue-400'
-                }`}>
-                  {STATUS_MAP[track.status] || track.status}
-                </span>
-                {track.fileUrl && <CheckCircle className="w-3 h-3 text-green-500" />}
-              </div>
-              <div className="text-white font-medium">{track.character}</div>
-              <div className="text-xs text-neutral-400">{track.participant}</div>
-              
-              {!track.fileUrl && (
-                <div className="mt-2">
-                  <label className="cursor-pointer text-[10px] bg-neutral-800 hover:bg-neutral-700 text-neutral-300 px-2 py-1 rounded block text-center">
-                    Загрузить аудио
-                    <input 
-                      type="file" 
-                      className="hidden" 
-                      accept="audio/*" 
-                      onChange={(e) => handleFileUpload(e, track.id)} 
-                    />
-                  </label>
-                </div>
-              )}
-            </button>
-          ))}
-        </div>
-      </div>
+        <TrackSidebar 
+          tracks={tracks}
+          selectedTrackId={selectedTrackId}
+          setSelectedTrackId={setSelectedTrackId}
+          handleApproveAll={handleApproveAll}
+          handleFileUpload={handleFileUpload}
+          setTracks={setTracks}
+          onGenerateFixesMessage={handleGenerateFixesMessage}
+          onGenerateReminderMessage={handleGenerateReminderMessage}
+          onExportSoundEngineer={() => setIsExportModalOpen(true)}
+          onBakeSubtitles={handleBakeSubtitles}
+          isBaking={isBaking}
+          bakeProgress={bakeProgress}
+          bakeStatus={bakeStatus}
+        />
 
       {/* Main Content - Player & Comments */}
       <div className="flex-1 flex flex-col overflow-hidden">
-        {selectedTrack ? (
+        {selectedTrackId === 'all' ? (
+          <div className="flex-1 flex flex-col overflow-hidden p-6 space-y-6">
+            <div className="aspect-video bg-black rounded-xl overflow-hidden border border-neutral-800 relative group max-h-[50vh] mx-auto w-full">
+              <video 
+                ref={videoRef}
+                src={currentEpisode.rawPath || undefined}
+                className="w-full h-full object-contain"
+                onTimeUpdate={(e) => {
+                  setCurrentTime(e.currentTarget.currentTime);
+                }}
+                onLoadedMetadata={(e) => {
+                  setDuration(e.currentTarget.duration);
+                }}
+              />
+              <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col justify-end p-4">
+                <div className="flex flex-col gap-2 w-full">
+                  <input 
+                    type="range" 
+                    min={0} 
+                    max={duration || 100} 
+                    value={currentTime}
+                    onChange={(e) => {
+                      const time = parseFloat(e.target.value);
+                      setCurrentTime(time);
+                      if (videoRef.current) videoRef.current.currentTime = time;
+                      Object.values(audioRefs.current).forEach(audio => {
+                        if (audio instanceof HTMLAudioElement) audio.currentTime = time;
+                      });
+                    }}
+                    className="w-full accent-blue-500"
+                  />
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-4">
+                      <button 
+                        onClick={togglePlay} 
+                        className="p-2 bg-blue-600 hover:bg-blue-500 rounded-full text-white transition-all"
+                        title={isPlaying ? "Пауза" : "Играть"}
+                      >
+                        {isPlaying ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5 fill-current ml-0.5" />}
+                      </button>
+                      <button 
+                        onClick={handleStop} 
+                        className="p-2 bg-white/10 hover:bg-white/20 rounded-full text-white transition-all"
+                        title="Стоп"
+                      >
+                        <X className="w-5 h-5" />
+                      </button>
+                    </div>
+                    <div className="flex items-center gap-2 bg-black/60 px-3 py-1 rounded-full">
+                      <Clock className="w-3 h-3 text-blue-400" />
+                      <span className="text-xs font-mono text-white">
+                        {new Date(currentTime * 1000).toISOString().substr(14, 5)} / {new Date(duration * 1000).toISOString().substr(14, 5)}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-neutral-900 border border-neutral-800 rounded-xl p-6 flex-1 flex flex-col min-h-0">
+              <h3 className="text-lg font-bold text-white mb-4 shrink-0">Громкость даберов</h3>
+              <div className="space-y-4 overflow-y-auto pr-2 shrink-0 max-h-[40%]">
+                <div className="flex items-center gap-4 p-3 bg-neutral-800/50 rounded-lg">
+                  <Volume2 className="w-5 h-5 text-neutral-400" />
+                  <div className="w-32 text-sm font-medium text-white">Оригинал (РАВ)</div>
+                  <input 
+                    type="range" min="0" max="1" step="0.1" value={originalVolume} 
+                    onChange={(e) => {
+                      const v = parseFloat(e.target.value);
+                      setOriginalVolume(v);
+                      if (videoRef.current) videoRef.current.volume = v;
+                    }}
+                    className="flex-1 accent-neutral-500"
+                  />
+                  <span className="text-xs text-neutral-500 w-8 text-right">{Math.round(originalVolume * 100)}%</span>
+                </div>
+
+                {tracks.map(track => (
+                  <div key={track.id} className="flex items-center gap-4 p-3 bg-neutral-800/50 rounded-lg">
+                    <Volume2 className="w-5 h-5 text-blue-400" />
+                    <div className="w-32">
+                      <div className="text-sm font-medium text-white truncate">{track.participant}</div>
+                      <div className="text-xs text-neutral-500 truncate">{track.character}</div>
+                    </div>
+                    <input 
+                      type="range" min="0" max="1" step="0.1" value={volumes[track.id] ?? 0.8} 
+                      onChange={(e) => {
+                        const v = parseFloat(e.target.value);
+                        setVolumes(prev => ({ ...prev, [track.id]: v }));
+                      }}
+                      className="flex-1 accent-blue-500"
+                    />
+                    <span className="text-xs text-neutral-500 w-8 text-right">{Math.round((volumes[track.id] ?? 0.8) * 100)}%</span>
+                  </div>
+                ))}
+              </div>
+
+              <div className="mt-6 pt-6 border-t border-neutral-800 shrink-0">
+                <div className="flex items-center justify-between">
+                  <div className="flex flex-col">
+                    <div className={`text-sm font-bold uppercase tracking-widest flex items-center gap-2 ${currentCharacter ? 'text-blue-400' : 'text-neutral-500'}`}>
+                      <User className="w-4 h-4" />
+                      {currentCharacter ? (
+                        <span>
+                          {currentDubberNickname ? `${currentDubberNickname} (${currentCharacter})` : currentCharacter}
+                        </span>
+                      ) : 'Никто не говорит'}
+                    </div>
+                    {currentSubtitleText && (
+                      <div className="text-xs text-neutral-400 italic mt-1 line-clamp-1">
+                        "{currentSubtitleText}"
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex gap-2">
+                    <input 
+                      type="text" 
+                      value={newComment}
+                      onChange={(e) => {
+                        setNewComment(e.target.value);
+                        if (isPlaying && e.target.value.length > 0) {
+                          handlePause(); // Auto-pause when typing
+                        }
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') handleAddComment();
+                        if (e.key === ' ') {
+                          e.stopPropagation(); // Prevent space from toggling play when typing
+                        }
+                      }}
+                      placeholder="Добавить комментарий на этой секунде..."
+                      className="bg-neutral-800 border border-neutral-700 text-white rounded-lg px-4 py-2 w-80 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                    />
+                    <button 
+                      onClick={handleAddComment}
+                      className="px-6 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors font-bold"
+                    >
+                      Отправить
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : selectedTrack ? (
           <div className="flex-1 flex flex-col overflow-hidden">
             <div className="flex-1 overflow-y-auto p-6 space-y-6">
               {/* Video & Waveform */}
@@ -627,18 +936,21 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
                         <button 
                           onClick={() => handleStatusChange(selectedTrack.id, 'approved')}
                           className={`p-2 rounded-lg transition-colors ${selectedTrack.status === 'approved' ? 'bg-green-600 text-white' : 'bg-neutral-800 text-neutral-400 hover:text-green-400'}`}
+                          title="Одобрить"
                         >
                           <CheckCircle className="w-5 h-5" />
                         </button>
                         <button 
                           onClick={() => handleStatusChange(selectedTrack.id, 'fixes_needed')}
                           className={`p-2 rounded-lg transition-colors ${selectedTrack.status === 'fixes_needed' ? 'bg-yellow-600 text-white' : 'bg-neutral-800 text-neutral-400 hover:text-yellow-400'}`}
+                          title="Требуются исправления"
                         >
                           <AlertCircle className="w-5 h-5" />
                         </button>
                         <button 
                           onClick={() => handleStatusChange(selectedTrack.id, 'rejected')}
                           className={`p-2 rounded-lg transition-colors ${selectedTrack.status === 'rejected' ? 'bg-red-600 text-white' : 'bg-neutral-800 text-neutral-400 hover:text-red-400'}`}
+                          title="Отклонить"
                         >
                           <XCircle className="w-5 h-5" />
                         </button>
@@ -649,10 +961,10 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
                       <div className="flex items-center gap-4">
                         <Volume2 className="w-4 h-4 text-neutral-500" />
                         <input 
-                          type="range" min="0" max="1" step="0.1" value={volume} 
+                          type="range" min="0" max="1" step="0.1" value={originalVolume} 
                           onChange={(e) => {
                             const v = parseFloat(e.target.value);
-                            setVolume(v);
+                            setOriginalVolume(v);
                             if (wavesurferRef.current) wavesurferRef.current.setVolume(v);
                           }}
                           className="flex-1 accent-blue-500"
@@ -729,9 +1041,16 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
                         <span className="text-neutral-600"> / {new Date(duration * 1000).toISOString().substr(14, 5)}</span>
                       </div>
                       {currentCharacter && (
-                        <div className="text-[10px] font-bold text-blue-400 uppercase tracking-widest flex items-center gap-1">
-                          <User className="w-3 h-3" />
-                          Сейчас говорит: {currentCharacter}
+                        <div className="flex flex-col">
+                          <div className="text-[10px] font-bold text-blue-400 uppercase tracking-widest flex items-center gap-1">
+                            <User className="w-3 h-3" />
+                            {currentDubberNickname ? `${currentDubberNickname} (${currentCharacter})` : currentCharacter}
+                          </div>
+                          {currentSubtitleText && (
+                            <div className="text-[9px] text-neutral-500 italic line-clamp-1">
+                              "{currentSubtitleText}"
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>
@@ -742,8 +1061,8 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
                       value={newComment}
                       onChange={(e) => {
                         setNewComment(e.target.value);
-                        if (isPlaying && e.target.value.length === 1) {
-                          togglePlay(); // Auto-pause when starting to type
+                        if (isPlaying && e.target.value.length > 0) {
+                          handlePause(); // Auto-pause when typing
                         }
                       }}
                       onKeyDown={(e) => {
@@ -773,5 +1092,88 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
         )}
       </div>
     </div>
+
+      {/* Export Modal */}
+      {isExportModalOpen && (
+        <ExportModal 
+          onClose={() => setIsExportModalOpen(false)}
+          onExport={handleExportSoundEngineer}
+          isUploading={isUploading}
+        />
+      )}
+
+      {/* Message Modal */}
+      {isMessageModalOpen && generatedMessage && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
+          <div className="bg-neutral-900 border border-neutral-800 rounded-2xl shadow-2xl w-full max-w-2xl overflow-hidden">
+            <div className="p-6 border-b border-neutral-800 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Sparkles className="w-5 h-5 text-amber-400" />
+                <h2 className="text-xl font-semibold text-white">Сформированное сообщение</h2>
+              </div>
+              <button onClick={() => setIsMessageModalOpen(false)} className="text-neutral-400 hover:text-white">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            
+            <div className="p-6">
+              <pre className="bg-black/50 border border-neutral-800 rounded-xl p-6 text-sm text-neutral-300 whitespace-pre-wrap font-mono leading-relaxed max-h-[50vh] overflow-y-auto custom-scrollbar">
+                {generatedMessage}
+              </pre>
+              
+              <div className="mt-6 flex gap-3">
+                <button 
+                  onClick={() => {
+                    navigator.clipboard.writeText(generatedMessage);
+                    alert('Скопировано в буфер обмена!');
+                  }}
+                  className="flex-1 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-bold transition-all flex items-center justify-center gap-2 shadow-lg shadow-blue-500/20"
+                >
+                  <Save className="w-5 h-5" />
+                  Скопировать текст
+                </button>
+                <button 
+                  onClick={() => setIsMessageModalOpen(false)}
+                  className="px-8 py-3 bg-neutral-800 hover:bg-neutral-700 text-white rounded-xl font-bold transition-all"
+                >
+                  Закрыть
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Baking Progress Overlay */}
+      {isBaking && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/90 backdrop-blur-xl">
+          <div className="w-full max-w-md p-8 text-center space-y-6">
+            <div className="relative w-32 h-32 mx-auto">
+              <div className="absolute inset-0 border-4 border-neutral-800 rounded-full" />
+              <div 
+                className="absolute inset-0 border-4 border-blue-500 rounded-full transition-all duration-500"
+                style={{ 
+                  clipPath: `inset(${100 - bakeProgress}% 0 0 0)`,
+                  filter: 'drop-shadow(0 0 8px rgba(59, 130, 246, 0.5))'
+                }}
+              />
+              <div className="absolute inset-0 flex items-center justify-center">
+                <span className="text-2xl font-bold text-white">{Math.round(bakeProgress)}%</span>
+              </div>
+            </div>
+            <div className="space-y-2">
+              <h3 className="text-xl font-bold text-white">Рендеринг видео</h3>
+              <p className="text-neutral-400 text-sm">{bakeStatus}</p>
+            </div>
+            <div className="w-full bg-neutral-800 h-1.5 rounded-full overflow-hidden">
+              <div 
+                className="h-full bg-blue-500 transition-all duration-500"
+                style={{ width: `${bakeProgress}%` }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }

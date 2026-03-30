@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Save, Edit3, Loader2, Languages } from "lucide-react";
-import { ipcRenderer } from '../lib/ipc';
+import { ipcSafe } from '../lib/ipcSafe';
 import { Episode } from "../types";
 import { latinToCyrillic, polivanovToHepburn } from "../lib/translit";
+import { useVideoContext } from "../contexts/VideoContext";
 
 interface RawSubtitleLine {
   id: number;
@@ -34,6 +35,23 @@ export default function RawSubtitleEditor({
   const [lastSelectedLine, setLastSelectedLine] = useState<number | null>(null);
   const [massName, setMassName] = useState("");
 
+  const { registerPlayer, unregisterPlayer } = useVideoContext();
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  useEffect(() => {
+    if (videoRef.current) {
+      const player = videoRef.current;
+      registerPlayer(() => {
+        if (player.paused) {
+          player.play().catch(e => console.error('Play error', e));
+        } else {
+          player.pause();
+        }
+      });
+    }
+    return () => unregisterPlayer();
+  }, [registerPlayer, unregisterPlayer]);
+
   useEffect(() => {
     if (currentEpisode?.subPath) {
       loadRawSubtitles();
@@ -50,7 +68,7 @@ export default function RawSubtitleEditor({
     setLoading(true);
     setStatus("Загрузка субтитров...");
     try {
-      const data = await ipcRenderer.invoke('get-raw-subtitles', currentEpisode.subPath);
+      const data = await ipcSafe.invoke('get-raw-subtitles', currentEpisode.subPath);
       const subtitleLines = data.lines || data; // Fallback for safety
       setLines(subtitleLines);
       setUpdates({});
@@ -171,7 +189,7 @@ export default function RawSubtitleEditor({
     );
 
     try {
-      await ipcRenderer.invoke('save-raw-subtitles', {
+      await ipcSafe.invoke('save-raw-subtitles', {
         assFilePath: currentEpisode.subPath,
         updates: updatesArray
       });
@@ -189,12 +207,27 @@ export default function RawSubtitleEditor({
     }
   };
 
+  const projectCharacters = (() => {
+    const raw = currentEpisode?.project?.globalMapping || '[]';
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return parsed.map((c: any) => c.characterName);
+      } else {
+        return Object.keys(parsed);
+      }
+    } catch (e) {
+      return [];
+    }
+  })();
+
   const uniqueNames = Array.from(
     new Set([
       ...lines.map((l) => l.name).filter((n) => n && n.trim() !== ""),
       ...(Object.values(updates) as string[]).filter(
         (n) => n && n.trim() !== "",
       ),
+      ...projectCharacters,
     ]),
   ).sort();
 
@@ -211,6 +244,35 @@ export default function RawSubtitleEditor({
     }
   };
 
+  const handleApplyAliases = () => {
+    if (!currentEpisode?.project?.characterAliases) return;
+    const aliases: Record<string, string> = JSON.parse(currentEpisode.project.characterAliases);
+    const newUpdates = { ...updates };
+    lines.forEach((line, index) => {
+      const currentName = updates[index] || line.name;
+      if (aliases[currentName]) {
+        newUpdates[index] = aliases[currentName];
+      }
+    });
+    setUpdates(newUpdates);
+  };
+
+  const handlePlayFromTime = (timeStr: string) => {
+    if (!videoRef.current) return;
+    
+    // Parse ASS time format: H:MM:SS.cs
+    const parts = timeStr.split(':');
+    if (parts.length === 3) {
+      const hours = parseInt(parts[0], 10);
+      const minutes = parseInt(parts[1], 10);
+      const seconds = parseFloat(parts[2]);
+      
+      const totalSeconds = (hours * 3600) + (minutes * 60) + seconds;
+      videoRef.current.currentTime = totalSeconds;
+      videoRef.current.play().catch(e => console.error('Play error', e));
+    }
+  };
+
   if (!currentEpisode?.subPath) {
     return (
       <div className="flex flex-col items-center justify-center py-12 text-neutral-500">
@@ -221,17 +283,19 @@ export default function RawSubtitleEditor({
   }
 
   return (
-    <div className="flex flex-col h-full space-y-4">
+    <div className="flex flex-col h-full overflow-hidden">
       {currentEpisode?.rawPath && (
-        <div className="bg-neutral-900 border border-neutral-800 rounded-xl p-4 shadow-lg">
-          <video src={currentEpisode.rawPath} controls className="w-full h-64 object-contain" />
+        <div className="bg-neutral-900 border-b border-neutral-800 p-4 shadow-lg shrink-0 z-20 sticky top-0">
+          <video ref={videoRef} src={currentEpisode.rawPath} controls className="w-full h-64 object-contain" />
         </div>
       )}
-      <div className="flex items-center justify-between bg-neutral-900 border border-neutral-800 p-4 rounded-xl shadow-lg">
+      
+      <div className="flex items-center justify-between bg-neutral-900 border-b border-neutral-800 p-4 shrink-0">
         <div className="flex items-center gap-4">
           <button
             onClick={loadRawSubtitles}
             disabled={loading || saving}
+            title="Обновить список субтитров"
             className="px-4 py-2 bg-neutral-800 hover:bg-neutral-700 text-white rounded-lg text-sm transition-colors border border-neutral-700"
           >
             {loading ? (
@@ -282,9 +346,22 @@ export default function RawSubtitleEditor({
             Хэпберн
           </button>
 
+          {currentEpisode?.project?.characterAliases && (
+            <button
+              onClick={handleApplyAliases}
+              disabled={loading || saving || lines.length === 0}
+              className="flex items-center gap-2 bg-neutral-800 hover:bg-neutral-700 disabled:opacity-50 text-white px-4 py-2 rounded-lg font-medium transition-colors border border-neutral-700"
+              title="Автоматически заменить имена-алиасы на основные имена персонажей"
+            >
+              <Languages className="w-4 h-4 text-indigo-400" />
+              Алиасы
+            </button>
+          )}
+
           <button
             onClick={handleSave}
             disabled={Object.keys(updates).length === 0 || saving}
+            title="Сохранить изменения"
             className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white rounded-lg text-sm font-medium transition-colors shadow-lg shadow-indigo-500/20"
           >
             {saving ? (
@@ -298,7 +375,7 @@ export default function RawSubtitleEditor({
       </div>
 
       {uniqueNames.length > 0 && (
-        <div className="bg-neutral-900 border border-neutral-800 p-3 rounded-xl shadow-lg flex flex-wrap gap-2 items-center">
+        <div className="bg-neutral-900 border-b border-neutral-800 p-3 flex flex-wrap gap-2 items-center shrink-0">
           <span className="text-xs text-neutral-500 uppercase tracking-wider mr-2">
             Быстрый выбор:
           </span>
@@ -319,8 +396,8 @@ export default function RawSubtitleEditor({
         </div>
       )}
 
-      <div className="flex-1 bg-neutral-900 border border-neutral-800 rounded-xl shadow-xl overflow-hidden flex flex-col min-h-[500px]">
-        <div className="grid grid-cols-[40px_100px_100px_150px_200px_1fr] gap-4 p-3 border-b border-neutral-800 bg-neutral-950/50 text-xs font-semibold text-neutral-400 uppercase tracking-wider">
+      <div className="flex-1 overflow-y-auto p-2 space-y-1 bg-neutral-950">
+        <div className="grid grid-cols-[40px_100px_100px_150px_200px_1fr] gap-4 p-3 border-b border-neutral-800 bg-neutral-950/50 text-xs font-semibold text-neutral-400 uppercase tracking-wider sticky top-0 bg-neutral-950 z-10">
           <div className="text-center">
             <input
               type="checkbox"
@@ -358,6 +435,7 @@ export default function RawSubtitleEditor({
                   // Don't toggle if clicking on the input
                   if ((e.target as HTMLElement).tagName === "INPUT") return;
                   toggleLineSelection(line.rawLineIndex, e.shiftKey);
+                  handlePlayFromTime(line.start);
                 }}
                 className={`grid grid-cols-[40px_100px_100px_150px_200px_1fr] gap-4 p-2 items-center rounded-lg border transition-colors cursor-pointer ${
                   isSelected

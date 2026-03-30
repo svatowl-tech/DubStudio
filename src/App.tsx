@@ -9,14 +9,18 @@ import DatabasePanel from './components/DatabasePanel';
 import SettingsPanel from './components/SettingsPanel';
 import { Project, Episode } from './types';
 import { ipcRenderer } from './lib/ipc';
+import { VideoProvider } from './contexts/VideoContext';
+import { useGlobalKeyboard } from './hooks/useGlobalKeyboard';
 
-export default function App() {
+function AppContent() {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'subtitles' | 'qa' | 'release' | 'downloader' | 'settings' | 'database'>('dashboard');
   const [savedAudioUrl, setSavedAudioUrl] = useState<string | null>(null);
   
   const [projects, setProjects] = useState<Project[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [currentEpisode, setCurrentEpisode] = useState<Episode | null>(null);
+
+  useGlobalKeyboard();
 
   useEffect(() => {
     loadProjects();
@@ -83,12 +87,13 @@ export default function App() {
           <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center shadow-lg shadow-blue-500/20">
             <Mic2 className="w-5 h-5 text-white" />
           </div>
-          <span className="font-bold text-lg tracking-tight text-white">Polza Studio</span>
+          <span className="font-bold text-lg tracking-tight text-white">Anime Dub Manager</span>
         </div>
         
         <nav className="flex-1 p-4 space-y-1 overflow-y-auto">
           <button
             onClick={() => setActiveTab('dashboard')}
+            title="Перейти на дашборд проекта"
             className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-colors ${
               activeTab === 'dashboard' 
                 ? 'bg-blue-600/10 text-blue-400' 
@@ -101,6 +106,7 @@ export default function App() {
 
           <button
             onClick={() => setActiveTab('subtitles')}
+            title="Перейти к утилитам для субтитров (ASS)"
             className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-colors ${
               activeTab === 'subtitles' 
                 ? 'bg-indigo-600/10 text-indigo-400' 
@@ -113,6 +119,7 @@ export default function App() {
 
           <button
             onClick={() => setActiveTab('qa')}
+            title="Перейти к QA проверке"
             className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-colors ${
               activeTab === 'qa' 
                 ? 'bg-blue-600/10 text-blue-400' 
@@ -125,6 +132,7 @@ export default function App() {
 
           <button
             onClick={() => setActiveTab('release')}
+            title="Перейти к сборке релиза"
             className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-colors ${
               activeTab === 'release' 
                 ? 'bg-purple-600/10 text-purple-400' 
@@ -139,6 +147,7 @@ export default function App() {
         <div className="p-4 border-t border-neutral-800 space-y-1">
           <button
             onClick={() => setActiveTab('database')}
+            title="Перейти к базе участников"
             className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-colors ${
               activeTab === 'database' 
                 ? 'bg-blue-600/10 text-blue-400' 
@@ -150,6 +159,7 @@ export default function App() {
           </button>
           <button
             onClick={() => setActiveTab('settings')}
+            title="Перейти к настройкам"
             className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-colors ${
               activeTab === 'settings' 
                 ? 'bg-neutral-800 text-white' 
@@ -163,7 +173,7 @@ export default function App() {
       </aside>
 
       {/* Main Content */}
-      <main className="flex-1 overflow-y-auto bg-neutral-950 flex items-start justify-center p-8">
+      <main className={`flex-1 bg-neutral-950 flex flex-col p-8 ${['subtitles', 'qa'].includes(activeTab) ? 'overflow-hidden' : 'overflow-y-auto'}`}>
         {activeTab === 'dashboard' && (
           <Dashboard 
             onNavigate={handleNavigate} 
@@ -183,5 +193,13 @@ export default function App() {
         {activeTab === 'qa' && <QAPanel currentEpisode={currentEpisode} onRefresh={loadProjects} />}
       </main>
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <VideoProvider>
+      <AppContent />
+    </VideoProvider>
   );
 }

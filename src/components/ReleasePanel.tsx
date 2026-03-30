@@ -1,12 +1,9 @@
 import { useState, useEffect } from 'react';
-import { PlaySquare, Send, CheckCircle2, Loader2, Video, Copy, FolderOutput, FileAudio, Settings2, Mic2, FileText, MonitorPlay, Calendar, Clock, Hash, Link as LinkIcon, MessageSquare } from 'lucide-react';
-import { ipcRenderer } from '../lib/ipc';
+import { PlaySquare, Send, Copy, MessageSquare, Sparkles, CheckCircle2, Globe, Link2, Save } from 'lucide-react';
 import { getParticipants } from '../services/dbService';
 import { Participant, Episode } from '../types';
+import { ipcRenderer } from '../lib/ipc';
 import { 
-  generateStartEpisodeMessage, 
-  generateFixesIssuedMessage, 
-  generateStatusMessage, 
   generateTGPostMessage, 
   generateVKPostMessage, 
   generateFinalTGMessage 
@@ -17,56 +14,55 @@ interface ReleasePanelProps {
   onRefresh: () => void;
 }
 
+interface ProjectLinks {
+  anime365?: string;
+  tg?: string;
+  kodik?: string;
+  vk?: string;
+  shikimori?: string;
+}
+
 export default function ReleasePanel({ currentEpisode, onRefresh }: ReleasePanelProps) {
   const [participants, setParticipants] = useState<Participant[]>([]);
-  const [isGenerating, setIsGenerating] = useState(false);
   const [postContent, setPostContent] = useState('');
   const [isCopied, setIsCopied] = useState(false);
-
-  const [isBaking, setIsBaking] = useState(false);
-  const [bakeProgress, setBakeProgress] = useState(0);
-  const [bakeStatus, setBakeStatus] = useState('');
-
-  const [isExporting, setIsExporting] = useState(false);
-  const [exportProgress, setExportProgress] = useState(0);
-  const [exportStatus, setExportStatus] = useState('');
-  const [exportLogs, setExportLogs] = useState<string[]>([]);
-
-  const [isExportingDub, setIsExportingDub] = useState(false);
-  const [exportDubProgress, setExportDubProgress] = useState(0);
-  const [exportDubStatus, setExportDubStatus] = useState('');
-  const [exportDubLogs, setExportDubLogs] = useState<string[]>([]);
-
-  // Release Settings
-  const [totalEpisodes, setTotalEpisodes] = useState(12);
-  const [deadline, setDeadline] = useState('');
-  const [links, setLinks] = useState({
-    anime365: '',
-    tg: '',
-    kodik: '',
-    vk: '',
-    shikimori: ''
-  });
+  const [activeTemplate, setActiveTemplate] = useState<'TG' | 'VK' | 'FINAL_TG' | null>(null);
+  const [links, setLinks] = useState<ProjectLinks>({});
+  const [isSavingLinks, setIsSavingLinks] = useState(false);
 
   useEffect(() => {
     getParticipants().then(setParticipants);
   }, []);
 
   useEffect(() => {
-    if (currentEpisode) {
-      setDeadline(currentEpisode.deadline ? new Date(currentEpisode.deadline).toISOString().split('T')[0] : '');
-      if (currentEpisode.project) {
-        setTotalEpisodes(currentEpisode.project.totalEpisodes);
-        if (currentEpisode.project.links) {
-          try {
-            setLinks(JSON.parse(currentEpisode.project.links));
-          } catch (e) {
-            console.error('Failed to parse links', e);
-          }
-        }
+    if (currentEpisode?.project?.links) {
+      try {
+        setLinks(JSON.parse(currentEpisode.project.links));
+      } catch (e) {
+        console.error('Failed to parse project links', e);
+        setLinks({});
       }
+    } else {
+      setLinks({});
     }
-  }, [currentEpisode]);
+  }, [currentEpisode?.project?.id]);
+
+  const handleSaveLinks = async () => {
+    if (!currentEpisode?.project) return;
+    setIsSavingLinks(true);
+    try {
+      const updatedProject = {
+        ...currentEpisode.project,
+        links: JSON.stringify(links)
+      };
+      await ipcRenderer.invoke('save-project', updatedProject);
+      onRefresh();
+    } catch (err) {
+      console.error('Failed to save links', err);
+    } finally {
+      setIsSavingLinks(false);
+    }
+  };
 
   const handleCopy = async () => {
     if (!postContent) return;
@@ -79,525 +75,192 @@ export default function ReleasePanel({ currentEpisode, onRefresh }: ReleasePanel
     }
   };
 
-  const handleBakeSubtitles = async () => {
-    if (!currentEpisode) return;
-    setIsBaking(true);
-    setBakeProgress(0);
-    setBakeStatus('Запуск FFmpeg...');
-    
-    let removeListener: (() => void) | undefined;
-    if (ipcRenderer.on) {
-      removeListener = ipcRenderer.on('ffmpeg-progress', (percent: number) => {
-        setBakeProgress(percent);
-        setBakeStatus(`Рендеринг: ${percent}%`);
-      });
-    }
-
-    try {
-      const projectTitle = currentEpisode.project?.title || 'Project';
-      const subDir = `${projectTitle}/Episode_${currentEpisode.number}`;
-      
-      await ipcRenderer.invoke('bake-subtitles', {
-        videoPath: currentEpisode.rawPath, 
-        finalAssPath: currentEpisode.subPath, 
-        outputPath: `${subDir}/final_release.mp4`
-      });
-      
-      setBakeStatus('Видео успешно отрендерено!');
-      setBakeProgress(100);
-    } catch (err: any) {
-      setBakeStatus(`Ошибка: ${err.message}`);
-    } finally {
-      setIsBaking(false);
-      if (removeListener) removeListener();
-    }
-  };
-
-  const handleGeneratePost = async () => {
-    if (!currentEpisode) return;
-    setIsGenerating(true);
-    
-    const releaseData = {
-      projectTitle: currentEpisode.project?.title || 'Неизвестно',
-      episodeNumber: currentEpisode.number,
-      dubbers: currentEpisode.assignments?.map(a => participants.find(p => p.id === a.dubberId)?.nickname || 'Неизвестно') || []
-    };
-
-    try {
-      const res = await ipcRenderer.invoke('generate-release-post', { apiKey: '', data: releaseData });
-      setPostContent(res.postText);
-    } catch (err: any) {
-      setPostContent(`Ошибка генерации: ${err.message}`);
-    } finally {
-      setIsGenerating(false);
-    }
-  };
-
-  const handleExportForSoundEngineer = async () => {
-    if (!currentEpisode) return;
-    setIsExporting(true);
-    setExportProgress(0);
-    setExportLogs([]);
-    
-    const addLog = (msg: string) => setExportLogs(prev => [...prev, msg]);
-
-    try {
-      const subDir = `${currentEpisode.project?.title}/Episode_${currentEpisode.number}/SoundEngineer`;
-      addLog(`Создание директории: ${subDir}`);
-      setExportStatus('Подготовка папки...');
-      
-      const resDir = await ipcRenderer.invoke('create-dir', subDir);
-      if (!resDir.success) throw new Error(resDir.error);
-
-      setExportProgress(10);
-
-      addLog('Экспорт дорожек даберов:');
-      for (const a of currentEpisode.assignments || []) {
-        const nickname = participants.find(p => p.id === a.dubberId)?.nickname || 'Неизвестно';
-        const dubberFile = currentEpisode.uploads?.find(u => u.assignmentId === a.id && u.type === 'DUBBER_FILE');
-        
-        if (dubberFile) {
-          const fileName = `${nickname}. ${currentEpisode.project?.title}[${currentEpisode.number.toString().padStart(2, '0')}].wav`;
-          addLog(` ├─ Копирование: ${fileName}`);
-          await ipcRenderer.invoke('copy-file', {
-            sourcePath: dubberFile.path,
-            targetDir: subDir,
-            fileName
-          });
-        } else {
-          addLog(` ├─ Пропуск: ${nickname} (файл не найден)`);
-        }
-      }
-      
-      setExportStatus('Копирование аудио...');
-      setExportProgress(40);
-
-      setExportStatus('Рендеринг видео с надписями...');
-      // In a real app, we might bake subtitles with specific sound engineer overlays
-      // For now, we'll just bake the regular ones if they exist
-      if (currentEpisode.rawPath && currentEpisode.subPath) {
-        const outputPath = `${subDir}/final_release_for_se.mp4`;
-        await ipcRenderer.invoke('bake-subtitles', {
-          videoPath: currentEpisode.rawPath,
-          finalAssPath: currentEpisode.subPath,
-          outputPath
-        });
-      }
-      
-      setExportProgress(95);
-
-      addLog(`Пакет успешно собран в: ${subDir}`);
-      setExportStatus('Экспорт завершен!');
-      setExportProgress(100);
-      
-      // Update status to SOUND_ENGINEERING
-      await ipcRenderer.invoke('save-episode', { ...currentEpisode, status: 'SOUND_ENGINEERING' });
-      onRefresh();
-    } catch (err: any) {
-      setExportStatus(`Ошибка: ${err.message}`);
-      addLog(`Ошибка экспорта: ${err.message}`);
-    } finally {
-      setIsExporting(false);
-    }
-  };
-
-  const handleExportForDubbers = async () => {
-    if (!currentEpisode) return;
-    setIsExportingDub(true);
-    setExportDubProgress(0);
-    setExportDubLogs([]);
-    
-    const addLog = (msg: string) => setExportDubLogs(prev => [...prev, msg]);
-
-    try {
-      const subDir = `${currentEpisode.project?.title}/Episode_${currentEpisode.number}/Dubbing`;
-      addLog(`Создание директории: ${subDir}`);
-      setExportDubStatus('Подготовка папки...');
-      
-      const resDir = await ipcRenderer.invoke('create-dir', subDir);
-      if (!resDir.success) throw new Error(resDir.error);
-
-      setExportDubProgress(10);
-
-      addLog('Генерация индивидуальных субтитров (.ass):');
-      if (currentEpisode.subPath) {
-        const assignments = currentEpisode.assignments || [];
-        const resSplit = await ipcRenderer.invoke('split-subs-by-dubber', {
-          assPath: currentEpisode.subPath,
-          assignments,
-          outputDir: subDir
-        });
-        
-        if (resSplit.success) {
-          addLog(' ├─ Субтитры успешно разделены по даберам');
-        } else {
-          addLog(` ├─ Ошибка разделения: ${resSplit.error}`);
-        }
-      } else {
-        addLog(' ├─ Ошибка: Файл субтитров не найден');
-      }
-      
-      setExportDubStatus('Экспорт субтитров...');
-      setExportDubProgress(30);
-
-      setExportDubStatus('FFmpeg (Аппаратный рендеринг референса)...');
-      if (currentEpisode.rawPath && currentEpisode.subPath) {
-        const outputPath = `${subDir}/Dub_ref.mp4`;
-        await ipcRenderer.invoke('bake-subtitles', {
-          videoPath: currentEpisode.rawPath,
-          finalAssPath: currentEpisode.subPath,
-          outputPath
-        });
-      }
-
-      addLog(`Видео успешно сохранено в: ${subDir}/Dub_ref.mp4`);
-      setExportDubStatus('Экспорт завершен!');
-      setExportDubProgress(100);
-      
-      // Update status to RECORDING
-      await ipcRenderer.invoke('save-episode', { ...currentEpisode, status: 'RECORDING' });
-      onRefresh();
-    } catch (err: any) {
-      setExportDubStatus(`Ошибка: ${err.message}`);
-      addLog(`Ошибка экспорта: ${err.message}`);
-    } finally {
-      setIsExportingDub(false);
-    }
-  };
-
-  const handleFinishRelease = async () => {
-    if (!currentEpisode) return;
-    try {
-      await ipcRenderer.invoke('save-episode', { ...currentEpisode, status: 'FINISHED' });
-      onRefresh();
-      alert('Релиз успешно завершен!');
-    } catch (error) {
-      console.error('Finish error:', error);
-    }
-  };
-
-  const handleSaveReleaseSettings = async () => {
-    if (!currentEpisode) return;
-    try {
-      // Update episode deadline
-      await ipcRenderer.invoke('save-episode', { ...currentEpisode, deadline });
-      
-      // Update project totalEpisodes and links
-      if (currentEpisode.project) {
-        await ipcRenderer.invoke('save-project', { 
-          ...currentEpisode.project,
-          totalEpisodes, 
-          links: JSON.stringify(links) 
-        });
-      }
-      
-      onRefresh();
-      alert('Настройки релиза сохранены!');
-    } catch (error) {
-      console.error('Save settings error:', error);
-    }
-  };
-
   const templates = [
-    { title: 'Старт серии', icon: Send, generator: generateStartEpisodeMessage },
-    { title: 'Выписка фиксов', icon: FileText, generator: generateFixesIssuedMessage },
-    { title: 'Дороги/Фиксы', icon: Clock, generator: generateStatusMessage },
-    { title: 'Пост в ТГ', icon: MessageSquare, generator: generateTGPostMessage },
-    { title: 'Пост в ВК', icon: LinkIcon, generator: generateVKPostMessage },
-    { title: 'Финальный пост ТГ', icon: CheckCircle2, generator: generateFinalTGMessage },
+    { 
+      name: 'Пост в Telegram', 
+      icon: <Send className="w-4 h-4" />, 
+      color: 'bg-blue-600',
+      generate: () => currentEpisode ? generateTGPostMessage(currentEpisode, participants) : '',
+      type: 'TG' as const
+    },
+    { 
+      name: 'Пост в VK', 
+      icon: <Globe className="w-4 h-4" />, 
+      color: 'bg-indigo-600',
+      generate: () => currentEpisode ? generateVKPostMessage(currentEpisode, participants) : '',
+      type: 'VK' as const
+    },
+    { 
+      name: 'Финальный пост TG', 
+      icon: <Sparkles className="w-4 h-4" />, 
+      color: 'bg-purple-600',
+      generate: () => currentEpisode ? generateFinalTGMessage(currentEpisode, participants) : '',
+      type: 'FINAL_TG' as const
+    }
   ];
 
+  if (!currentEpisode) {
+    return (
+      <div className="flex-1 flex items-center justify-center text-neutral-500 italic">
+        Выберите серию для сборки релиза
+      </div>
+    );
+  }
+
   return (
-    <div className="p-8 max-w-4xl w-full mx-auto space-y-8">
-      <div className="flex items-center gap-3 mb-8">
-        <div className="w-10 h-10 bg-gradient-to-br from-purple-500 to-blue-600 rounded-xl flex items-center justify-center shadow-lg">
-          <PlaySquare className="w-5 h-5 text-white" />
-        </div>
-        <div>
-          <h1 className="text-3xl font-bold text-white tracking-tight">Сборка релиза</h1>
-          {currentEpisode && (
-            <p className="text-neutral-400 text-sm mt-1">
-              Проект: <span className="text-indigo-400">{currentEpisode.project?.title}</span> • Серия {currentEpisode.number}
-            </p>
-          )}
+    <div className="max-w-5xl mx-auto w-full space-y-8 p-6">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <div className="p-3 bg-purple-600/20 rounded-xl">
+            <PlaySquare className="w-8 h-8 text-purple-400" />
+          </div>
+          <div>
+            <h1 className="text-3xl font-bold text-white">Сборка релиза</h1>
+            <p className="text-neutral-400">Формирование постов для социальных сетей</p>
+          </div>
         </div>
       </div>
 
-      {/* Настройки релиза */}
-      <div className="bg-neutral-900 border border-neutral-800 rounded-xl shadow-xl p-6">
-        <div className="flex items-center gap-2 mb-6">
-          <Settings2 className="w-6 h-6 text-indigo-400" />
-          <h2 className="text-2xl font-bold text-white">Настройки релиза</h2>
-        </div>
-        
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <div className="space-y-4">
-            <div>
-              <label className="block text-xs font-bold text-neutral-500 uppercase mb-1 ml-1">Дедлайн серии</label>
-              <div className="relative">
-                <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-neutral-500" />
-                <input
-                  type="date"
-                  value={deadline}
-                  onChange={(e) => setDeadline(e.target.value)}
-                  className="w-full bg-black border border-neutral-800 rounded-lg py-2 pl-10 pr-4 text-white focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
-                />
-              </div>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        {templates.map((tpl) => (
+          <button
+            key={tpl.type}
+            onClick={() => {
+              setPostContent(tpl.generate());
+              setActiveTemplate(tpl.type);
+            }}
+            className={`p-6 rounded-2xl border transition-all flex flex-col items-center gap-4 text-center ${
+              activeTemplate === tpl.type 
+                ? 'bg-neutral-900 border-purple-500/50 shadow-lg shadow-purple-500/10' 
+                : 'bg-neutral-900/50 border-neutral-800 hover:border-neutral-700'
+            }`}
+          >
+            <div className={`p-4 rounded-full ${tpl.color}/20 text-white`}>
+              {tpl.icon}
             </div>
             <div>
-              <label className="block text-xs font-bold text-neutral-500 uppercase mb-1 ml-1">Всего серий</label>
-              <div className="relative">
-                <Hash className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-neutral-500" />
-                <input
-                  type="number"
-                  value={totalEpisodes}
-                  onChange={(e) => setTotalEpisodes(parseInt(e.target.value))}
-                  className="w-full bg-black border border-neutral-800 rounded-lg py-2 pl-10 pr-4 text-white focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
-                />
-              </div>
+              <h3 className="font-bold text-white">{tpl.name}</h3>
+              <p className="text-xs text-neutral-500 mt-1">Сгенерировать по шаблону</p>
             </div>
-          </div>
-
-          <div className="space-y-3">
-            <label className="block text-xs font-bold text-neutral-500 uppercase mb-1 ml-1">Ссылки на платформы</label>
-            <div className="grid grid-cols-1 gap-2">
-              {Object.entries(links).map(([key, value]) => (
-                <div key={key} className="relative">
-                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-[10px] font-bold text-neutral-600 uppercase w-16">{key}</span>
-                  <input
-                    type="text"
-                    placeholder="URL..."
-                    value={value}
-                    onChange={(e) => setLinks(prev => ({ ...prev, [key]: e.target.value }))}
-                    className="w-full bg-black border border-neutral-800 rounded-lg py-1.5 pl-20 pr-4 text-xs text-white focus:ring-1 focus:ring-indigo-500 outline-none transition-all"
-                  />
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        <button
-          onClick={handleSaveReleaseSettings}
-          className="mt-6 w-full bg-indigo-600 hover:bg-indigo-500 text-white py-2 rounded-lg font-bold transition-colors shadow-lg shadow-indigo-500/20"
-        >
-          Сохранить настройки
-        </button>
+          </button>
+        ))}
       </div>
 
-      {/* Шаблоны сообщений */}
-      <div className="bg-neutral-900 border border-neutral-800 rounded-xl shadow-xl p-6">
-        <div className="flex items-center gap-2 mb-6">
-          <MessageSquare className="w-6 h-6 text-amber-400" />
-          <h2 className="text-2xl font-bold text-white">Шаблоны сообщений</h2>
+      {/* Platform Links Section */}
+      <div className="bg-neutral-900 border border-neutral-800 rounded-2xl overflow-hidden shadow-xl">
+        <div className="p-4 border-b border-neutral-800 bg-neutral-900/50 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Link2 className="w-4 h-4 text-purple-400" />
+            <span className="text-sm font-bold text-white uppercase tracking-wider">Ссылки на платформы</span>
+          </div>
+          <button
+            onClick={handleSaveLinks}
+            disabled={isSavingLinks}
+            className="flex items-center gap-2 px-4 py-1.5 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white rounded-lg text-xs font-bold transition-all"
+          >
+            <Save className="w-3.5 h-3.5" />
+            {isSavingLinks ? 'Сохранение...' : 'Сохранить ссылки'}
+          </button>
         </div>
-
-        <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mb-6">
-          {templates.map((tpl, idx) => (
-            <button
-              key={idx}
-              onClick={() => {
-                if (currentEpisode) {
-                  setPostContent(tpl.generator(currentEpisode, participants));
-                }
-              }}
-              className="flex items-center gap-2 bg-neutral-800 hover:bg-neutral-700 text-neutral-300 hover:text-white p-3 rounded-lg text-sm font-medium transition-all border border-neutral-700/50"
-            >
-              <tpl.icon className="w-4 h-4" />
-              {tpl.title}
-            </button>
-          ))}
+        <div className="p-6 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          <div className="space-y-2">
+            <label className="text-[10px] font-bold text-neutral-500 uppercase tracking-widest">Аниме 365</label>
+            <input 
+              type="text"
+              value={links.anime365 || ''}
+              onChange={(e) => setLinks(prev => ({ ...prev, anime365: e.target.value }))}
+              placeholder="https://anime365.ru/..."
+              className="w-full bg-black/50 border border-neutral-800 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-purple-500/50 transition-all"
+            />
+          </div>
+          <div className="space-y-2">
+            <label className="text-[10px] font-bold text-neutral-500 uppercase tracking-widest">Telegram</label>
+            <input 
+              type="text"
+              value={links.tg || ''}
+              onChange={(e) => setLinks(prev => ({ ...prev, tg: e.target.value }))}
+              placeholder="https://t.me/..."
+              className="w-full bg-black/50 border border-neutral-800 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-purple-500/50 transition-all"
+            />
+          </div>
+          <div className="space-y-2">
+            <label className="text-[10px] font-bold text-neutral-500 uppercase tracking-widest">Kodik</label>
+            <input 
+              type="text"
+              value={links.kodik || ''}
+              onChange={(e) => setLinks(prev => ({ ...prev, kodik: e.target.value }))}
+              placeholder="https://kodik.info/..."
+              className="w-full bg-black/50 border border-neutral-800 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-purple-500/50 transition-all"
+            />
+          </div>
+          <div className="space-y-2">
+            <label className="text-[10px] font-bold text-neutral-500 uppercase tracking-widest">VK</label>
+            <input 
+              type="text"
+              value={links.vk || ''}
+              onChange={(e) => setLinks(prev => ({ ...prev, vk: e.target.value }))}
+              placeholder="https://vk.com/video..."
+              className="w-full bg-black/50 border border-neutral-800 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-purple-500/50 transition-all"
+            />
+          </div>
+          <div className="space-y-2">
+            <label className="text-[10px] font-bold text-neutral-500 uppercase tracking-widest">Shikimori</label>
+            <input 
+              type="text"
+              value={links.shikimori || ''}
+              onChange={(e) => setLinks(prev => ({ ...prev, shikimori: e.target.value }))}
+              placeholder="https://shikimori.one/..."
+              className="w-full bg-black/50 border border-neutral-800 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-purple-500/50 transition-all"
+            />
+          </div>
         </div>
+      </div>
 
-        <div className="relative bg-neutral-950 border border-neutral-800 rounded-lg p-4 min-h-[150px] group">
-          <p className="text-neutral-300 text-sm whitespace-pre-wrap font-sans pr-8">
-            {postContent || 'Выберите шаблон выше для генерации текста...'}
-          </p>
-          {postContent && (
+      {postContent && (
+        <div className="bg-neutral-900 border border-neutral-800 rounded-2xl overflow-hidden shadow-2xl animate-in fade-in slide-in-from-bottom-4 duration-500">
+          <div className="p-4 border-b border-neutral-800 bg-neutral-900/50 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <MessageSquare className="w-4 h-4 text-purple-400" />
+              <span className="text-sm font-bold text-white uppercase tracking-wider">Предпросмотр сообщения</span>
+            </div>
             <button
               onClick={handleCopy}
-              className="absolute top-2 right-2 p-2 bg-neutral-800 hover:bg-neutral-700 rounded-md text-neutral-400 hover:text-white transition-colors opacity-0 group-hover:opacity-100"
+              className={`flex items-center gap-2 px-4 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                isCopied ? 'bg-green-600 text-white' : 'bg-neutral-800 hover:bg-neutral-700 text-neutral-300'
+              }`}
             >
-              {isCopied ? <CheckCircle2 className="w-4 h-4 text-green-500" /> : <Copy className="w-4 h-4" />}
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* Экспорт на озвучку (Даберам) */}
-      <div className="bg-neutral-900 border border-neutral-800 rounded-xl shadow-xl p-6 flex flex-col">
-        <div className="flex items-center gap-2 mb-4">
-          <Mic2 className="w-6 h-6 text-pink-400" />
-          <h2 className="text-2xl font-bold text-white">Экспорт на озвучку (Даберам)</h2>
-        </div>
-        <p className="text-neutral-400 text-sm mb-6">
-          Создание облегченного видео со вшитыми субтитрами для комфортной записи, а также нарезка индивидуальных файлов субтитров для каждого актера.
-        </p>
-
-        <div className="mt-auto space-y-4">
-          {exportDubLogs.length > 0 && (
-            <div className="bg-black border border-neutral-800 rounded-lg p-4 h-40 overflow-y-auto font-mono text-xs text-neutral-400 space-y-1 custom-scrollbar">
-              {exportDubLogs.map((log, idx) => (
-                <div key={idx} className={log.includes('Ошибка') ? 'text-red-400' : log.includes('Успешно') || log.includes('Готово') ? 'text-green-400' : ''}>
-                  {log}
-                </div>
-              ))}
-            </div>
-          )}
-
-          {isExportingDub && (
-            <>
-              <div className="w-full bg-neutral-950 rounded-full h-3 border border-neutral-800 overflow-hidden">
-                <div 
-                  className="bg-pink-500 h-3 rounded-full transition-all duration-300 ease-out"
-                  style={{ width: `${exportDubProgress}%` }}
-                ></div>
-              </div>
-              <div className="flex items-center justify-between text-sm">
-                <span className="text-neutral-400">{exportDubStatus}</span>
-                <span className="text-pink-400 font-medium">{exportDubProgress}%</span>
-              </div>
-            </>
-          )}
-
-          <button
-            onClick={handleExportForDubbers}
-            disabled={isExportingDub || !currentEpisode}
-            className="w-full flex items-center justify-center gap-2 bg-pink-600 hover:bg-pink-500 disabled:opacity-50 disabled:cursor-not-allowed text-white px-6 py-4 rounded-lg font-bold transition-colors shadow-lg shadow-pink-500/20 text-lg"
-          >
-            {isExportingDub ? <Loader2 className="w-6 h-6 animate-spin" /> : <Mic2 className="w-6 h-6" />}
-            {isExportingDub ? 'Экспорт...' : 'Собрать пакет на озвучку'}
-          </button>
-        </div>
-      </div>
-
-      {/* Экспорт для звукорежиссера */}
-      <div className="bg-neutral-900 border border-neutral-800 rounded-xl shadow-xl p-6 flex flex-col">
-        <div className="flex items-center gap-2 mb-4">
-          <FolderOutput className="w-6 h-6 text-teal-400" />
-          <h2 className="text-2xl font-bold text-white">Экспорт для звукорежиссера</h2>
-        </div>
-        <p className="text-neutral-400 text-sm mb-6">
-          Автоматическая сборка материалов для сведения. Видео кодируется с вшитыми надписями, а все принятые дорожки даберов переименовываются по гайдлайнам.
-        </p>
-
-        <div className="mt-auto space-y-4">
-          {exportLogs.length > 0 && (
-            <div className="bg-black border border-neutral-800 rounded-lg p-4 h-40 overflow-y-auto font-mono text-xs text-neutral-400 space-y-1 custom-scrollbar">
-              {exportLogs.map((log, idx) => (
-                <div key={idx} className={log.includes('Ошибка') ? 'text-red-400' : log.includes('Успешно') || log.includes('Готово') ? 'text-green-400' : ''}>
-                  {log}
-                </div>
-              ))}
-            </div>
-          )}
-
-          {isExporting && (
-            <>
-              <div className="w-full bg-neutral-950 rounded-full h-3 border border-neutral-800 overflow-hidden">
-                <div 
-                  className="bg-teal-500 h-3 rounded-full transition-all duration-300 ease-out"
-                  style={{ width: `${exportProgress}%` }}
-                ></div>
-              </div>
-              <div className="flex items-center justify-between text-sm">
-                <span className="text-neutral-400">{exportStatus}</span>
-                <span className="text-teal-400 font-medium">{exportProgress}%</span>
-              </div>
-            </>
-          )}
-
-          <button
-            onClick={handleExportForSoundEngineer}
-            disabled={isExporting || !currentEpisode}
-            className="w-full flex items-center justify-center gap-2 bg-teal-600 hover:bg-teal-500 disabled:opacity-50 disabled:cursor-not-allowed text-white px-6 py-4 rounded-lg font-bold transition-colors shadow-lg shadow-teal-500/20 text-lg"
-          >
-            {isExporting ? <Loader2 className="w-6 h-6 animate-spin" /> : <FolderOutput className="w-6 h-6" />}
-            {isExporting ? 'Экспорт...' : 'Собрать пакет для звукорежиссера'}
-          </button>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-        {/* Блок хардсаба */}
-        <div className="bg-neutral-900 border border-neutral-800 rounded-xl shadow-xl p-6 flex flex-col">
-          <div className="flex items-center gap-2 mb-4">
-            <Video className="w-5 h-5 text-blue-400" />
-            <h2 className="text-xl font-bold text-white">Хардсаб субтитров</h2>
-          </div>
-          
-          <div className="mt-auto space-y-4">
-            <div className="w-full bg-neutral-950 rounded-full h-3 border border-neutral-800 overflow-hidden">
-              <div 
-                className="bg-blue-600 h-3 rounded-full transition-all duration-300 ease-out"
-                style={{ width: `${bakeProgress}%` }}
-              ></div>
-            </div>
-            
-            <div className="flex items-center justify-between text-sm">
-              <span className="text-neutral-400">{bakeStatus || 'Ожидание...'}</span>
-              <span className="text-blue-400 font-medium">{bakeProgress}%</span>
-            </div>
-
-            <button
-              onClick={handleBakeSubtitles}
-              disabled={isBaking || !currentEpisode}
-              className="w-full flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white px-6 py-3 rounded-lg font-medium transition-colors shadow-lg shadow-blue-500/20"
-            >
-              {isBaking ? <Loader2 className="w-5 h-5 animate-spin" /> : <PlaySquare className="w-5 h-5" />}
-              {isBaking ? 'Рендеринг...' : 'Запустить рендер'}
+              {isCopied ? <CheckCircle2 className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+              {isCopied ? 'Скопировано!' : 'Копировать'}
             </button>
           </div>
-        </div>
-
-        {/* Блок SMM */}
-        <div className="bg-neutral-900 border border-neutral-800 rounded-xl shadow-xl p-6 flex flex-col">
-          <div className="flex items-center gap-2 mb-4">
-            <Send className="w-5 h-5 text-purple-400" />
-            <h2 className="text-xl font-bold text-white">SMM Пост</h2>
-          </div>
-
-          <div className="mt-auto space-y-4">
-            {postContent ? (
-              <div className="relative bg-neutral-950 border border-neutral-800 rounded-lg p-4 min-h-[120px] max-h-[200px] overflow-y-auto group">
-                <p className="text-neutral-300 text-sm whitespace-pre-wrap font-sans pr-8">
-                  {postContent}
-                </p>
-                <button
-                  onClick={handleCopy}
-                  className="absolute top-2 right-2 p-2 bg-neutral-800 hover:bg-neutral-700 rounded-md text-neutral-400 hover:text-white transition-colors opacity-0 group-hover:opacity-100"
-                >
-                  {isCopied ? <CheckCircle2 className="w-4 h-4 text-green-500" /> : <Copy className="w-4 h-4" />}
-                </button>
-              </div>
-            ) : (
-              <div className="bg-neutral-950 border border-neutral-800 rounded-lg p-4 min-h-[120px] flex items-center justify-center">
-                <span className="text-neutral-600 text-sm">Пост еще не сгенерирован</span>
-              </div>
-            )}
-
-            <button
-              onClick={handleGeneratePost}
-              disabled={isGenerating || !currentEpisode}
-              className="w-full flex items-center justify-center gap-2 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white px-6 py-3 rounded-lg font-medium transition-colors shadow-lg shadow-purple-500/20"
-            >
-              {isGenerating ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
-              {isGenerating ? 'Генерация...' : 'Сгенерировать пост'}
-            </button>
+          <div className="p-8">
+            <pre className="bg-black/50 border border-neutral-800 rounded-xl p-8 text-sm text-neutral-300 whitespace-pre-wrap font-mono leading-relaxed max-h-[500px] overflow-y-auto custom-scrollbar">
+              {postContent}
+            </pre>
           </div>
         </div>
-      </div>
-
-      <div className="pt-8 flex justify-center">
-        <button
-          onClick={handleFinishRelease}
-          disabled={!currentEpisode || currentEpisode.status !== 'SOUND_ENGINEERING'}
-          className="bg-green-600 hover:bg-green-500 disabled:opacity-50 text-white px-12 py-4 rounded-xl font-bold text-xl transition-all shadow-xl shadow-green-500/20 flex items-center gap-3"
-        >
-          <CheckCircle2 className="w-8 h-8" />
-          Завершить релиз
-        </button>
-      </div>
+      )}
     </div>
+  );
+}
+
+function GlobeIcon(props: any) {
+  return (
+    <svg
+      {...props}
+      xmlns="http://www.w3.org/2000/svg"
+      width="24"
+      height="24"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <circle cx="12" cy="12" r="10" />
+      <line x1="2" y1="12" x2="22" y2="12" />
+      <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+    </svg>
   );
 }

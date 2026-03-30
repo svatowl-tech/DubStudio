@@ -1,7 +1,8 @@
 {
-  "name": "react-example",
-  "private": true,
-  "version": "0.0.0",
+  "name": "anime-dub-manager",
+  "version": "1.0.0",
+  "description": "Гибридное кроссплатформенное десктопное приложение для студии озвучки и фандаба.",
+  "author": "Svat.Owl",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -15,7 +16,8 @@
   "main": "electron/main.cjs",
   "build": {
     "appId": "com.dubbing.app",
-    "productName": "DubbingApp",
+    "productName": "Anime Dub Manager",
+    "icon": "assets/icon.png",
     "directories": {
       "output": "dist/electron"
     },
@@ -27,7 +29,10 @@
     ],
     "win": {
       "target": "nsis"
-    }
+    },
+    "asarUnpack": [
+      "**/node_modules/ffmpeg-static/**/*"
+    ]
   },
   "dependencies": {
     "@google/genai": "^1.29.0",

@@ -1,8 +1,18 @@
 const ffmpeg = require('fluent-ffmpeg');
-const ffmpegPath = require('ffmpeg-static');
+let ffmpegPath = require('ffmpeg-static');
+const fs = require('fs');
 
 // Настройка пути к FFmpeg для работы в составе Electron
+// Если путь находится внутри app.asar, заменяем его на app.asar.unpacked
 if (ffmpegPath) {
+  ffmpegPath = ffmpegPath.replace('app.asar', 'app.asar.unpacked');
+  
+  if (fs.existsSync(ffmpegPath)) {
+    console.log('FFmpeg found at:', ffmpegPath);
+  } else {
+    console.error('FFmpeg NOT found at:', ffmpegPath);
+  }
+  
   ffmpeg.setFfmpegPath(ffmpegPath);
 }
 
@@ -18,7 +28,7 @@ if (ffmpegPath) {
  */
 function bakeSubtitles(videoPath, finalAssPath, outputPath, onProgress, options = {}) {
   return new Promise((resolve, reject) => {
-    let command = ffmpeg(videoPath);
+    let command = ffmpeg(videoPath).outputOptions('-y');
     
     // Apply hardware acceleration if requested
     if (options.useNvenc) {
@@ -69,7 +79,7 @@ function bakeSubtitles(videoPath, finalAssPath, outputPath, onProgress, options 
  */
 function transcodeToMp4(videoPath, outputPath, onProgress, options = {}) {
   return new Promise((resolve, reject) => {
-    let command = ffmpeg(videoPath);
+    let command = ffmpeg(videoPath).outputOptions('-y');
 
     if (options.useNvenc) {
       command = command
@@ -105,7 +115,17 @@ function transcodeToMp4(videoPath, outputPath, onProgress, options = {}) {
   });
 }
 
+function setCustomFfmpegPath(path) {
+  if (path && fs.existsSync(path)) {
+    ffmpeg.setFfmpegPath(path);
+    console.log('Custom FFmpeg path set:', path);
+    return true;
+  }
+  return false;
+}
+
 module.exports = {
   bakeSubtitles,
-  transcodeToMp4
+  transcodeToMp4,
+  setCustomFfmpegPath
 };
