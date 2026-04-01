@@ -1,6 +1,18 @@
 const SHIKIMORI_BASE = 'https://shikimori.one/api';
 const JIKAN_BASE = 'https://api.jikan.moe/v4';
 
+const isShikimoriPlaceholder = (url: string | undefined | null) => {
+  if (!url) return true;
+  const lowerUrl = url.toLowerCase();
+  return lowerUrl.includes('missing_original.png') || 
+         lowerUrl.includes('missing_preview.png') || 
+         lowerUrl.includes('missing.png') || 
+         lowerUrl.includes('main.png') ||
+         lowerUrl.includes('missing_original.jpg') ||
+         lowerUrl.includes('missing_preview.jpg') ||
+         lowerUrl.includes('missing.jpg');
+};
+
 export const searchAnime = async (query: string) => {
   let shikimoriData = [];
   try {
@@ -13,22 +25,25 @@ export const searchAnime = async (query: string) => {
   }
 
   if (Array.isArray(shikimoriData) && shikimoriData.length > 0) {
-    return shikimoriData.map((anime: any) => ({
-      id: anime.id,
-      mal_id: anime.id, // Shikimori ID is used here, but we'll try to find real mal_id if needed
-      title: anime.russian || anime.name,
-      original_title: anime.name, // Romaji
-      image: anime.image ? `https://shikimori.one${anime.image.original}` : '',
-      images: {
-        jpg: {
-          image_url: anime.image ? `https://shikimori.one${anime.image.original}` : '',
-          small_image_url: anime.image ? `https://shikimori.one${anime.image.preview}` : '',
-          large_image_url: anime.image ? `https://shikimori.one${anime.image.original}` : '',
-        }
-      },
-      status: anime.status === 'ongoing' ? 'Currently Airing' : anime.status === 'released' ? 'Finished Airing' : anime.status,
-      source: 'shikimori'
-    }));
+    return shikimoriData.map((anime: any) => {
+      const isPlaceholder = isShikimoriPlaceholder(anime.image?.original);
+      return {
+        id: anime.id,
+        mal_id: anime.id, // Shikimori ID is used here, but we'll try to find real mal_id if needed
+        title: anime.russian || anime.name,
+        original_title: anime.name, // Romaji
+        image: anime.image && !isPlaceholder ? `https://shikimori.one${anime.image.original}` : '',
+        images: {
+          jpg: {
+            image_url: anime.image && !isPlaceholder ? `https://shikimori.one${anime.image.original}` : '',
+            small_image_url: anime.image && !isPlaceholder ? `https://shikimori.one${anime.image.preview}` : '',
+            large_image_url: anime.image && !isPlaceholder ? `https://shikimori.one${anime.image.original}` : '',
+          }
+        },
+        status: anime.status === 'ongoing' ? 'Currently Airing' : anime.status === 'released' ? 'Finished Airing' : anime.status,
+        source: 'shikimori'
+      };
+    });
   }
 
   // Fallback to Jikan (MAL)
@@ -67,8 +82,10 @@ export const getAnimeDetails = async (id: number, source: string = 'shikimori') 
     }
   }
 
-  // If we have Shikimori data but it's missing description or other info, or if we don't have it at all
-  if (!shikimoriData || !shikimoriData.description || !shikimoriData.image) {
+  // If we have Shikimori data but it's missing description or other info, or if we don't have it at all, or if image is placeholder
+  const isPlaceholder = shikimoriData?.image?.original ? isShikimoriPlaceholder(shikimoriData.image.original) : true;
+  
+  if (!shikimoriData || !shikimoriData.description || !shikimoriData.image || isPlaceholder) {
     try {
       // If we have shikimoriData, we might have mal_id. If not, we use the provided id.
       const malId = shikimoriData?.mal_id || id;
@@ -78,13 +95,24 @@ export const getAnimeDetails = async (id: number, source: string = 'shikimori') 
       if (jikanData && jikanData.data) {
         const anime = jikanData.data;
         // Merge or return Jikan data
+        const shikimoriImageOriginal = shikimoriData?.image?.original;
+        const shikimoriImagePreview = shikimoriData?.image?.preview;
+        
+        const finalImageOriginal = (shikimoriImageOriginal && !isShikimoriPlaceholder(shikimoriImageOriginal)) 
+          ? `https://shikimori.one${shikimoriImageOriginal}` 
+          : (anime.images?.jpg?.large_image_url || anime.images?.jpg?.image_url);
+          
+        const finalImagePreview = (shikimoriImagePreview && !isShikimoriPlaceholder(shikimoriImagePreview)) 
+          ? `https://shikimori.one${shikimoriImagePreview}` 
+          : anime.images?.jpg?.small_image_url;
+
         return {
           id: shikimoriData?.id || anime.mal_id,
           name: anime.title, // Romaji
           russian: shikimoriData?.russian || anime.title_english || anime.title,
           image: {
-            original: shikimoriData?.image?.original ? `https://shikimori.one${shikimoriData.image.original}` : (anime.images?.jpg?.large_image_url || anime.images?.jpg?.image_url),
-            preview: shikimoriData?.image?.preview ? `https://shikimori.one${shikimoriData.image.preview}` : anime.images?.jpg?.small_image_url
+            original: finalImageOriginal,
+            preview: finalImagePreview
           },
           status: shikimoriData?.status || anime.status,
           episodes: shikimoriData?.episodes || anime.episodes,
@@ -116,7 +144,9 @@ export const getAnimeCharacters = async (id: number, source: string = 'shikimori
             id: role.character.id,
             name: role.character.russian || role.character.name,
             original_name: role.character.name,
-            image: role.character.image ? `https://shikimori.one${role.character.image.original}` : ''
+            image: role.character.image && !isShikimoriPlaceholder(role.character.image.original) 
+              ? `https://shikimori.one${role.character.image.original}` 
+              : ''
           }));
       }
     } catch (error) {
@@ -124,18 +154,38 @@ export const getAnimeCharacters = async (id: number, source: string = 'shikimori
     }
   }
 
-  // If Shikimori returned no characters, try Jikan
-  if (shikimoriChars.length === 0) {
+  // If Shikimori returned no characters or some have placeholder images, try Jikan to fill the gaps
+  if (shikimoriChars.length === 0 || shikimoriChars.some(c => !c.image)) {
     try {
+      // We need a mal_id for Jikan. 
       const response = await fetch(`${JIKAN_BASE}/anime/${id}/characters`);
       const data = await response.json();
       if (data && data.data) {
-        return data.data.map((item: any) => ({
-          id: item.character.mal_id,
-          name: item.character.name,
-          original_name: item.character.name,
-          image: item.character.images?.jpg?.image_url || ''
-        }));
+        const jikanChars = data.data;
+        
+        if (shikimoriChars.length === 0) {
+          return jikanChars.map((item: any) => ({
+            id: item.character.mal_id,
+            name: item.character.name,
+            original_name: item.character.name,
+            image: item.character.images?.jpg?.image_url || ''
+          }));
+        } else {
+          // Merge images from Jikan into Shikimori characters where they are missing
+          return shikimoriChars.map(sc => {
+            if (!sc.image) {
+              const match = jikanChars.find((jc: any) => 
+                jc.character.name.toLowerCase() === sc.original_name.toLowerCase() ||
+                jc.character.name.toLowerCase().includes(sc.original_name.toLowerCase()) ||
+                sc.original_name.toLowerCase().includes(jc.character.name.toLowerCase())
+              );
+              if (match) {
+                return { ...sc, image: match.character.images?.jpg?.image_url || '' };
+              }
+            }
+            return sc;
+          });
+        }
       }
     } catch (error) {
       console.error('Error fetching Jikan characters:', error);

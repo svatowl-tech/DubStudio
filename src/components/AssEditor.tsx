@@ -219,12 +219,44 @@ export default function AssEditor({
     if (!currentEpisode) return;
 
     if (currentEpisode.assignments && currentEpisode.assignments.length > 0) {
-      setAssignments(currentEpisode.assignments);
-      setActors(currentEpisode.assignments.map(a => a.characterName));
+      // Sync with global mapping for unassigned characters
+      let globalMapping: {characterName: string, dubberId: string}[] = [];
+      try {
+        const raw = currentEpisode.project?.globalMapping || '[]';
+        const parsed = JSON.parse(raw);
+        globalMapping = Array.isArray(parsed)
+          ? parsed
+          : Object.entries(parsed).map(([k, v]) => ({ characterName: k, dubberId: v as string }));
+      } catch (e) {
+        console.error("Error parsing global mapping:", e);
+      }
+
+      const updatedAssignments = currentEpisode.assignments.map(a => {
+        if (!a.dubberId) {
+          const mappingEntry = globalMapping.find(m => m.characterName === a.characterName);
+          if (mappingEntry?.dubberId) {
+            const dubber = participants.find(p => p.id === mappingEntry.dubberId);
+            return { ...a, dubberId: mappingEntry.dubberId, dubber };
+          }
+        }
+        return a;
+      });
+
+      // Only update state if there are actual changes to avoid loops
+      const hasChanges = JSON.stringify(updatedAssignments) !== JSON.stringify(currentEpisode.assignments);
+      if (hasChanges) {
+        setAssignments(updatedAssignments);
+        setActors(updatedAssignments.map(a => a.characterName));
+        saveToDatabase(updatedAssignments);
+      } else {
+        setAssignments(currentEpisode.assignments);
+        setActors(currentEpisode.assignments.map(a => a.characterName));
+      }
+      
       lastAnalyzedEpisodeId.current = currentEpisode.id;
       
       // If line counts are missing, trigger analysis
-      const hasLineCounts = currentEpisode.assignments.some(a => (a.lineCount || 0) > 0);
+      const hasLineCounts = updatedAssignments.some(a => (a.lineCount || 0) > 0);
       if (!hasLineCounts && currentEpisode.subPath) {
         handleAnalyzeExisting();
       }
@@ -238,7 +270,7 @@ export default function AssEditor({
         }
       }
     }
-  }, [currentEpisode?.id, currentEpisode?.subPath]);
+  }, [currentEpisode?.id, currentEpisode?.subPath, currentEpisode?.project?.globalMapping, participants.length]);
 
   const handleTransliterateNames = () => {
     if (assignments.length === 0) return;
@@ -450,55 +482,70 @@ export default function AssEditor({
       const currentAliases: Record<string, string> = JSON.parse(currentEpisode.project.characterAliases || '{}');
       currentAliases[aliasName] = mainName;
       
+      // 2. Find dubber from global mapping for the main character
+      let globalMapping: {characterName: string, dubberId: string}[] = [];
+      try {
+        const raw = currentEpisode.project?.globalMapping || '[]';
+        const parsed = JSON.parse(raw);
+        globalMapping = Array.isArray(parsed)
+          ? parsed
+          : Object.entries(parsed).map(([k, v]) => ({ characterName: k, dubberId: v as string }));
+      } catch (e) {
+        console.error("Error parsing global mapping:", e);
+      }
+      
+      const mappingEntry = globalMapping.find(m => m.characterName === mainName);
+      const autoDubberId = mappingEntry?.dubberId || "";
+      const autoDubber = participants.find(p => p.id === autoDubberId);
+
       const updatedProject = {
         ...currentEpisode.project,
         characterAliases: JSON.stringify(currentAliases)
       };
       await ipcSafe.invoke('save-project', updatedProject);
 
-      // 2. Merge assignments in current episode
+      // 3. Merge assignments in current episode
       const aliasAssignments = assignments.filter(a => a.characterName === aliasName);
       let updatedAssignments = assignments.filter(a => a.characterName !== aliasName);
       
+      // Transfer dubber assignments from alias to main if they exist
       aliasAssignments.forEach(aa => {
-        const alreadyHasDubber = updatedAssignments.some(a => a.characterName === mainName && a.dubberId === aa.dubberId);
-        if (!alreadyHasDubber && aa.dubberId) {
+        const dubberIdToUse = aa.dubberId || autoDubberId;
+        const dubberToUse = aa.dubber || autoDubber;
+        
+        const alreadyHasThisDubber = updatedAssignments.some(a => a.characterName === mainName && a.dubberId === dubberIdToUse);
+        
+        if (!alreadyHasThisDubber && dubberIdToUse) {
            updatedAssignments.push({
              ...aa,
              characterName: mainName,
+             dubberId: dubberIdToUse,
+             dubber: dubberToUse,
              id: Math.random().toString()
            });
         }
       });
 
+      // If main character still has no assignments, create one (with auto-dubber if available)
       if (updatedAssignments.filter(a => a.characterName === mainName).length === 0) {
-        if (aliasAssignments.length > 0) {
-          aliasAssignments.forEach(aa => {
-            updatedAssignments.push({
-              ...aa,
-              characterName: mainName,
-              id: Math.random().toString()
-            });
-          });
-        } else {
-          updatedAssignments.push({
-            id: Math.random().toString(),
-            episodeId: currentEpisode.id,
-            characterName: mainName,
-            dubberId: "",
-            status: "PENDING"
-          });
-        }
+        updatedAssignments.push({
+          id: Math.random().toString(),
+          episodeId: currentEpisode.id,
+          characterName: mainName,
+          dubberId: autoDubberId,
+          dubber: autoDubber,
+          status: "PENDING"
+        });
       }
 
       setAssignments(updatedAssignments);
       await saveToDatabase(updatedAssignments);
       
-      // 3. Update actors list
+      // 4. Update actors list
       setActors(prev => prev.filter(a => a !== aliasName));
       
       setLinkingCharacter(null);
-      setStatus(`Персонаж "${aliasName}" успешно связан с "${mainName}".`);
+      setStatus(`Персонаж "${aliasName}" успешно связан с "${mainName}".${autoDubber ? ` Дабер ${autoDubber.nickname} назначен автоматически.` : ''}`);
       onRefresh();
     } catch (error) {
       console.error("Link alias error:", error);
@@ -1106,7 +1153,34 @@ export default function AssEditor({
 
                                 {linkingCharacter === assignment.characterName && (
                                   <div className="my-2 p-2 bg-neutral-900 border border-amber-500/30 rounded text-[10px]">
-                                    <p className="text-amber-400 mb-1">Основной персонаж:</p>
+                                    <p className="text-amber-400 mb-1">Связать с персонажем проекта:</p>
+                                    <div className="flex flex-wrap gap-1 mb-2">
+                                      {(() => {
+                                        let globalMapping: {characterName: string, dubberId: string}[] = [];
+                                        try {
+                                          const raw = currentEpisode?.project?.globalMapping || '[]';
+                                          const parsed = JSON.parse(raw);
+                                          globalMapping = Array.isArray(parsed)
+                                            ? parsed
+                                            : Object.entries(parsed).map(([k, v]) => ({ characterName: k, dubberId: v as string }));
+                                        } catch (e) {
+                                          console.error("Error parsing global mapping:", e);
+                                        }
+                                        
+                                        return globalMapping.map(m => (
+                                          <button
+                                            key={m.characterName}
+                                            onClick={() => handleLinkAsAlias(assignment.characterName, m.characterName)}
+                                            className="px-1.5 py-0.5 bg-neutral-800 hover:bg-amber-500/20 text-neutral-300 rounded border border-neutral-700 flex items-center gap-1"
+                                          >
+                                            {m.characterName}
+                                            {m.dubberId && <span className="text-[8px] text-indigo-400">({participants.find(p => p.id === m.dubberId)?.nickname})</span>}
+                                          </button>
+                                        ));
+                                      })()}
+                                    </div>
+                                    
+                                    <p className="text-neutral-500 mb-1">Или с другим персонажем из субтитров:</p>
                                     <div className="flex flex-wrap gap-1">
                                       {Array.from(new Set(assignments.map(a => a.characterName)))
                                         .filter(name => name !== assignment.characterName)
