@@ -1,56 +1,66 @@
-# Anime Dub Manager
+🎙️ Anime Dub Manager (ADM)
+![alt text](https://img.shields.io/badge/license-MIT-blue.svg)
 
-Desktop application designed for voice-over and fandub studios to manage projects, subtitles, and dubber assignments efficiently.
+![alt text](https://img.shields.io/badge/version-1.2.0-purple.svg)
 
-## Features
+![alt text](https://img.shields.io/badge/Electron-v30.0-informational)
 
-- **Project Management:** Organize voice-over projects and episodes.
-- **Subtitle Processing:** Split subtitles by actors or dubbers using FFmpeg.
-- **Assignment Management:** Assign characters to dubbers and track status.
-- **File Management:** Upload and manage audio/subtitle files.
-- **Cross-Platform:** Built with Electron for a native desktop experience.
-
-## Tech Stack
-
-- **Framework:** Electron
-- **Frontend:** React 18, TypeScript, Vite, Tailwind CSS
-- **Backend/Database:** Express, SQLite, Prisma ORM
-- **Media Processing:** FFmpeg (fluent-ffmpeg), Wavesurfer.js
-- **Styling:** Tailwind CSS
-
-## Prerequisites
-
-- Node.js (v18 or higher recommended)
-- npm
-
-## Getting Started
-
-1. **Clone the repository:**
-   ```bash
-   git clone <repository-url>
-   cd polza-studio
-   ```
-
-2. **Install dependencies:**
-   ```bash
-   npm install
-   ```
-
-3. **Run in development mode:**
-   ```bash
-   npm run electron:dev
-   ```
-
-## Building
-
-To build the application for production:
-
-```bash
-npm run electron:build
-```
-
-The build output will be located in the `dist/electron` directory.
-
-## License
-
-[Add your license here]
+![alt text](https://img.shields.io/badge/React-v18.0-blue)
+Anime Dub Manager — это мощная кроссплатформенная экосистема для студий озвучки и фандаб-сообществ. Приложение объединяет в себе менеджмент проектов, умную работу с субтитрами, контроль качества звука и автоматизацию релизов.
+✨ Ключевые возможности
+📂 Управление проектами
+MAL Integration: Поиск и импорт данных об аниме напрямую из MyAnimeList (постеры, синопсисы, количество серий).
+Централизованное хранение: Все исходники (RAW, ASS), записи даберов и логи правок в одном месте.
+Ролевая модель: Назначение даберов, переводчиков и звукорежиссеров на конкретные роли и эпизоды.
+📝 Умная работа с субтитрами (ASS Utilities)
+AI-Перевод (OpenRouter): Интеграция с современными LLM (Gemini, Claude, GPT) через OpenRouter. Перевод с учетом жанра (Сёнен, Сёдзё, Триллер) и контекста персонажей.
+Авто-разбивка: Мгновенное разделение общего файла субтитров на персональные скрипты для каждого дабера.
+Редактор реплик: Удобный интерфейс для правки тайминга и текста «на лету».
+🎧 QA Панель (Контроль качества)
+Мультитрек в реальном времени: Прослушивание присланных дорожек поверх видео без необходимости рендеринга.
+Система правок: Выдача точечных правок (фиксов) с автоматической генерацией сообщений для даберов.
+Визуализация волны: Интеграция с Wavesurfer.js для точного контроля попадания в липсинк.
+🚀 Автоматизация релиза
+FFmpeg Engine: Сборка финального MKV/MP4 с аппаратным ускорением NVIDIA NVENC.
+Social Media Generator: Автоматическое создание текстов постов для Telegram и VK со списком всей команды.
+Quick Upload: Панель быстрых ссылок для мгновенной загрузки на Kodik, VK Video, Anime365 и в Telegram.
+🛠 Технологический стек
+Core: Electron (Main & Renderer IPC)
+Frontend: React 18, TypeScript, Vite
+Styling: Tailwind CSS, Lucide Icons
+Database: SQLite + Prisma ORM
+Media: FFmpeg (fluent-ffmpeg), Wavesurfer.js
+AI: OpenRouter API (Gemini 2.0 / Claude 3.5)
+🚀 Быстрый старт
+Требования
+Node.js v18+
+Установленный FFmpeg (приложение может использовать встроенный, но рекомендуется системный)
+Установка
+Клонируйте репозиторий:
+code
+Bash
+git clone https://github.com/your-username/anime-dub-manager.git
+Установите зависимости:
+code
+Bash
+npm install
+Запустите приложение в режиме разработки:
+code
+Bash
+npm run dev
+Сборка готового приложения:
+code
+Bash
+npm run build
+⚙️ Настройка AI Перевода
+Для активации умного перевода:
+Перейдите в Настройки внутри приложения.
+Вставьте ваш OpenRouter API Key.
+Выберите модель (по умолчанию используется бесплатная Gemini 2.0 Flash).
+Наслаждайтесь качественным переводом, который понимает контекст аниме!
+📸 Скриншоты
+(Здесь можно вставить скриншоты вашего Dashboard, QA панели и окна перевода)
+🤝 Контрибьютинг
+Мы приветствуем любую помощь! Если вы нашли баг или хотите предложить фичу — создавайте Issue или присылайте Pull Request.
+📄 Лицензия
+Проект распространяется под лицензией MIT.

@@ -583,12 +583,73 @@ async function saveTranslatedSubtitles(assFilePath, translatedLines) {
   await fs.writeFile(assFilePath, lines.join('\n'), 'utf-8');
 }
 
+async function extractSignsAss(assFilePath, outputPath) {
+  const content = await fs.readFile(assFilePath, 'utf-8');
+  const lines = content.split('\n');
+  const signKeywords = ["НАДПИСЬ", "Надпись", "надпись", "НАДПИСИ", "Надписи", "надписи", "SIGNS", "Signs", "signs", "SIGN", "Sign", "sign", "TEXT", "Text", "text", "ТЕКСТ", "Текст", '"текст"'];
+  
+  let inEvents = false;
+  let formatParts = [];
+  let nameIndex = -1;
+  const newLines = [];
+  let signCount = 0;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trimEnd();
+    const trimmedLine = line.trim();
+
+    if (trimmedLine.startsWith('[Events]')) {
+      inEvents = true;
+      newLines.push(line);
+      continue;
+    }
+
+    if (inEvents && trimmedLine.startsWith('Format:')) {
+      formatParts = trimmedLine.substring(7).split(',').map(s => s.trim());
+      nameIndex = formatParts.indexOf('Name');
+      newLines.push(line);
+      continue;
+    }
+
+    if (inEvents && trimmedLine.startsWith('Dialogue:')) {
+      if (nameIndex !== -1) {
+        const prefix = line.substring(0, 9);
+        const data = line.substring(9);
+        const allParts = data.split(',');
+        const totalFields = formatParts.length;
+        
+        const standardParts = allParts.slice(0, totalFields - 1);
+        standardParts.push(allParts.slice(totalFields - 1).join(','));
+        
+        const currentNameRawPart = standardParts[nameIndex];
+        const currentNames = currentNameRawPart.split(/[,;]/).map(n => n.trim()).filter(n => n !== '');
+        
+        if (currentNames.some(n => signKeywords.includes(n))) {
+          newLines.push(line);
+          signCount++;
+        }
+      } else {
+        newLines.push(line);
+      }
+    } else {
+      newLines.push(line);
+    }
+  }
+
+  if (signCount > 0) {
+    await fs.writeFile(outputPath, newLines.join('\n'), 'utf-8');
+    return true;
+  }
+  return false;
+}
+
 module.exports = {
   getRawSubtitles,
   saveRawSubtitles,
   saveTranslatedSubtitles,
   splitSubsByActor,
   splitSubsByDubber,
-  exportFullAssWithRoles
+  exportFullAssWithRoles,
+  extractSignsAss
 };
 

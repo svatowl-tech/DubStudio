@@ -29,6 +29,8 @@ export default function RawSubtitleEditor({
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState("");
   const [updates, setUpdates] = useState<Record<number, string>>({});
+  const [currentTime, setCurrentTime] = useState(0);
+  const [activeLineIndex, setActiveLineIndex] = useState<number | null>(null);
 
   // For mass assignment
   const [selectedLines, setSelectedLines] = useState<Set<number>>(new Set());
@@ -37,10 +39,18 @@ export default function RawSubtitleEditor({
 
   const { registerPlayer, unregisterPlayer } = useVideoContext();
   const videoRef = useRef<HTMLVideoElement>(null);
+  const activeLineRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (videoRef.current) {
       const player = videoRef.current;
+      
+      const handleTimeUpdate = () => {
+        setCurrentTime(player.currentTime);
+      };
+      
+      player.addEventListener('timeupdate', handleTimeUpdate);
+
       registerPlayer(() => {
         if (player.paused) {
           player.play().catch(e => console.error('Play error', e));
@@ -48,9 +58,40 @@ export default function RawSubtitleEditor({
           player.pause();
         }
       });
+
+      return () => {
+        player.removeEventListener('timeupdate', handleTimeUpdate);
+      };
     }
-    return () => unregisterPlayer();
   }, [registerPlayer, unregisterPlayer]);
+
+  const parseAssTimeToSeconds = (timeStr: string) => {
+    const parts = timeStr.split(':');
+    if (parts.length === 3) {
+      const hours = parseInt(parts[0], 10);
+      const minutes = parseInt(parts[1], 10);
+      const seconds = parseFloat(parts[2]);
+      return (hours * 3600) + (minutes * 60) + seconds;
+    }
+    return 0;
+  };
+
+  useEffect(() => {
+    const active = lines.find(line => {
+      const start = parseAssTimeToSeconds(line.start);
+      const end = parseAssTimeToSeconds(line.end);
+      return currentTime >= start && currentTime <= end;
+    });
+    
+    if (active && active.rawLineIndex !== activeLineIndex) {
+      setActiveLineIndex(active.rawLineIndex);
+      // Scroll to active line if it's not in view
+      const element = document.getElementById(`line-${active.rawLineIndex}`);
+      if (element && !videoRef.current?.paused) {
+        element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }
+  }, [currentTime, lines, activeLineIndex]);
 
   useEffect(() => {
     if (currentEpisode?.subPath) {
@@ -239,6 +280,10 @@ export default function RawSubtitleEditor({
       });
       setUpdates(newUpdates);
       setSelectedLines(new Set());
+    } else if (activeLineIndex !== null) {
+      const newUpdates = { ...updates };
+      newUpdates[activeLineIndex] = name;
+      setUpdates(newUpdates);
     } else {
       setMassName(name);
     }
@@ -422,6 +467,7 @@ export default function RawSubtitleEditor({
         <div className="flex-1 overflow-y-auto p-2 space-y-1">
           {lines.map((line) => {
             const isSelected = selectedLines.has(line.rawLineIndex);
+            const isActive = activeLineIndex === line.rawLineIndex;
             const currentName =
               updates[line.rawLineIndex] !== undefined
                 ? updates[line.rawLineIndex]
@@ -431,6 +477,7 @@ export default function RawSubtitleEditor({
             return (
               <div
                 key={line.rawLineIndex}
+                id={`line-${line.rawLineIndex}`}
                 onClick={(e) => {
                   // Don't toggle if clicking on the input
                   if ((e.target as HTMLElement).tagName === "INPUT") return;
@@ -440,6 +487,8 @@ export default function RawSubtitleEditor({
                 className={`grid grid-cols-[40px_100px_100px_150px_200px_1fr] gap-4 p-2 items-center rounded-lg border transition-colors cursor-pointer ${
                   isSelected
                     ? "bg-indigo-500/10 border-indigo-500/30"
+                    : isActive
+                    ? "bg-blue-500/10 border-blue-500/30 ring-1 ring-blue-500/20"
                     : "bg-neutral-950 border-transparent hover:border-neutral-800 hover:bg-neutral-900"
                 }`}
               >

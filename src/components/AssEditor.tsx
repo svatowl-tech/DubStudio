@@ -16,15 +16,18 @@ import {
   Settings2,
   Loader2,
   X,
+  FileAudio,
 } from "lucide-react";
 import TranslatePanel from "./TranslatePanel";
 import { Participant, Episode, RoleAssignment } from "../types";
+import { sanitizeFolderName } from "../lib/pathUtils";
 import { getParticipants } from "../services/dbService";
 import RawSubtitleEditor from "./RawSubtitleEditor";
 import { exportMappingToJson, importMappingFromJson } from "../lib/mappingExport";
 import { ipcSafe } from "../lib/ipcSafe";
 import { latinToCyrillic, polivanovToHepburn } from "../lib/translit";
 import { generateStartEpisodeMessage } from "../lib/templates";
+import { ExportModal } from './ExportModal';
 
 interface AssLine {
   id: string;
@@ -62,6 +65,12 @@ export default function AssEditor({
   const [isSplitting, setIsSplitting] = useState(false);
   const [isMessageModalOpen, setIsMessageModalOpen] = useState(false);
   const [generatedMessage, setGeneratedMessage] = useState("");
+  const [isExportModalOpen, setIsExportModalOpen] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportProgress, setExportProgress] = useState(0);
+  const [exportRole, setExportRole] = useState<'DABBER' | 'SOUND_ENGINEER'>('DABBER');
+  const [isUploading, setIsUploading] = useState(false);
+  const [showSigns, setShowSigns] = useState(true);
 
   useEffect(() => {
     getParticipants().then(setParticipants);
@@ -304,12 +313,53 @@ export default function AssEditor({
       dubberId: "",
       status: "PENDING"
     };
-    const newAssignments = [...assignments, newAssignment];
+    
+    // Find the last index of an assignment with this characterName to insert after it
+    const lastIdx = [...assignments].reverse().findIndex(a => a.characterName === characterName);
+    const actualIdx = lastIdx === -1 ? assignments.length : assignments.length - lastIdx;
+    
+    const newAssignments = [...assignments];
+    newAssignments.splice(actualIdx, 0, newAssignment);
+    
     setAssignments(newAssignments);
     
     if (currentEpisode) {
       await saveToDatabase(newAssignments);
     }
+  };
+
+  useEffect(() => {
+    const removeListener = ipcSafe.on('ffmpeg-progress', (progress: number) => {
+      setExportProgress(progress);
+    });
+    return () => removeListener();
+  }, []);
+
+  const handleExport = async (targetDir: string, skipConversion: boolean, smartExport?: boolean) => {
+    if (!currentEpisode) return;
+    setIsExporting(true);
+    setExportProgress(0);
+    
+    let res;
+    if (exportRole === 'DABBER') {
+      res = await ipcSafe.invoke('export-dabber-files', { episode: currentEpisode, targetDir, skipConversion });
+    } else {
+      res = await ipcSafe.invoke('export-sound-engineer-files', { episode: currentEpisode, targetDir, skipConversion, smartExport });
+    }
+    
+    if (res.success) {
+      if (exportRole === 'DABBER') {
+        const msg = generateStartEpisodeMessage(currentEpisode, participants);
+        setGeneratedMessage(msg);
+        setIsMessageModalOpen(true);
+      }
+      setIsExportModalOpen(false);
+      alert('Экспорт успешно завершен!');
+    } else {
+      alert('Ошибка экспорта: ' + res.error);
+    }
+
+    setIsExporting(false);
   };
 
   const handleRemoveAssignment = async (assignmentId: string, characterName: string) => {
@@ -494,8 +544,9 @@ export default function AssEditor({
     setStatus("Генерация разделенных файлов...");
 
     try {
-      const projectTitle = currentEpisode.project?.title || "Project";
-      const subDir = `${projectTitle}/Episode_${currentEpisode.number || "0"}/Subtitles/output_dubbers`;
+      const projectTitle = sanitizeFolderName(currentEpisode.project?.title || "Project");
+      const episodeFolder = sanitizeFolderName(`Episode_${currentEpisode.number || "0"}`);
+      const subDir = `${projectTitle}/${episodeFolder}/Subtitles/output_dubbers`;
       
       const config = await ipcSafe.invoke('get-config');
       const baseDir = config.baseDir || '';
@@ -635,8 +686,9 @@ export default function AssEditor({
     setStatus("Экспорт полного файла с ролями...");
 
     try {
-      const projectTitle = currentEpisode.project?.title || "Project";
-      const subDir = `${projectTitle}/Episode_${currentEpisode.number || "0"}/Subtitles`;
+      const projectTitle = sanitizeFolderName(currentEpisode.project?.title || "Project");
+      const episodeFolder = sanitizeFolderName(`Episode_${currentEpisode.number || "0"}`);
+      const subDir = `${projectTitle}/${episodeFolder}/Subtitles`;
       
       const config = await ipcSafe.invoke('get-config');
       const baseDir = config.baseDir || '';
@@ -794,6 +846,30 @@ export default function AssEditor({
                   {isSaving ? "Обработка..." : currentEpisode?.status === "RECORDING" ? "Уже в записи" : "Начать запись (Статус)"}
                 </button>
 
+                <div className="h-px bg-neutral-800 my-2" />
+
+                <button
+                  onClick={handleSplitAss}
+                  disabled={!currentEpisode?.subPath || assignments.length === 0 || isSplitting}
+                  className="w-full bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white px-4 py-2.5 rounded-lg font-medium transition-colors shadow-lg shadow-amber-500/20 flex items-center justify-center gap-2"
+                  title="Разделить реплики по даберам"
+                >
+                  <Scissors className="w-4 h-4" />
+                  {isSplitting ? "Разделение..." : "Разделить роли"}
+                </button>
+
+                <button
+                  onClick={handleGenerateStartMessage}
+                  disabled={assignments.length === 0}
+                  className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white px-4 py-2.5 rounded-lg font-medium transition-colors shadow-lg shadow-indigo-500/20 flex items-center justify-center gap-2"
+                  title="Сгенерировать сообщение для начала работы над серией"
+                >
+                  <MessageSquare className="w-4 h-4" />
+                  Сообщение старт серии
+                </button>
+
+                <div className="h-px bg-neutral-800 my-2" />
+
                 <div className="p-4 bg-neutral-950 border border-neutral-800 rounded-lg space-y-3">
                   <h3 className="text-xs font-bold text-neutral-500 uppercase tracking-wider flex items-center gap-2">
                     <Settings2 className="w-3 h-3" />
@@ -826,6 +902,15 @@ export default function AssEditor({
                         className="w-3.5 h-3.5 bg-neutral-900 border-neutral-700 rounded text-indigo-500 focus:ring-0"
                       />
                       <span className="text-[11px] text-neutral-400 group-hover:text-neutral-200">Сохранять надписи в .ass</span>
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer group">
+                      <input
+                        type="checkbox"
+                        checked={showSigns}
+                        onChange={(e) => setShowSigns(e.target.checked)}
+                        className="w-3.5 h-3.5 bg-neutral-900 border-neutral-700 rounded text-indigo-500 focus:ring-0"
+                      />
+                      <span className="text-[11px] text-neutral-400 group-hover:text-neutral-200">Показывать надписи</span>
                     </label>
                     <div className="flex gap-3 pt-1">
                       <label className="flex items-center gap-1.5 cursor-pointer">
@@ -894,6 +979,16 @@ export default function AssEditor({
                 </button>
 
                 <button
+                  onClick={() => { setExportRole('DABBER'); setIsExportModalOpen(true); }}
+                  title="Экспортировать файлы для даберов"
+                  disabled={!currentEpisode?.subPath || assignments.length === 0}
+                  className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white px-4 py-2.5 rounded-lg font-medium transition-colors border border-indigo-500 flex items-center justify-center gap-2 shadow-lg shadow-indigo-500/20"
+                >
+                  <Download className="w-4 h-4" />
+                  Экспорт Даберам
+                </button>
+
+                <button
                   onClick={handleClearAssignments}
                   title="Очистить все распределения ролей для этого эпизода"
                   disabled={assignments.length === 0}
@@ -922,28 +1017,6 @@ export default function AssEditor({
                   <Languages className="w-4 h-4 text-amber-400" />
                   Поливанов &rarr; Хэпберн
                 </button>
-
-                <div className="h-px bg-neutral-800 my-2" />
-
-                <button
-                  onClick={handleSplitAss}
-                  disabled={!currentEpisode?.subPath || assignments.length === 0 || isSplitting}
-                  className="w-full bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white px-4 py-2.5 rounded-lg font-medium transition-colors shadow-lg shadow-amber-500/20 flex items-center justify-center gap-2"
-                  title="Разделить реплики по даберам"
-                >
-                  <Scissors className="w-4 h-4" />
-                  {isSplitting ? "Разделение..." : "Разделить роли"}
-                </button>
-
-                <button
-                  onClick={handleGenerateStartMessage}
-                  disabled={assignments.length === 0}
-                  className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white px-4 py-2.5 rounded-lg font-medium transition-colors shadow-lg shadow-indigo-500/20 flex items-center justify-center gap-2"
-                  title="Сгенерировать сообщение для начала работы над серией"
-                >
-                  <MessageSquare className="w-4 h-4" />
-                  Сообщение старт серии
-                </button>
               </div>
             </div>
           </div>
@@ -967,7 +1040,21 @@ export default function AssEditor({
                   <div className="space-y-6">
                     {/* Группировка по даберам */}
                     {Object.entries(
-                      assignments.reduce((acc: Record<string, RoleAssignment[]>, curr: RoleAssignment) => {
+                      assignments
+                        .filter(a => {
+                          if (showSigns) return true;
+                          const name = a.characterName.toLowerCase();
+                          const signs = ["sign", "signs", "title", "op", "ed", "song", "note", "music", "logo", "staff", "credit", "credits", "надпись", "титры"];
+                          return !signs.some(s => {
+                            // Для коротких меток (op, ed) используем более строгую проверку границ слова
+                            if (s === 'op' || s === 'ed') {
+                              const regex = new RegExp(`(^|[^a-z])${s}([^a-z]|$)`, 'i');
+                              return regex.test(name);
+                            }
+                            return name.includes(s);
+                          });
+                        })
+                        .reduce((acc: Record<string, RoleAssignment[]>, curr: RoleAssignment) => {
                         const dubberId = curr.dubberId || "unassigned";
                         if (!acc[dubberId]) acc[dubberId] = [];
                         acc[dubberId].push(curr);
@@ -1113,7 +1200,7 @@ export default function AssEditor({
                     Найдено {consecutiveWarnings.length} потенциальных склеек (разрыв менее 2 секунд между репликами разных персонажей у одного дабера).
                   </p>
                   {consecutiveWarnings.map((w, i) => (
-                    <div key={i} className="bg-neutral-950 border border-neutral-800 rounded-lg p-4">
+                    <div key={w.dubberName + i} className="bg-neutral-950 border border-neutral-800 rounded-lg p-4">
                       <div className="flex items-center gap-2 mb-3">
                         <span className="px-2 py-1 bg-indigo-500/20 text-indigo-400 rounded text-xs font-bold">
                           {w.dubberName}
@@ -1146,6 +1233,18 @@ export default function AssEditor({
             </div>
           </div>
         </div>
+      )}
+      {/* Export Modal */}
+      {isExportModalOpen && currentEpisode && (
+        <ExportModal 
+          isOpen={isExportModalOpen}
+          onClose={() => setIsExportModalOpen(false)}
+          episode={currentEpisode}
+          role={exportRole}
+          onExport={handleExport}
+          isExporting={isExporting}
+          progress={exportProgress}
+        />
       )}
       {/* Message Modal */}
       {isMessageModalOpen && (

@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import { Download, Search, HardDrive, FileVideo, Globe, Loader2, CheckCircle2, FileText, XCircle } from 'lucide-react';
-import { ipcRenderer } from '../lib/ipc';
+import { ipcSafe } from '../lib/ipcSafe';
 import { Episode } from '../types';
+import { sanitizeFolderName } from '../lib/pathUtils';
 
 interface DownloaderProps {
   currentEpisode: Episode | null;
@@ -51,19 +52,18 @@ export default function Downloader({ currentEpisode, onRefresh }: DownloaderProp
     setIsSearching(false);
 
     let removeListener: (() => void) | undefined;
-    if (ipcRenderer.on) {
-      removeListener = ipcRenderer.on('download-progress', (data: { url: string, progress: number }) => {
-        if (data.url === downloadUrl) {
-          setTasks(prev => prev.map(t => t.id === taskId ? { ...t, progress: data.progress } : t));
-        }
-      });
-    }
+    removeListener = ipcSafe.on('download-progress', (data: { url: string, progress: number }) => {
+      if (data.url === downloadUrl) {
+        setTasks(prev => prev.map(t => t.id === taskId ? { ...t, progress: data.progress } : t));
+      }
+    });
 
     try {
-      const projectTitle = currentEpisode.project?.title || 'Project';
-      const targetDir = `${projectTitle}/Episode_${currentEpisode.number}`;
+      const projectTitle = sanitizeFolderName(currentEpisode.project?.title || 'Project');
+      const episodeFolder = sanitizeFolderName(`Episode_${currentEpisode.number}`);
+      const targetDir = `${projectTitle}/${episodeFolder}`;
       
-      const res = await ipcRenderer.invoke('download-file', {
+      const res = await ipcSafe.invoke('download-file', {
         url,
         targetDir,
         fileName
@@ -82,7 +82,7 @@ export default function Downloader({ currentEpisode, onRefresh }: DownloaderProp
           updateData.status = 'ROLES';
         }
 
-        await ipcRenderer.invoke('save-episode', { ...currentEpisode, ...updateData });
+        await ipcSafe.invoke('save-episode', { ...currentEpisode, ...updateData });
         onRefresh();
       } else {
         setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: 'ERROR' } : t));

@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import WaveSurfer from 'wavesurfer.js';
 import { Play, Pause, CheckCircle, XCircle, AlertCircle, MessageSquare, Volume2, Check, X, Activity, Download, User, Clock, FileAudio, Send, Video, Trash2, Mic, Sparkles, Save } from 'lucide-react';
-import { ipcRenderer } from '../lib/ipc';
+import { ipcSafe } from '../lib/ipcSafe';
 import { Episode, RoleAssignment, Participant } from '../types';
+import { sanitizeFolderName } from '../lib/pathUtils';
 import { STATUS_MAP } from '../constants';
 import { TrackSidebar } from './qa/TrackSidebar';
 import { generateFixesIssuedMessage, generateStatusMessage } from '../lib/templates';
@@ -175,11 +176,11 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
       const dubberId = as.dubberId;
       const dubberName = as.dubber?.nickname || 'Неизвестно';
       
-      // Find ALL DUBBER_FILEs for this dubber in this episode
-      const dubberFiles = currentEpisode.uploads?.filter(u => 
-        u.type === 'DUBBER_FILE' && 
-        (u.assignmentId === as.id || currentEpisode.assignments?.find(a => a.id === u.assignmentId)?.dubberId === dubberId)
-      ).map(u => ({ id: u.id, path: u.path, createdAt: u.createdAt })) || [];
+    // Find ALL DUBBER_FILEs and FIXES for this dubber in this episode
+    const dubberFiles = currentEpisode.uploads?.filter(u => 
+      (u.type === 'DUBBER_FILE' || u.type === 'FIXES') && 
+      (u.assignmentId === as.id || currentEpisode.assignments?.find(a => a.id === u.assignmentId)?.dubberId === dubberId)
+    ).map(u => ({ id: u.id, path: u.path, createdAt: u.createdAt, type: u.type })) || [];
       
       let comments: Comment[] = [];
       if (as.comments) {
@@ -228,7 +229,7 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
     const loadSubs = async () => {
       if (currentEpisode?.subPath) {
         try {
-          const res = await ipcRenderer.invoke('get-raw-subtitles', currentEpisode.subPath);
+          const res = await ipcSafe.invoke('get-raw-subtitles', currentEpisode.subPath);
           if (res && res.lines) {
             setSubLines(res.lines);
           }
@@ -469,7 +470,7 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
         return a;
       }) || [];
 
-      await ipcRenderer.invoke('save-episode', { 
+      await ipcSafe.invoke('save-episode', { 
         ...currentEpisode, 
         assignments: updatedAssignments,
         status: currentEpisode.status === 'FINISHED' ? 'FINISHED' : 'FIXES'
@@ -499,10 +500,10 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
     setIsMessageModalOpen(true);
   };
 
-  const handleExportSoundEngineer = async (targetDir: string) => {
+  const handleExportSoundEngineer = async (targetDir: string, skipConversion: boolean, smartExport?: boolean) => {
     if (!currentEpisode) return;
     setIsUploading(true);
-    const res = await ipcRenderer.invoke('export-sound-engineer-files', { episode: currentEpisode, targetDir });
+    const res = await ipcSafe.invoke('export-sound-engineer-files', { episode: currentEpisode, targetDir, skipConversion, smartExport });
     setIsUploading(false);
     setIsExportModalOpen(false);
     if (res.success) {
@@ -519,18 +520,17 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
     setBakeStatus('Запуск FFmpeg...');
     
     let removeListener: (() => void) | undefined;
-    if (ipcRenderer.on) {
-      removeListener = ipcRenderer.on('ffmpeg-progress', (percent: number) => {
-        setBakeProgress(percent);
-        setBakeStatus(`Рендеринг: ${percent}%`);
-      });
-    }
+    removeListener = ipcSafe.on('ffmpeg-progress', (percent: number) => {
+      setBakeProgress(percent);
+      setBakeStatus(`Рендеринг: ${percent}%`);
+    });
 
     try {
-      const projectTitle = currentEpisode.project?.title || 'Project';
-      const subDir = `${projectTitle}/Episode_${currentEpisode.number}`;
+      const projectTitle = sanitizeFolderName(currentEpisode.project?.title || 'Project');
+      const episodeFolder = sanitizeFolderName(`Episode_${currentEpisode.number}`);
+      const subDir = `${projectTitle}/${episodeFolder}`;
       
-      await ipcRenderer.invoke('bake-subtitles', {
+      await ipcSafe.invoke('bake-subtitles', {
         videoPath: currentEpisode.rawPath, 
         finalAssPath: currentEpisode.subPath, 
         outputPath: `${subDir}/final_release.mp4`
@@ -569,7 +569,7 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
         return a;
       }) || [];
 
-      await ipcRenderer.invoke('save-episode', { 
+      await ipcSafe.invoke('save-episode', { 
         ...currentEpisode, 
         assignments: updatedAssignments 
       });
@@ -588,7 +588,7 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
         status: 'APPROVED'
       })) || [];
 
-      await ipcRenderer.invoke('save-episode', { 
+      await ipcSafe.invoke('save-episode', { 
         ...currentEpisode, 
         assignments: updatedAssignments,
         status: 'SOUND_ENGINEERING'
@@ -622,7 +622,7 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
         newStatus = 'FIXES';
       }
 
-      await ipcRenderer.invoke('save-episode', { 
+      await ipcSafe.invoke('save-episode', { 
         ...currentEpisode, 
         assignments: updatedAssignments,
         status: newStatus
@@ -634,7 +634,7 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
     }
   };
 
-  const handleFileUpload = async (e: any, trackId: string) => {
+  const handleFileUpload = async (e: any, trackId: string, type: 'DUBBER_FILE' | 'FIXES' = 'DUBBER_FILE') => {
     const file = e.target.files?.[0];
     if (!file || !currentEpisode) return;
 
@@ -642,14 +642,16 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
     const assignment = currentEpisode.assignments?.find(a => a.dubberId === trackId);
     if (!assignment) return;
 
-    const projectTitle = currentEpisode.project?.title || 'Project';
-    const subDir = `${projectTitle}/Episode_${currentEpisode.number}/QAFixes`;
-    const fileName = `dub_${assignment.id}_${Date.now()}.${file.name.split('.').pop() || 'wav'}`;
+    const projectTitle = sanitizeFolderName(currentEpisode.project?.title || 'Project');
+    const episodeFolder = sanitizeFolderName(`Episode_${currentEpisode.number}`);
+    const subDir = `${projectTitle}/${episodeFolder}/${type === 'FIXES' ? 'Fixes' : 'QAFixes'}`;
+    const prefix = type === 'FIXES' ? 'fix' : 'dub';
+    const fileName = `${prefix}_${assignment.id}_${Date.now()}.${file.name.split('.').pop() || 'wav'}`;
     
     try {
       let res;
       if (file.path) {
-        res = await ipcRenderer.invoke('copy-file', {
+        res = await ipcSafe.invoke('copy-file', {
           sourcePath: file.path,
           targetDir: subDir,
           fileName
@@ -657,7 +659,7 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
       } else {
         // Browser fallback: read as buffer to avoid "src argument must be string" error
         const buffer = await file.arrayBuffer();
-        res = await ipcRenderer.invoke('save-file-buffer', {
+        res = await ipcSafe.invoke('save-file-buffer', {
           buffer,
           targetDir: subDir,
           fileName
@@ -668,7 +670,7 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
       
       const newUpload = {
         id: Math.random().toString(36).substr(2, 9),
-        type: 'DUBBER_FILE',
+        type,
         path: res.data.path,
         uploadedById: trackId,
         assignmentId: assignment.id,
@@ -691,7 +693,7 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
         newStatus = 'QA';
       }
       
-      await ipcRenderer.invoke('save-episode', { 
+      await ipcSafe.invoke('save-episode', { 
         ...currentEpisode, 
         uploads: updatedUploads,
         assignments: updatedAssignments,
@@ -1094,11 +1096,14 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
     </div>
 
       {/* Export Modal */}
-      {isExportModalOpen && (
+      {isExportModalOpen && currentEpisode && (
         <ExportModal 
+          isOpen={isExportModalOpen}
           onClose={() => setIsExportModalOpen(false)}
+          episode={currentEpisode}
+          role="SOUND_ENGINEER"
           onExport={handleExportSoundEngineer}
-          isUploading={isUploading}
+          isExporting={isUploading}
         />
       )}
 

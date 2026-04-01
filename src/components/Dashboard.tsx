@@ -1,11 +1,13 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, X, CheckCircle2, Clock, AlertCircle, Mic, FileAudio, UserPlus, Link as LinkIcon, MessageSquare, ExternalLink, Calendar, FileText, Image as ImageIcon, Database, FolderPlus, ChevronRight, Download, Save, Loader2, FileVideo, Activity, Users, Sparkles, Settings2, Hash, Globe } from 'lucide-react';
+import { Plus, X, CheckCircle2, Clock, AlertCircle, Mic, FileAudio, UserPlus, Link as LinkIcon, MessageSquare, ExternalLink, Calendar, FileText, Image as ImageIcon, Database, FolderPlus, ChevronRight, Download, Save, Loader2, FileVideo, Activity, Users, Settings2, Hash, Globe, User } from 'lucide-react';
 import { getParticipants } from '../services/dbService';
 import { Participant, Project, Episode, EpisodeStatus, ReleaseType } from '../types';
-import { ipcRenderer } from '../lib/ipc';
-import { getNextEpisodeDate, searchAnime, getAnimeCharacters } from '../services/animeService';
+import { ipcSafe } from '../lib/ipcSafe';
+import { getNextEpisodeDate, searchAnime, getAnimeCharacters, getAnimeDetails } from '../services/animeService';
 import { ExportModal } from './ExportModal';
 import { generateStartEpisodeMessage, generateStatusMessage } from '../lib/templates';
+import { sanitizeFolderName } from '../lib/pathUtils';
+import GettingStartedGuide from './GettingStartedGuide';
 
 interface DashboardProps {
   onNavigate?: (tab: string) => void;
@@ -60,8 +62,9 @@ export default function Dashboard({
   const [newProjectIsOngoing, setNewProjectIsOngoing] = useState(true);
   const [newProjectSynopsis, setNewProjectSynopsis] = useState('');
   const [newProjectPosterUrl, setNewProjectPosterUrl] = useState('');
+  const [newProjectTypeAndSeason, setNewProjectTypeAndSeason] = useState('');
   const [newProjectTotalEpisodes, setNewProjectTotalEpisodes] = useState(12);
-  const [newProjectCharacters, setNewProjectCharacters] = useState<{name: string, dubberId: string}[]>([]);
+  const [newProjectCharacters, setNewProjectCharacters] = useState<{name: string, dubberId: string, photoUrl?: string}[]>([]);
   const [animeSearchQuery, setAnimeSearchQuery] = useState('');
   const [animeSearchResults, setAnimeSearchResults] = useState<any[]>([]);
   const [isSearchingAnime, setIsSearchingAnime] = useState(false);
@@ -86,23 +89,29 @@ export default function Dashboard({
   const [transcodingProgress, setTranscodingProgress] = useState<number | null>(null);
   const [status, setStatus] = useState<string>('');
 
-  const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
   const [isProjectSettingsModalOpen, setIsProjectSettingsModalOpen] = useState(false);
-  const [baseDir, setBaseDir] = useState('');
   const [projectSearch, setProjectSearch] = useState('');
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [exportRole, setExportRole] = useState<'DABBER' | 'SOUND_ENGINEER'>('DABBER');
 
   const [generatedMessage, setGeneratedMessage] = useState<string | null>(null);
   const [isMessageModalOpen, setIsMessageModalOpen] = useState(false);
+  const [isHardsubEnabled, setIsHardsubEnabled] = useState(false);
 
-  const handleExport = async (targetDir: string) => {
+  useEffect(() => {
+    if (currentEpisode) {
+      setIsHardsubEnabled(currentEpisode.isHardsub || false);
+    }
+  }, [currentEpisode]);
+
+  const handleExport = async (targetDir: string, skipConversion: boolean, smartExport?: boolean) => {
     if (!currentEpisode) return;
     setIsUploading(true);
+    setTranscodingProgress(0);
     
     let res;
     if (exportRole === 'DABBER') {
-      res = await ipcRenderer.invoke('export-dabber-files', { episode: currentEpisode, targetDir });
+      res = await ipcSafe.invoke('export-dabber-files', { episode: currentEpisode, targetDir, skipConversion });
       
       // Generate Start Episode message after export to dubbers
       if (res.success) {
@@ -111,10 +120,11 @@ export default function Dashboard({
         setIsMessageModalOpen(true);
       }
     } else {
-      res = await ipcRenderer.invoke('export-sound-engineer-files', { episode: currentEpisode, targetDir });
+      res = await ipcSafe.invoke('export-sound-engineer-files', { episode: currentEpisode, targetDir, skipConversion, smartExport });
     }
 
     setIsUploading(false);
+    setTranscodingProgress(null);
     setIsExportModalOpen(false);
     if (res.success) {
       alert('Экспорт успешно завершен!');
@@ -140,27 +150,37 @@ export default function Dashboard({
 
   const handleSelectAnime = async (anime: any) => {
     setNewProjectTitle(anime.title);
-    setNewProjectOriginalTitle(anime.title_japanese || anime.title_english || anime.title);
-    setNewProjectTotalEpisodes(anime.episodes || 12);
-    setNewProjectIsOngoing(anime.status === 'Currently Airing');
-    setNewProjectSynopsis(anime.synopsis || '');
-    setNewProjectPosterUrl(anime.images?.jpg?.large_image_url || '');
+    
+    // Fetch full details using the source from search results
+    const details = await getAnimeDetails(anime.mal_id, anime.source || 'shikimori');
+    
+    // The user wants original title in Romaji. 
+    // Shikimori 'name' is Romaji. Jikan 'title' is Romaji.
+    // We already set original_title in searchAnime.
+    const originalTitle = anime.original_title || anime.title;
+    
+    setNewProjectOriginalTitle(originalTitle);
+    setNewProjectTotalEpisodes(anime.episodes || details?.episodes || 12);
+    setNewProjectIsOngoing(anime.status === 'Currently Airing' || details?.status === 'Currently Airing');
+    setNewProjectSynopsis(anime.synopsis || details?.description || details?.synopsis || '');
+    setNewProjectPosterUrl(anime.images?.jpg?.large_image_url || details?.image?.original || '');
     setAnimeSearchResults([]);
     setAnimeSearchQuery('');
     
     // Auto-fill characters
-    const characters = await getAnimeCharacters(anime.mal_id);
+    const characters = await getAnimeCharacters(anime.mal_id, anime.source || 'shikimori');
     if (characters && characters.length > 0) {
       const mapping = characters.slice(0, 15).map((c: any) => ({
-        name: c.character.name,
-        dubberId: ''
+        name: c.name,
+        dubberId: '',
+        photoUrl: c.image || ''
       }));
       setNewProjectCharacters(mapping);
     }
   };
 
   const handleAddCharacter = () => {
-    setNewProjectCharacters(prev => [...prev, { name: '', dubberId: '' }]);
+    setNewProjectCharacters(prev => [...prev, { name: '', dubberId: '', photoUrl: '' }]);
     // Use a small timeout to allow the DOM to update before scrolling
     setTimeout(() => {
       const container = document.getElementById('character-list-container');
@@ -188,7 +208,7 @@ export default function Dashboard({
     setIsUploading(true);
     
     try {
-      const res = await ipcRenderer.invoke('select-file', {
+      const res = await ipcSafe.invoke('select-file', {
         filters: type === 'RAW' ? [{ name: 'Videos', extensions: ['mp4', 'webm', 'mkv'] }] : [{ name: 'Subtitles', extensions: ['ass', 'srt'] }]
       });
 
@@ -204,7 +224,7 @@ export default function Dashboard({
       if (type === 'RAW' && ext === 'mkv') {
         setStatus("Транскодирование MKV в MP4...");
         const outputPath = filePath.replace(/\.mkv$/i, '.mp4');
-        const transcodeRes = await ipcRenderer.invoke('transcode-video', {
+        const transcodeRes = await ipcSafe.invoke('transcode-video', {
           videoPath: filePath,
           outputPath
         });
@@ -219,13 +239,16 @@ export default function Dashboard({
       }
       
       // Use project title if available, otherwise fallback to ID
-      const projectTitle = currentEpisode.project?.title || 'Project';
-      const subDir = `${projectTitle}/Episode_${currentEpisode.number}`;
+      const projectTitle = sanitizeFolderName(currentEpisode.project?.title || 'Project');
+      const episodeFolder = sanitizeFolderName(`Episode_${currentEpisode.number}`);
+      const subDir = `${projectTitle}/${episodeFolder}`;
       
       const originalExt = finalFilePath.split('.').pop() || 'mp4';
-      const targetFileName = type === 'RAW' ? `raw_video.${originalExt}` : `subtitles.${originalExt}`;
+      const targetFileName = type === 'RAW' 
+        ? (isHardsubEnabled ? `raw_video_hardsub.${originalExt}` : `raw_video.${originalExt}`) 
+        : `subtitles.${originalExt}`;
 
-      const copyRes = await ipcRenderer.invoke('copy-file', {
+      const copyRes = await ipcSafe.invoke('copy-file', {
         sourcePath: finalFilePath,
         targetDir: subDir,
         fileName: targetFileName
@@ -234,15 +257,19 @@ export default function Dashboard({
       if (copyRes.success) {
         // Update episode in DB
         const updateData: any = {};
-        if (type === 'RAW') updateData.rawPath = copyRes.data.path;
-        else updateData.subPath = copyRes.data.path;
+        if (type === 'RAW') {
+          updateData.rawPath = copyRes.data.path;
+          updateData.isHardsub = isHardsubEnabled;
+        } else {
+          updateData.subPath = copyRes.data.path;
+        }
         
         // If both exist, move to ROLES status
         if ((type === 'RAW' && currentEpisode.subPath) || (type === 'SUB' && currentEpisode.rawPath)) {
           updateData.status = 'ROLES';
         }
 
-        await ipcRenderer.invoke('save-episode', { ...currentEpisode, ...updateData });
+        await ipcSafe.invoke('save-episode', { ...currentEpisode, ...updateData });
         
         onRefresh();
         alert(`${type === 'RAW' ? 'Видео' : 'Субтитры'} успешно загружены!`);
@@ -259,12 +286,12 @@ export default function Dashboard({
 
   useEffect(() => {
     getParticipants().then(setParticipants);
-    ipcRenderer.invoke('get-config').then(data => setBaseDir(data.baseDir || ''));
+    ipcSafe.invoke('get-config').then(data => {});
     
     const progressListener = (percent: number) => {
       setTranscodingProgress(percent);
     };
-    const cleanup = ipcRenderer.on('ffmpeg-progress', progressListener);
+    const cleanup = ipcSafe.on('ffmpeg-progress', progressListener);
     
     return () => {
       cleanup();
@@ -311,35 +338,11 @@ export default function Dashboard({
       ...selectedProject,
       assignedDubberIds: selectedProjectDubbers
     };
-    await ipcRenderer.invoke('save-project', updatedProject);
+    await ipcSafe.invoke('save-project', updatedProject);
     onRefresh();
     setIsAssignDubbersModalOpen(false);
   };
 
-  const handleUpdateConfig = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!baseDir) return;
-    await ipcRenderer.invoke('save-config', { baseDir });
-    alert('Путь к базе успешно обновлен!');
-    setIsSettingsModalOpen(false);
-  };
-
-  const handleSelectFolder = async () => {
-    try {
-      const result = await ipcRenderer.invoke('select-folder');
-      
-      if (result) {
-        if (result.success && result.data) {
-          setBaseDir(result.data.path);
-        } else if (typeof result === 'string') {
-          setBaseDir(result);
-        }
-      }
-    } catch (error) {
-      console.error('Folder selection error:', error);
-      alert('Ошибка при выполнении запроса выбора папки');
-    }
-  };
 
   const handleCreateProject = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -354,8 +357,9 @@ export default function Dashboard({
       isOngoing: newProjectIsOngoing,
       synopsis: newProjectSynopsis,
       posterUrl: newProjectPosterUrl,
+      typeAndSeason: newProjectTypeAndSeason,
       totalEpisodes: newProjectTotalEpisodes,
-      globalMapping: JSON.stringify(newProjectCharacters.map(c => ({ characterName: c.name, dubberId: c.dubberId }))),
+      globalMapping: JSON.stringify(newProjectCharacters.map(c => ({ characterName: c.name, dubberId: c.dubberId, photoUrl: c.photoUrl }))),
       status: 'ACTIVE' as const,
       lastActiveEpisode: 1,
       assignedDubberIds: [],
@@ -364,7 +368,7 @@ export default function Dashboard({
       updatedAt: new Date().toISOString()
     };
     
-    await ipcRenderer.invoke('save-project', newProject);
+    await ipcSafe.invoke('save-project', newProject);
     onRefresh();
     onProjectSelect(newProject.id);
     setIsNewProjectModalOpen(false);
@@ -376,6 +380,7 @@ export default function Dashboard({
     setNewProjectCharacters([]);
     setNewProjectSynopsis('');
     setNewProjectPosterUrl('');
+    setNewProjectTypeAndSeason('');
     setNewProjectTotalEpisodes(12);
   };
 
@@ -383,7 +388,7 @@ export default function Dashboard({
     if (!selectedProjectId) return;
     if (!confirm('Вы уверены, что хотите удалить этот проект и все его серии?')) return;
     
-    await ipcRenderer.invoke('delete-project', selectedProjectId);
+    await ipcSafe.invoke('delete-project', selectedProjectId);
     onProjectSelect('');
     onRefresh();
     setIsDeleteProjectModalOpen(false);
@@ -393,7 +398,7 @@ export default function Dashboard({
     if (!currentEpisode) return;
     if (!confirm(`Вы уверены, что хотите удалить серию ${currentEpisode.number}?`)) return;
     
-    await ipcRenderer.invoke('delete-episode', currentEpisode.id);
+    await ipcSafe.invoke('delete-episode', currentEpisode.id);
     onRefresh();
     setIsDeleteEpisodeModalOpen(false);
   };
@@ -413,7 +418,7 @@ export default function Dashboard({
       updatedAt: new Date().toISOString()
     };
     
-    await ipcRenderer.invoke('save-episode', newEpisode);
+    await ipcSafe.invoke('save-episode', newEpisode);
     
     onRefresh();
     setIsNewEpisodeModalOpen(false);
@@ -428,12 +433,32 @@ export default function Dashboard({
     }
   }, [selectedProject, isNewEpisodeModalOpen]);
 
-  const handleExportProject = () => {
+  const handleExportProject = async () => {
     if (!selectedProject) return;
-    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(selectedProject, null, 2));
+    
+    // Get all participants to include them in the export for full portability
+    const allParticipants = await ipcSafe.invoke('get-participants');
+    
+    const exportData = {
+      type: "PROJECT_RELEASE_BUNDLE",
+      version: "1.2",
+      exportDate: new Date().toISOString(),
+      project: selectedProject,
+      // Full list of participants ensures we can restore all references
+      participants: allParticipants,
+      // We can also include some summary stats for the "Audit"
+      audit: {
+        totalEpisodes: selectedProject.episodes.length,
+        totalAssignments: selectedProject.episodes.reduce((acc, ep) => acc + (ep.assignments?.length || 0), 0),
+        totalUploads: selectedProject.episodes.reduce((acc, ep) => acc + (ep.uploads?.length || 0), 0),
+        completedEpisodes: selectedProject.episodes.filter(ep => ep.status === 'FINISHED').length
+      }
+    };
+
+    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(exportData, null, 2));
     const downloadAnchorNode = document.createElement('a');
     downloadAnchorNode.setAttribute("href", dataStr);
-    downloadAnchorNode.setAttribute("download", `${selectedProject.title}_export.json`);
+    downloadAnchorNode.setAttribute("download", `${selectedProject.title}_release_audit_${new Date().toISOString().split('T')[0]}.json`);
     document.body.appendChild(downloadAnchorNode);
     downloadAnchorNode.click();
     downloadAnchorNode.remove();
@@ -474,21 +499,21 @@ export default function Dashboard({
       assignments: [...(currentEpisode.assignments || []), newAssignment]
     };
     
-    await ipcRenderer.invoke('save-episode', updatedEpisode);
+    await ipcSafe.invoke('save-episode', updatedEpisode);
 
     // Also update global mapping if not already there
     const globalMapping: {characterName: string, dubberId: string}[] = JSON.parse(selectedProject.globalMapping || '[]');
     const charIndex = globalMapping.findIndex(c => c.characterName === mainName);
     if (charIndex === -1) {
       globalMapping.push({ characterName: mainName, dubberId: selectedUserId });
-      await ipcRenderer.invoke('save-project', { ...selectedProject, globalMapping: JSON.stringify(globalMapping) });
+      await ipcSafe.invoke('save-project', { ...selectedProject, globalMapping: JSON.stringify(globalMapping) });
     } else if (globalMapping[charIndex].dubberId !== selectedUserId) {
       // Optional: Update global mapping if it's different? 
       // User might want to keep it as is or update it. 
       // Let's ask or just update if it was empty.
       if (!globalMapping[charIndex].dubberId) {
         globalMapping[charIndex].dubberId = selectedUserId;
-        await ipcRenderer.invoke('save-project', { ...selectedProject, globalMapping: JSON.stringify(globalMapping) });
+        await ipcSafe.invoke('save-project', { ...selectedProject, globalMapping: JSON.stringify(globalMapping) });
       }
     }
 
@@ -501,7 +526,7 @@ export default function Dashboard({
   const handleAssignSoundEngineer = async () => {
     if (selectedProject) {
       const updatedProject = { ...selectedProject, soundEngineerId: selectedSoundEngineerId };
-      await ipcRenderer.invoke('save-project', updatedProject);
+      await ipcSafe.invoke('save-project', updatedProject);
     }
     onRefresh();
     setIsAssignSoundEngineerModalOpen(false);
@@ -511,7 +536,9 @@ export default function Dashboard({
   return (
     <div className="p-8 max-w-7xl mx-auto w-full space-y-8">
       {/* Stats & Recent Activity Section */}
-      {!selectedProjectId && (
+      {projects.length === 0 ? (
+        <GettingStartedGuide onStart={() => setIsNewProjectModalOpen(true)} />
+      ) : !selectedProjectId && (
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
           <div className="lg:col-span-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             <div className="bg-neutral-900 border border-neutral-800 p-6 rounded-2xl shadow-xl">
@@ -566,9 +593,9 @@ export default function Dashboard({
               <h3 className="text-sm font-bold text-white">Последняя активность</h3>
             </div>
             <div className="p-2 space-y-1 overflow-y-auto max-h-[300px]">
-              {recentEpisodes.map(ep => (
+              {recentEpisodes.map((ep, idx) => (
                 <button
-                  key={ep.id}
+                  key={ep.id || ('ep-' + idx)}
                   onClick={() => {
                     onProjectSelect(ep.projectId);
                     onEpisodeSelect(ep.number);
@@ -622,14 +649,14 @@ export default function Dashboard({
           <button 
             onClick={() => setIsNewProjectModalOpen(true)}
             className="p-2 bg-neutral-800 hover:bg-neutral-700 rounded-lg text-neutral-400 hover:text-white transition-colors"
-            title="Новый проект"
+            title="Создать новый проект озвучки"
           >
             <FolderPlus className="w-5 h-5" />
           </button>
           <button 
             onClick={() => setIsAssignDubbersModalOpen(true)}
             className="p-2 bg-neutral-800 hover:bg-neutral-700 rounded-lg text-neutral-400 hover:text-white transition-colors"
-            title="Назначить даберов на проект"
+            title="Назначить даберов на этот проект"
           >
             <UserPlus className="w-5 h-5" />
           </button>
@@ -639,13 +666,6 @@ export default function Dashboard({
             title="Назначить звукорежиссера"
           >
             <Mic className="w-5 h-5" />
-          </button>
-          <button 
-            onClick={() => setIsSettingsModalOpen(true)}
-            className="p-2 bg-neutral-800 hover:bg-neutral-700 rounded-lg text-neutral-400 hover:text-white transition-colors"
-            title="Настройки пути"
-          >
-            <Database className="w-5 h-5" />
           </button>
           {selectedProjectId && (
             <>
@@ -758,9 +778,9 @@ export default function Dashboard({
 
           {/* Episode Selector */}
           <div className="flex items-center gap-2 overflow-x-auto pb-2 scrollbar-hide">
-            {selectedProject?.episodes?.map(ep => (
+            {selectedProject?.episodes?.map((ep, idx) => (
               <button
-                key={ep.id}
+                key={ep.id || ('ep-' + idx)}
                 onClick={() => onEpisodeSelect(ep.number)}
                 className={`flex-shrink-0 px-4 py-2 rounded-lg font-medium transition-all flex items-center gap-2 border ${
                   currentEpisode?.id === ep.id 
@@ -854,7 +874,7 @@ export default function Dashboard({
                     {currentEpisode.rawPath ? (
                       <span className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-green-500 bg-green-500/10 px-2 py-1 rounded-full border border-green-500/20">
                         <CheckCircle2 className="w-3 h-3" />
-                        Загружено
+                        Загружено {currentEpisode.isHardsub && '(Хардсаб)'}
                       </span>
                     ) : (
                       <span className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-amber-500 bg-amber-500/10 px-2 py-1 rounded-full border border-amber-500/20">
@@ -879,6 +899,25 @@ export default function Dashboard({
                   <p className="text-xs text-amber-500/70 mt-2">
                     * Внимание: формат .mkv не поддерживается для воспроизведения в браузере. Используйте .mp4 или .webm
                   </p>
+                  <div className="mt-4 flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      id="hardsub-checkbox"
+                      checked={isHardsubEnabled}
+                      onChange={async (e) => {
+                        const checked = e.target.checked;
+                        setIsHardsubEnabled(checked);
+                        if (currentEpisode) {
+                          await ipcSafe.invoke('save-episode', { ...currentEpisode, isHardsub: checked });
+                          onRefresh();
+                        }
+                      }}
+                      className="w-4 h-4 rounded border-neutral-700 bg-neutral-800 text-blue-500 focus:ring-blue-500 focus:ring-offset-neutral-900"
+                    />
+                    <label htmlFor="hardsub-checkbox" className="text-sm text-neutral-300 cursor-pointer select-none">
+                      Хардсаб (видео уже с вшитыми субтитрами)
+                    </label>
+                  </div>
                 </div>
 
                 <div className="bg-neutral-900 border border-neutral-800 rounded-xl p-6 shadow-xl">
@@ -958,14 +997,14 @@ export default function Dashboard({
                           }
                         });
 
-                        return Object.entries(grouped).map(([dubberId, data]) => {
+                        return Object.entries(grouped).map(([dubberId, data], idx) => {
                           // Determine overall status for the dubber
                           const allApproved = data.statuses.every((s: string) => s === 'APPROVED');
                           const anyFixes = data.statuses.some((s: string) => s === 'FIXES_NEEDED' || s === 'REJECTED');
                           const displayStatus = allApproved ? 'APPROVED' : anyFixes ? 'FIXES_NEEDED' : data.statuses[0];
 
                           return (
-                            <tr key={dubberId} className="hover:bg-neutral-800/30 transition-colors group">
+                            <tr key={(dubberId || 'dubber') + idx} className="hover:bg-neutral-800/30 transition-colors group">
                               <td className="px-6 py-4">
                                 <div className="flex items-center gap-2">
                                   <div className="w-8 h-8 rounded-full bg-blue-600/20 flex items-center justify-center text-xs text-blue-400 border border-blue-500/20 font-bold">
@@ -1016,64 +1055,6 @@ export default function Dashboard({
         </div>
       )}
 
-      {/* Settings Modal */}
-      {isSettingsModalOpen && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-neutral-900 border border-neutral-800 rounded-2xl w-full max-w-md shadow-2xl overflow-hidden">
-            <div className="p-6 border-b border-neutral-800 flex items-center justify-between bg-neutral-950/50">
-              <h3 className="text-xl font-bold text-white flex items-center gap-2">
-                <Database className="w-5 h-5 text-blue-400" />
-                Настройки хранилища
-              </h3>
-              <button onClick={() => setIsSettingsModalOpen(false)} className="text-neutral-500 hover:text-white transition-colors">
-                <X className="w-6 h-6" />
-              </button>
-            </div>
-            <form onSubmit={handleUpdateConfig} className="p-6 space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-neutral-400 mb-2">
-                  Путь к корневой папке проектов
-                </label>
-                <div className="flex gap-2">
-                  <input 
-                    type="text"
-                    value={baseDir}
-                    onChange={(e) => setBaseDir(e.target.value)}
-                    placeholder="Папка не выбрана"
-                    className="flex-1 bg-neutral-950 border border-neutral-800 text-neutral-300 rounded-lg px-4 py-2.5 font-mono text-sm focus:outline-none focus:border-blue-500"
-                  />
-                  <button 
-                    type="button"
-                    onClick={handleSelectFolder}
-                    className="px-4 py-2 bg-neutral-800 hover:bg-neutral-700 text-white rounded-lg transition-colors border border-neutral-700 flex items-center gap-2 whitespace-nowrap"
-                  >
-                    <FolderPlus className="w-4 h-4" />
-                    Авто
-                  </button>
-                </div>
-                <p className="mt-2 text-xs text-neutral-500">
-                  В веб-версии вы можете ввести путь вручную или использовать "Авто" для симуляции выбора. Все файлы будут сохраняться в эту папку.
-                </p>
-              </div>
-              <div className="flex gap-3 pt-2">
-                <button 
-                  type="button"
-                  onClick={() => setIsSettingsModalOpen(false)}
-                  className="flex-1 px-4 py-2.5 bg-neutral-800 hover:bg-neutral-700 text-white rounded-lg font-medium transition-colors"
-                >
-                  Отмена
-                </button>
-                <button 
-                  type="submit"
-                  className="flex-1 px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-medium transition-colors shadow-lg shadow-blue-500/20"
-                >
-                  Сохранить
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
 
       {/* New Project Modal */}
       {isNewProjectModalOpen && (
@@ -1110,9 +1091,9 @@ export default function Dashboard({
                 
                 {animeSearchResults.length > 0 && (
                   <div className="mt-4 space-y-2 max-h-40 overflow-y-auto pr-2">
-                    {animeSearchResults.map(anime => (
+                    {animeSearchResults.map((anime, idx) => (
                       <button
-                        key={anime.mal_id}
+                        key={(anime.mal_id || 'anime') + idx}
                         type="button"
                         onClick={() => handleSelectAnime(anime)}
                         className="w-full flex items-center gap-3 p-2 rounded-lg hover:bg-neutral-800 text-left transition-colors group"
@@ -1137,6 +1118,7 @@ export default function Dashboard({
                       type="text" 
                       value={newProjectTitle} 
                       onChange={(e) => setNewProjectTitle(e.target.value)}
+                      onKeyDown={(e) => e.stopPropagation()}
                       className="w-full bg-neutral-950 border border-neutral-800 text-white rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500/50"
                       placeholder="Напр: Твоё имя"
                       required
@@ -1148,6 +1130,7 @@ export default function Dashboard({
                       type="text" 
                       value={newProjectOriginalTitle} 
                       onChange={(e) => setNewProjectOriginalTitle(e.target.value)}
+                      onKeyDown={(e) => e.stopPropagation()}
                       className="w-full bg-neutral-950 border border-neutral-800 text-white rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500/50"
                       placeholder="Напр: Kimi no Na wa"
                     />
@@ -1168,12 +1151,13 @@ export default function Dashboard({
                     </select>
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-neutral-300 mb-2">Эмодзи</label>
+                    <label className="block text-sm font-medium text-neutral-300 mb-2">Тип и Сезон</label>
                     <input 
                       type="text" 
-                      value={newProjectEmoji} 
-                      onChange={(e) => setNewProjectEmoji(e.target.value)}
+                      value={newProjectTypeAndSeason} 
+                      onChange={(e) => setNewProjectTypeAndSeason(e.target.value)}
                       className="w-full bg-neutral-950 border border-neutral-800 text-white rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500/50"
+                      placeholder="TV1, Movie..."
                     />
                   </div>
                   <div>
@@ -1221,25 +1205,32 @@ export default function Dashboard({
                       <Plus className="w-3 h-3" /> Добавить
                     </button>
                   </div>
-                  <div id="character-list-container" className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-40 overflow-y-auto p-1 scroll-smooth">
-                    {newProjectCharacters.map((char, idx) => (
-                      <div key={idx} className="flex gap-2 group">
-                        <input 
-                          type="text"
-                          value={char.name}
-                          onChange={(e) => handleUpdateCharacter(idx, e.target.value)}
-                          placeholder="Имя персонажа"
-                          className="flex-1 bg-neutral-950 border border-neutral-800 text-white rounded-lg px-3 py-1.5 text-xs focus:ring-1 focus:ring-blue-500/50"
-                        />
-                        <button 
-                          type="button"
-                          onClick={() => handleRemoveCharacter(idx)}
-                          className="text-neutral-600 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity"
-                        >
-                          <X className="w-4 h-4" />
-                        </button>
-                      </div>
-                    ))}
+                    <div id="character-list-container" className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-40 overflow-y-auto p-1 scroll-smooth">
+                      {newProjectCharacters.map((char, idx) => (
+                        <div key={char.name || ('char-' + idx)} className="flex gap-2 group items-center">
+                          {char.photoUrl ? (
+                            <img src={char.photoUrl} alt="" className="w-8 h-8 rounded-full object-cover border border-neutral-800" referrerPolicy="no-referrer" />
+                          ) : (
+                            <div className="w-8 h-8 rounded-full bg-neutral-900 border border-neutral-800 flex items-center justify-center text-neutral-700">
+                              <User className="w-4 h-4" />
+                            </div>
+                          )}
+                          <input 
+                            type="text"
+                            value={char.name}
+                            onChange={(e) => handleUpdateCharacter(idx, e.target.value)}
+                            placeholder="Имя персонажа"
+                            className="flex-1 bg-neutral-950 border border-neutral-800 text-white rounded-lg px-3 py-1.5 text-xs focus:ring-1 focus:ring-blue-500/50"
+                          />
+                          <button 
+                            type="button"
+                            onClick={() => handleRemoveCharacter(idx)}
+                            className="text-neutral-600 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        </div>
+                      ))}
                     {newProjectCharacters.length === 0 && (
                       <div className="col-span-full text-center py-4 text-xs text-neutral-500 italic border border-dashed border-neutral-800 rounded-lg">
                         Список пуст. Найдите аниме или добавьте вручную.
@@ -1315,8 +1306,8 @@ export default function Dashboard({
               <button onClick={() => setIsAssignDubbersModalOpen(false)} className="text-neutral-400 hover:text-white"><X className="w-5 h-5" /></button>
             </div>
             <div className="p-6 space-y-4 max-h-96 overflow-y-auto">
-              {participants.map(p => (
-                <label key={p.id} className="flex items-center gap-3 p-3 rounded-lg hover:bg-neutral-800 cursor-pointer">
+              {participants.map((p, idx) => (
+                <label key={(p.id || 'p') + idx} className="flex items-center gap-3 p-3 rounded-lg hover:bg-neutral-800 cursor-pointer">
                   <input
                     type="checkbox"
                     checked={selectedProjectDubbers.includes(p.id)}
@@ -1369,8 +1360,8 @@ export default function Dashboard({
                   required
                 >
                   <option value="">Выберите дабера</option>
-                  {participants.filter(p => selectedProject?.assignedDubberIds?.includes(p.id)).map(p => (
-                    <option key={p.id} value={p.id}>{p.nickname}</option>
+                  {participants.filter(p => selectedProject?.assignedDubberIds?.includes(p.id)).map((p, idx) => (
+                    <option key={(p.id || 'p') + idx} value={p.id}>{p.nickname}</option>
                   ))}
                 </select>
               </div>
@@ -1397,47 +1388,11 @@ export default function Dashboard({
                   <div className="flex items-center gap-3">
                     <button 
                       onClick={async () => {
-                        try {
-                          const textToAnalyze = selectedProject.synopsis || selectedProject.title;
-                          if (!textToAnalyze) {
-                            alert('Добавьте описание проекта для анализа');
-                            return;
-                          }
-                          
-                          const characters = await ipcRenderer.invoke('extract-characters', textToAnalyze);
-                          if (characters && characters.length > 0) {
-                            const mapping: {characterName: string, dubberId: string}[] = JSON.parse(selectedProject.globalMapping || '[]');
-                            const existingNames = new Set(mapping.map(m => m.characterName.toLowerCase()));
-                            
-                            const newMappings = characters
-                              .filter((name: string) => !existingNames.has(name.toLowerCase()))
-                              .map((name: string) => ({ characterName: name, dubberId: '' }));
-                            
-                            if (newMappings.length > 0) {
-                              const updatedMapping = [...mapping, ...newMappings];
-                              await ipcRenderer.invoke('save-project', { ...selectedProject, globalMapping: JSON.stringify(updatedMapping) });
-                              onRefresh();
-                              alert(`Добавлено ${newMappings.length} новых персонажей`);
-                            } else {
-                              alert('Новых персонажей не найдено');
-                            }
-                          }
-                        } catch (error) {
-                          console.error('Sync characters error:', error);
-                          alert('Ошибка при синхронизации с Polza.ai');
-                        }
-                      }}
-                      className="flex items-center gap-2 text-sm text-purple-400 hover:text-purple-300"
-                    >
-                      <Sparkles className="w-4 h-4" /> Синхронизировать с Polza.ai
-                    </button>
-                    <button 
-                      onClick={async () => {
                         const name = prompt('Введите имя персонажа:');
                         if (name) {
                           const mapping = JSON.parse(selectedProject.globalMapping || '[]');
                           mapping.push({ characterName: name, dubberId: '' });
-                          await ipcRenderer.invoke('save-project', { ...selectedProject, globalMapping: JSON.stringify(mapping) });
+                          await ipcSafe.invoke('save-project', { ...selectedProject, globalMapping: JSON.stringify(mapping) });
                           onRefresh();
                         }
                       }}
@@ -1452,6 +1407,7 @@ export default function Dashboard({
                   <table className="w-full text-left">
                     <thead>
                       <tr className="bg-neutral-900/50 text-neutral-400 text-xs uppercase tracking-wider">
+                        <th className="px-4 py-3 font-semibold">Фото</th>
                         <th className="px-4 py-3 font-semibold">Персонаж</th>
                         <th className="px-4 py-3 font-semibold">Дабер по умолчанию</th>
                         <th className="px-4 py-3 font-semibold">Алиасы (через запятую)</th>
@@ -1460,7 +1416,7 @@ export default function Dashboard({
                     </thead>
                     <tbody className="divide-y divide-neutral-800">
                       {(() => {
-                        const mapping: {characterName: string, dubberId: string}[] = JSON.parse(selectedProject.globalMapping || '[]');
+                        const mapping: {characterName: string, dubberId: string, photoUrl?: string}[] = JSON.parse(selectedProject.globalMapping || '[]');
                         const aliases: Record<string, string> = JSON.parse(selectedProject.characterAliases || '{}');
                         
                         // Group aliases by main character
@@ -1471,7 +1427,16 @@ export default function Dashboard({
                         });
 
                         return mapping.map((char, idx) => (
-                          <tr key={idx} className="hover:bg-neutral-900/30 transition-colors">
+                          <tr key={char.characterName || ('char-' + idx)} className="hover:bg-neutral-900/30 transition-colors">
+                            <td className="px-4 py-3">
+                              {char.photoUrl ? (
+                                <img src={char.photoUrl} alt={char.characterName} className="w-10 h-10 rounded-full object-cover" />
+                              ) : (
+                                <div className="w-10 h-10 rounded-full bg-neutral-800 flex items-center justify-center text-neutral-500">
+                                  <ImageIcon className="w-5 h-5" />
+                                </div>
+                              )}
+                            </td>
                             <td className="px-4 py-3 text-white font-medium">{char.characterName}</td>
                             <td className="px-4 py-3">
                               <select 
@@ -1479,14 +1444,14 @@ export default function Dashboard({
                                 onChange={async (e) => {
                                   const updatedMapping = [...mapping];
                                   updatedMapping[idx] = { ...char, dubberId: e.target.value };
-                                  await ipcRenderer.invoke('save-project', { ...selectedProject, globalMapping: JSON.stringify(updatedMapping) });
+                                  await ipcSafe.invoke('save-project', { ...selectedProject, globalMapping: JSON.stringify(updatedMapping) });
                                   onRefresh();
                                 }}
                                 className="bg-neutral-900 border border-neutral-800 text-white rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500"
                               >
                                 <option value="">Не назначен</option>
-                                {participants.filter(p => selectedProject.assignedDubberIds?.includes(p.id)).map(p => (
-                                  <option key={p.id} value={p.id}>{p.nickname}</option>
+                                {participants.filter(p => selectedProject.assignedDubberIds?.includes(p.id)).map((p, idx) => (
+                                  <option key={(p.id || 'p') + idx} value={p.id}>{p.nickname}</option>
                                 ))}
                               </select>
                             </td>
@@ -1508,7 +1473,7 @@ export default function Dashboard({
                                     updatedAliases[alias] = char.characterName;
                                   });
                                   
-                                  await ipcRenderer.invoke('save-project', { ...selectedProject, characterAliases: JSON.stringify(updatedAliases) });
+                                  await ipcSafe.invoke('save-project', { ...selectedProject, characterAliases: JSON.stringify(updatedAliases) });
                                   onRefresh();
                                 }}
                                 placeholder="Напр: Наруто Узумаки, Нарик"
@@ -1525,7 +1490,7 @@ export default function Dashboard({
                                     Object.keys(updatedAliases).forEach(k => {
                                       if (updatedAliases[k] === char.characterName) delete updatedAliases[k];
                                     });
-                                    await ipcRenderer.invoke('save-project', { 
+                                    await ipcSafe.invoke('save-project', { 
                                       ...selectedProject, 
                                       globalMapping: JSON.stringify(updatedMapping),
                                       characterAliases: JSON.stringify(updatedAliases)
@@ -1576,8 +1541,8 @@ export default function Dashboard({
                   className="w-full bg-neutral-950 border border-neutral-800 text-white rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500/50"
                 >
                   <option value="">Выберите звукорежиссера</option>
-                  {participants.map(p => (
-                    <option key={p.id} value={p.id}>{p.nickname}</option>
+                  {participants.map((p, idx) => (
+                    <option key={(p.id || 'p') + idx} value={p.id}>{p.nickname}</option>
                   ))}
                 </select>
               </div>
@@ -1615,6 +1580,25 @@ export default function Dashboard({
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                     <div className="space-y-6">
                       <div>
+                        <label className="block text-xs font-bold text-neutral-500 uppercase mb-2 ml-1">Тип и Сезон (напр. TV1)</label>
+                        <div className="relative">
+                          <Globe className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-neutral-500" />
+                          <input
+                            type="text"
+                            value={project.typeAndSeason || ''}
+                            onChange={async (e) => {
+                              await ipcSafe.invoke('save-project', { 
+                                ...project, 
+                                typeAndSeason: e.target.value 
+                              });
+                              onRefresh();
+                            }}
+                            className="w-full bg-black border border-neutral-800 rounded-xl py-3 pl-10 pr-4 text-white focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                            placeholder="TV1, Movie, OVA..."
+                          />
+                        </div>
+                      </div>
+                      <div>
                         <label className="block text-xs font-bold text-neutral-500 uppercase mb-2 ml-1">Дедлайн серии</label>
                         <div className="relative">
                           <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-neutral-500" />
@@ -1623,7 +1607,7 @@ export default function Dashboard({
                             value={currentEpisode?.deadline ? new Date(currentEpisode.deadline).toISOString().split('T')[0] : ''}
                             onChange={async (e) => {
                               if (currentEpisode) {
-                                await ipcRenderer.invoke('save-episode', { ...currentEpisode, deadline: e.target.value });
+                                await ipcSafe.invoke('save-episode', { ...currentEpisode, deadline: e.target.value });
                                 onRefresh();
                               }
                             }}
@@ -1639,7 +1623,7 @@ export default function Dashboard({
                             type="number"
                             value={project.totalEpisodes}
                             onChange={async (e) => {
-                              await ipcRenderer.invoke('save-project', { 
+                              await ipcSafe.invoke('save-project', { 
                                 ...project, 
                                 totalEpisodes: parseInt(e.target.value) 
                               });
@@ -1656,8 +1640,8 @@ export default function Dashboard({
                       <div className="grid grid-cols-1 gap-3">
                         {(() => {
                           const links = JSON.parse(project.links || '{"anime365":"","tg":"","kodik":"","vk":"","shikimori":""}');
-                          return Object.entries(links).map(([key, value]) => (
-                            <div key={key} className="relative">
+                          return Object.entries(links).map(([key, value], idx) => (
+                            <div key={(key || 'link') + idx} className="relative">
                               <span className="absolute left-3 top-1/2 -translate-y-1/2 text-[10px] font-bold text-neutral-600 uppercase w-16">{key}</span>
                               <input
                                 type="text"
@@ -1665,7 +1649,7 @@ export default function Dashboard({
                                 value={value as string}
                                 onChange={async (e) => {
                                   const updatedLinks = { ...links, [key]: e.target.value };
-                                  await ipcRenderer.invoke('save-project', { 
+                                  await ipcSafe.invoke('save-project', { 
                                     ...project, 
                                     links: JSON.stringify(updatedLinks) 
                                   });
@@ -1701,6 +1685,8 @@ export default function Dashboard({
           episode={currentEpisode} 
           role={exportRole} 
           onExport={handleExport}
+          isExporting={isUploading}
+          progress={transcodingProgress || 0}
         />
       )}
 

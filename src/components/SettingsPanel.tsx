@@ -1,37 +1,47 @@
 import { useState, useEffect } from 'react';
-import { Settings, Save, Folder, Cpu, Database } from 'lucide-react';
-import { ipcRenderer } from '../lib/ipc';
+import { Settings, Save, Folder, Cpu, Key, Terminal } from 'lucide-react';
+import { ipcSafe } from '../lib/ipcSafe';
 
 export default function SettingsPanel() {
   const [settings, setSettings] = useState({
-    exportPath: 'C:/PolzaStudio/Exports',
-    nvencDevice: '0',
-    dbPath: 'C:/PolzaStudio/data.db',
-    ffmpegPath: ''
+    baseDir: '',
+    ffmpegPath: '',
+    useNvenc: false,
+    gpuIndex: '0',
+    openRouterKey: ''
   });
 
   const [gpus, setGpus] = useState<{ name: string, index: string }[]>([]);
 
   useEffect(() => {
-    ipcRenderer.invoke('get-config').then(data => {
+    ipcSafe.invoke('get-config').then(data => {
       if (data) {
-        setSettings(prev => ({ ...prev, ...data }));
+        setSettings(prev => ({ 
+          ...prev, 
+          ...data,
+          // Ensure defaults if missing
+          baseDir: data.baseDir || '',
+          ffmpegPath: data.ffmpegPath || '',
+          useNvenc: !!data.useNvenc,
+          gpuIndex: data.gpuIndex || '0',
+          openRouterKey: data.openRouterKey || ''
+        }));
       }
     });
 
-    ipcRenderer.invoke('get-gpus').then(setGpus);
+    ipcSafe.invoke('get-gpus').then(setGpus);
   }, []);
 
-  const handleSelectFolder = async (key: 'exportPath' | 'dbPath') => {
-    const path = await ipcRenderer.invoke('select-folder');
-    if (path) {
-      setSettings(prev => ({ ...prev, [key]: path }));
+  const handleSelectFolder = async (key: 'baseDir') => {
+    const res = await ipcSafe.invoke('select-folder');
+    if (res.success) {
+      setSettings(prev => ({ ...prev, [key]: res.data.path }));
     }
   };
 
   const handleSave = async () => {
     try {
-      await ipcRenderer.invoke('save-config', settings);
+      await ipcSafe.invoke('save-config', settings);
       alert('Настройки сохранены!');
     } catch (error) {
       console.error('Failed to save settings:', error);
@@ -57,39 +67,25 @@ export default function SettingsPanel() {
           </h2>
           <div className="grid gap-4">
             <div>
-              <label className="block text-sm text-neutral-400 mb-2">Папка экспорта</label>
+              <label className="block text-sm text-neutral-400 mb-2">Рабочая директория (База проектов)</label>
               <div className="flex gap-2">
                 <input 
                   type="text" 
-                  value={settings.exportPath}
-                  onChange={(e) => setSettings({...settings, exportPath: e.target.value})}
+                  value={settings.baseDir}
+                  onChange={(e) => setSettings({...settings, baseDir: e.target.value})}
                   className="flex-1 bg-neutral-950 border border-neutral-800 rounded-lg px-4 py-3 text-white focus:border-blue-500 outline-none"
+                  placeholder="Выберите папку для хранения проектов"
                 />
                 <button 
-                  onClick={() => handleSelectFolder('exportPath')}
-                  className="bg-neutral-800 hover:bg-neutral-700 text-white px-4 rounded-lg"
+                  onClick={() => handleSelectFolder('baseDir')}
+                  className="bg-neutral-800 hover:bg-neutral-700 text-white px-4 rounded-lg transition-colors"
+                  title="Выбрать папку"
                 >
                   <Folder className="w-5 h-5" />
                 </button>
               </div>
             </div>
-            <div>
-              <label className="block text-sm text-neutral-400 mb-2">Путь к БД (SQLite)</label>
-              <div className="flex gap-2">
-                <input 
-                  type="text" 
-                  value={settings.dbPath}
-                  onChange={(e) => setSettings({...settings, dbPath: e.target.value})}
-                  className="flex-1 bg-neutral-950 border border-neutral-800 rounded-lg px-4 py-3 text-white focus:border-blue-500 outline-none"
-                />
-                <button 
-                  onClick={() => handleSelectFolder('dbPath')}
-                  className="bg-neutral-800 hover:bg-neutral-700 text-white px-4 rounded-lg"
-                >
-                  <Folder className="w-5 h-5" />
-                </button>
-              </div>
-            </div>
+            
             <div>
               <label className="block text-sm text-neutral-400 mb-2">Путь к FFmpeg (ffmpeg.exe)</label>
               <div className="flex gap-2">
@@ -102,18 +98,46 @@ export default function SettingsPanel() {
                 />
                 <button 
                   onClick={async () => {
-                    const res = await ipcRenderer.invoke('select-file', {
+                    const res = await ipcSafe.invoke('select-file', {
                       filters: [{ name: 'Executables', extensions: ['exe', 'bin', 'sh'] }]
                     });
                     if (res.success) {
                       setSettings({...settings, ffmpegPath: res.data.path});
                     }
                   }}
-                  className="bg-neutral-800 hover:bg-neutral-700 text-white px-4 rounded-lg"
+                  className="bg-neutral-800 hover:bg-neutral-700 text-white px-4 rounded-lg transition-colors"
+                  title="Выбрать файл"
                 >
-                  <Folder className="w-5 h-5" />
+                  <Terminal className="w-5 h-5" />
                 </button>
               </div>
+            </div>
+          </div>
+        </section>
+
+
+        {/* Видеокарта */}
+        <section>
+          <h2 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
+            <Key className="w-5 h-5 text-amber-400" />
+            API Ключи
+          </h2>
+          <div className="space-y-4">
+            <div>
+              <label className="block text-sm text-neutral-400 mb-2">OpenRouter API Key (для AI перевода)</label>
+              <div className="relative">
+                <input 
+                  type="password" 
+                  value={settings.openRouterKey}
+                  onChange={(e) => setSettings({...settings, openRouterKey: e.target.value})}
+                  className="w-full bg-neutral-950 border border-neutral-800 rounded-lg px-4 py-3 text-white focus:border-amber-500 outline-none"
+                  placeholder="sk-or-v1-..."
+                />
+                <Key className="w-4 h-4 text-neutral-600 absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none" />
+              </div>
+              <p className="text-[10px] text-neutral-500 mt-2">
+                Используется для перевода через бесплатные модели OpenRouter. Если ключ не указан, будет использован стандартный Google Translate API.
+              </p>
             </div>
           </div>
         </section>
@@ -122,23 +146,43 @@ export default function SettingsPanel() {
         <section>
           <h2 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
             <Cpu className="w-5 h-5 text-green-400" />
-            Видеокарта (NVENC)
+            Аппаратное ускорение (NVENC)
           </h2>
-          <select 
-            value={settings.nvencDevice}
-            onChange={(e) => setSettings({...settings, nvencDevice: e.target.value})}
-            className="w-full bg-neutral-950 border border-neutral-800 rounded-xl px-4 py-3 text-white focus:border-green-500 outline-none appearance-none"
-          >
-            {gpus.map(gpu => (
-              <option key={gpu.index} value={gpu.index}>GPU {gpu.index}: {gpu.name}</option>
-            ))}
-            {gpus.length === 0 && <option value="0">Видеокарта по умолчанию</option>}
-          </select>
+          <div className="space-y-4">
+            <div className="flex items-center gap-3">
+              <input 
+                type="checkbox" 
+                id="useNvenc"
+                checked={settings.useNvenc}
+                onChange={(e) => setSettings({...settings, useNvenc: e.target.checked})}
+                className="w-5 h-5 rounded border-neutral-800 bg-neutral-950 text-green-600 focus:ring-green-500 focus:ring-offset-neutral-900"
+              />
+              <label htmlFor="useNvenc" className="text-white cursor-pointer select-none">
+                Использовать NVENC для рендеринга и транскодирования
+              </label>
+            </div>
+
+            {settings.useNvenc && (
+              <div>
+                <label className="block text-sm text-neutral-400 mb-2">Выберите видеокарту</label>
+                <select 
+                  value={settings.gpuIndex}
+                  onChange={(e) => setSettings({...settings, gpuIndex: e.target.value})}
+                  className="w-full bg-neutral-950 border border-neutral-800 rounded-xl px-4 py-3 text-white focus:border-green-500 outline-none appearance-none cursor-pointer"
+                >
+                  {gpus.map(gpu => (
+                    <option key={gpu.index} value={gpu.index}>GPU {gpu.index}: {gpu.name}</option>
+                  ))}
+                  {gpus.length === 0 && <option value="0">Видеокарта по умолчанию (0)</option>}
+                </select>
+              </div>
+            )}
+          </div>
         </section>
 
         <button 
           onClick={handleSave}
-          className="w-full flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 text-white px-6 py-4 rounded-lg font-bold transition-colors shadow-lg shadow-blue-500/20"
+          className="w-full flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 text-white px-6 py-4 rounded-lg font-bold transition-all shadow-lg shadow-blue-500/20 active:scale-[0.98]"
         >
           <Save className="w-5 h-5" />
           Сохранить настройки

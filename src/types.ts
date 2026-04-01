@@ -28,6 +28,7 @@ export interface Episode {
   deadline?: string;
   rawPath?: string;
   subPath?: string;
+  isHardsub?: boolean;
   assignments: RoleAssignment[];
   uploads: UploadedFile[];
   createdAt: string;
@@ -75,6 +76,7 @@ export interface Project {
   links?: string; // JSON string
   globalMapping?: string; // JSON string
   characterAliases?: string; // JSON string: Record<string, string> (alias -> mainName)
+  typeAndSeason?: string; // e.g. "TV1", "Movie", "OVA"
   episodes: Episode[];
   createdAt: string;
   updatedAt: string;

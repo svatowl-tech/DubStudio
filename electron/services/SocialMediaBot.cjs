@@ -1,122 +1,73 @@
 /**
- * Сервис для обращения к API Polza.ai (Main Process).
- * Формирует JSON-запрос для генерации красивого поста для Telegram/VK.
+ * Сервис для генерации постов и анализа текста на основе алгоритмов и шаблонов (Main Process).
+ * Больше не использует внешние AI API.
  */
 class SocialMediaBot {
-  constructor(apiKey) {
-    this.apiKey = apiKey;
-    // Пример базового URL для API Polza.ai (совместимого с OpenAI форматом)
-    this.apiUrl = 'https://api.polza.ai/v1/chat/completions';
+  constructor() {
+    // API ключ больше не требуется
   }
 
   /**
-   * Генерирует текст поста на основе данных о релизе.
+   * Генерирует текст поста на основе данных о релизе (Алгоритмический подход).
    */
   async generateReleasePost(data) {
-    const prompt = `Создай красивый, эмоциональный и вовлекающий пост для Telegram и VK о выходе новой серии в нашей студии озвучки.
+    const { projectTitle, episodeNumber, dubbers } = data;
     
-Детали релиза:
-- Название проекта: ${data.projectTitle}
-- Номер серии: ${data.episodeNumber}
-- Роли озвучивали: ${data.dubbers.join(', ')}
-
-Требования:
-1. Используй подходящие эмодзи (микрофоны, хлопушки, огоньки и т.д.).
-2. Добавь призыв к просмотру (Call to Action).
-3. Поблагодари команду даберов за работу.
-4. Текст должен быть разбит на абзацы для удобного чтения.
-5. Не пиши лишних вступлений (сразу выдавай готовый текст поста).`;
-
-    try {
-      const response = await fetch(this.apiUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${this.apiKey}`,
-        },
-        body: JSON.stringify({
-          model: 'polza-pro',
-          messages: [
-            { 
-              role: 'system', 
-              content: 'Ты креативный и энергичный SMM-менеджер аниме-студии озвучки и фандаба.' 
-            },
-            { 
-              role: 'user', 
-              content: prompt 
-            }
-          ],
-          temperature: 0.7,
-          max_tokens: 800,
-        }),
-      });
-
-      if (!response.ok) throw new Error('API Error');
-      const result = await response.json();
+    const templates = [
+      `🔥 УРА! ВЫШЛА НОВАЯ СЕРИЯ! 🔥\n\n🎬 Проект: ${projectTitle}\n📺 Серия: ${episodeNumber}\n\n🎙 Роли озвучивали: ${dubbers.join(', ')}\n\n✨ Наша команда приложила максимум усилий, чтобы вы могли насладиться просмотром в качественной озвучке. Спасибо всем даберам за их труд!\n\n🍿 Приятного просмотра! Ждем ваши отзывы в комментариях! 👇`,
       
-      if (result.choices && result.choices.length > 0) {
-        return result.choices[0].message.content.trim();
-      } else {
-        throw new Error('Неожиданный формат ответа от Polza.ai API');
-      }
-    } catch (error) {
-      console.error('Ошибка при генерации поста через Polza.ai:', error);
-      throw error;
-    }
+      `🚀 РЕЛИЗ: ${projectTitle} — Серия ${episodeNumber} уже доступна! 🚀\n\nВстречайте продолжение любимого тайтла в нашей озвучке! ✨\n\n👥 Над серией работали: ${dubbers.join(', ')}\n\nОгромное спасибо ребятам за оперативность и качество! ❤️\n\nСмотрите прямо сейчас и делитесь впечатлениями! 🎬✨`,
+      
+      `🎧 Новая серия ${projectTitle} (${episodeNumber}) готова к просмотру! 🎧\n\nМы продолжаем радовать вас качественным фандабом! 🎙🔥\n\n🌟 Голоса серии: ${dubbers.join(', ')}\n\nСпасибо команде за отличную работу! Вы лучшие! 🙌✨\n\nСкорее бегите смотреть! 🍿🎬`
+    ];
+
+    // Выбираем случайный шаблон
+    const randomIndex = Math.floor(Math.random() * templates.length);
+    return templates[randomIndex];
   }
 
   /**
-   * Извлекает список персонажей из текста субтитров или описания.
+   * Извлекает список персонажей из текста субтитров (Алгоритмический подход).
+   * Использует регулярные выражения для поиска имен в формате ASS.
    */
   async extractCharacters(text) {
-    const prompt = `Проанализируй следующий текст (фрагмент субтитров или описание проекта) и извлеки из него список уникальных персонажей.
-    
-Текст для анализа:
-${text.slice(0, 4000)} // Ограничиваем объем текста
-
-Требования:
-1. Верни только список имен через запятую.
-2. Имена должны быть в именительном падеже.
-3. Если персонаж имеет несколько имен/прозвищ, выбери основное.
-4. Не пиши ничего, кроме имен.`;
-
     try {
-      const response = await fetch(this.apiUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${this.apiKey}`,
-        },
-        body: JSON.stringify({
-          model: 'polza-pro',
-          messages: [
-            { 
-              role: 'system', 
-              content: 'Ты эксперт по анализу текстов и аниме-контента.' 
-            },
-            { 
-              role: 'user', 
-              content: prompt 
-            }
-          ],
-          temperature: 0.3,
-        }),
-      });
+      // В формате ASS имена персонажей обычно идут после "Dialogue: ...,Name,"
+      // Регулярное выражение для извлечения имен из строк диалогов ASS
+      const characterRegex = /^Dialogue: [^,]*,[^,]*,[^,]*,([^,]*),/gm;
+      const characters = new Set();
+      let match;
 
-      if (!response.ok) throw new Error('API Error');
-      const result = await response.json();
-      
-      if (result.choices && result.choices.length > 0) {
-        const content = result.choices[0].message.content.trim();
-        return content.split(',').map(s => s.trim()).filter(s => s.length > 0);
+      while ((match = characterRegex.exec(text)) !== null) {
+        const name = match[1].trim();
+        if (name && name !== 'Default' && name !== 'NTP' && isNaN(Number(name))) {
+          characters.add(name);
+        }
       }
-      return [];
+
+      // Если регулярка не сработала (например, текст не в формате ASS), 
+      // попробуем простой поиск по строкам с двоеточием (как в сценариях)
+      if (characters.size === 0) {
+        const scriptRegex = /^([^:\n\r]{2,25}):/gm;
+        while ((match = scriptRegex.exec(text)) !== null) {
+          const name = match[1].trim();
+          if (name && !['http', 'https', 'ftp'].includes(name.toLowerCase())) {
+            characters.add(name);
+          }
+        }
+      }
+
+      return Array.from(characters).sort();
     } catch (error) {
-      console.error('Ошибка при извлечении персонажей:', error);
-      throw error;
+      console.error('Ошибка при алгоритмическом извлечении персонажей:', error);
+      return [];
     }
   }
 }
+
+module.exports = {
+  SocialMediaBot
+};
 
 module.exports = {
   SocialMediaBot

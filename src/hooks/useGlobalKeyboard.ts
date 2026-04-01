@@ -7,6 +7,10 @@ export const useGlobalKeyboard = () => {
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.code === 'Space') {
+        const target = event.target as HTMLElement;
+        if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') {
+          return;
+        }
         // Prevent default scrolling behavior
         event.preventDefault();
         togglePlayPause();

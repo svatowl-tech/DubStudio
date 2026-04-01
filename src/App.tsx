@@ -8,7 +8,7 @@ import Downloader from './components/Downloader';
 import DatabasePanel from './components/DatabasePanel';
 import SettingsPanel from './components/SettingsPanel';
 import { Project, Episode } from './types';
-import { ipcRenderer } from './lib/ipc';
+import { ipcSafe } from './lib/ipcSafe';
 import { VideoProvider } from './contexts/VideoContext';
 import { useGlobalKeyboard } from './hooks/useGlobalKeyboard';
 
@@ -27,7 +27,7 @@ function AppContent() {
   }, []);
 
   const loadProjects = async () => {
-    const data = await ipcRenderer.invoke('get-projects');
+    const data = await ipcSafe.invoke('get-projects');
     setProjects(data);
     
     // Auto-select first project if none selected
@@ -74,7 +74,7 @@ function AppContent() {
     if (!selectedProjectId) return;
     const project = projects.find(p => p.id === selectedProjectId);
     if (project) {
-      await ipcRenderer.invoke('save-project', { ...project, lastActiveEpisode: episodeNumber });
+      await ipcSafe.invoke('save-project', { ...project, lastActiveEpisode: episodeNumber });
       await loadProjects();
     }
   };
@@ -93,7 +93,7 @@ function AppContent() {
         <nav className="flex-1 p-4 space-y-1 overflow-y-auto">
           <button
             onClick={() => setActiveTab('dashboard')}
-            title="Перейти на дашборд проекта"
+            title="Главная панель управления проектами и сериями"
             className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-colors ${
               activeTab === 'dashboard' 
                 ? 'bg-blue-600/10 text-blue-400' 
@@ -106,7 +106,7 @@ function AppContent() {
 
           <button
             onClick={() => setActiveTab('subtitles')}
-            title="Перейти к утилитам для субтитров (ASS)"
+            title="Инструменты для редактирования и синхронизации субтитров (ASS)"
             className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-colors ${
               activeTab === 'subtitles' 
                 ? 'bg-indigo-600/10 text-indigo-400' 
@@ -119,7 +119,7 @@ function AppContent() {
 
           <button
             onClick={() => setActiveTab('qa')}
-            title="Перейти к QA проверке"
+            title="Проверка качества озвучки и синхронизации"
             className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-colors ${
               activeTab === 'qa' 
                 ? 'bg-blue-600/10 text-blue-400' 
@@ -132,7 +132,7 @@ function AppContent() {
 
           <button
             onClick={() => setActiveTab('release')}
-            title="Перейти к сборке релиза"
+            title="Финальная сборка и экспорт релиза"
             className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-colors ${
               activeTab === 'release' 
                 ? 'bg-purple-600/10 text-purple-400' 
@@ -147,7 +147,7 @@ function AppContent() {
         <div className="p-4 border-t border-neutral-800 space-y-1">
           <button
             onClick={() => setActiveTab('database')}
-            title="Перейти к базе участников"
+            title="Управление списком даберов, звукорежиссеров и их контактами"
             className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-colors ${
               activeTab === 'database' 
                 ? 'bg-blue-600/10 text-blue-400' 
@@ -159,7 +159,7 @@ function AppContent() {
           </button>
           <button
             onClick={() => setActiveTab('settings')}
-            title="Перейти к настройкам"
+            title="Настройка путей к файлам, API ключей и других параметров"
             className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-colors ${
               activeTab === 'settings' 
                 ? 'bg-neutral-800 text-white' 

@@ -1,7 +1,8 @@
 import React, { useState } from "react";
 import { Scissors, FileText, Settings2, Loader2, FolderOutput } from "lucide-react";
-import { ipcRenderer } from "../lib/ipc";
+import { ipcSafe } from "../lib/ipcSafe";
 import { Episode } from "../types";
+import { sanitizeFolderName } from "../lib/pathUtils";
 
 interface SplitterPanelProps {
   currentEpisode: Episode | null;
@@ -22,7 +23,7 @@ export default function SplitterPanel({ currentEpisode }: SplitterPanelProps) {
 
   const handleSelectFile = async () => {
     try {
-      const result = await ipcRenderer.invoke('select-file', {
+      const result = await ipcSafe.invoke('select-file', {
         title: 'Выберите файл субтитров',
         filters: [{ name: 'Subtitles', extensions: ['ass'] }]
       });
@@ -44,9 +45,8 @@ export default function SplitterPanel({ currentEpisode }: SplitterPanelProps) {
     setIsProcessing(true);
     setStatus("Разделение субтитров...");
     setGeneratedFiles([]);
-
     try {
-      const config = await ipcRenderer.invoke('get-config');
+      const config = await ipcSafe.invoke('get-config');
       const baseDir = config.baseDir || '';
       
       let outputDirectory = '';
@@ -57,8 +57,9 @@ export default function SplitterPanel({ currentEpisode }: SplitterPanelProps) {
         const dir = pathParts.join('/');
         outputDirectory = `${dir}/Subtitles_by_Actor`;
       } else {
-        const projectTitle = currentEpisode?.project?.title || "Project";
-        const subDir = `${projectTitle}/Episode_${currentEpisode?.number || "0"}/Subtitles_by_Actor`;
+        const projectTitle = sanitizeFolderName(currentEpisode?.project?.title || "Project");
+        const episodeFolder = sanitizeFolderName(`Episode_${currentEpisode?.number || "0"}`);
+        const subDir = `${projectTitle}/${episodeFolder}/Subtitles_by_Actor`;
         outputDirectory = `${baseDir}/${subDir}`;
       }
 
@@ -69,7 +70,7 @@ export default function SplitterPanel({ currentEpisode }: SplitterPanelProps) {
         outputFormat
       };
 
-      const result = await ipcRenderer.invoke('split-subs-by-actor', {
+      const result = await ipcSafe.invoke('split-subs-by-actor', {
         assFilePath: targetFilePath,
         outputDirectory,
         options

@@ -7,7 +7,7 @@ interface Track {
   participant: string;
   character: string;
   status: 'pending' | 'approved' | 'rejected' | 'fixes_needed';
-  files: { id: string; path: string; createdAt: string }[];
+  files: { id: string; path: string; createdAt: string; type?: 'DUBBER_FILE' | 'FIXES' }[];
   selectedFileId?: string;
   comments: any[];
 }
@@ -17,7 +17,7 @@ interface TrackSidebarProps {
   selectedTrackId: string | null;
   setSelectedTrackId: (id: string | null) => void;
   handleApproveAll: () => void;
-  handleFileUpload: (e: any, trackId: string) => void;
+  handleFileUpload: (e: any, trackId: string, type?: 'DUBBER_FILE' | 'FIXES') => void;
   setTracks: React.Dispatch<React.SetStateAction<Track[]>>;
   onGenerateFixesMessage?: () => void;
   onGenerateReminderMessage?: () => void;
@@ -103,25 +103,36 @@ export const TrackSidebar: React.FC<TrackSidebarProps> = ({
                   onClick={(e) => e.stopPropagation()}
                 >
                   {track.files.map((f, idx) => (
-                    <option key={f.id} value={f.id}>Версия {idx + 1} ({new Date(f.createdAt).toLocaleTimeString()})</option>
+                    <option key={f.id} value={f.id}>
+                      {f.type === 'FIXES' ? 'Фикс' : 'Версия'} {idx + 1} ({new Date(f.createdAt).toLocaleTimeString()})
+                    </option>
                   ))}
                 </select>
               </div>
             )}
             
-            {track.files.length === 0 && (
-              <div className="mt-2">
-                <label className="cursor-pointer text-[10px] bg-neutral-800 hover:bg-neutral-700 text-neutral-300 px-2 py-1 rounded block text-center">
-                  Загрузить аудио
+            <div className="mt-2 flex gap-2">
+              <label className="flex-1 cursor-pointer text-[10px] bg-neutral-800 hover:bg-neutral-700 text-neutral-300 px-2 py-1 rounded block text-center transition-colors">
+                {track.files.length === 0 ? 'Загрузить аудио' : 'Добавить версию'}
+                <input 
+                  type="file" 
+                  className="hidden" 
+                  accept="audio/*" 
+                  onChange={(e) => handleFileUpload(e, track.id, 'DUBBER_FILE')} 
+                />
+              </label>
+              {track.files.length > 0 && (
+                <label className="flex-1 cursor-pointer text-[10px] bg-amber-900/20 hover:bg-amber-900/40 text-amber-400 px-2 py-1 rounded block text-center border border-amber-900/50 transition-colors">
+                  Загрузить фикс
                   <input 
                     type="file" 
                     className="hidden" 
                     accept="audio/*" 
-                    onChange={(e) => handleFileUpload(e, track.id)} 
+                    onChange={(e) => handleFileUpload(e, track.id, 'FIXES')} 
                   />
                 </label>
-              </div>
-            )}
+              )}
+            </div>
           </button>
         ))}
       </div>

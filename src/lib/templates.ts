@@ -24,7 +24,7 @@ export const generateStartEpisodeMessage = (episode: Episode, participants: Part
   const assignedDubbers = participants.filter(p => assignedDubberIds.has(p.id));
   
   const dubberMentions = assignedDubbers.map(d => {
-    const mention = d.telegram.startsWith('@') ? d.telegram : `@${d.telegram}`;
+    const mention = d.telegram?.startsWith('@') ? d.telegram : `@${d.telegram || d.nickname}`;
     const count = dubberLineCounts[d.id] || 0;
     return `${d.nickname} (${mention}) — ${count} реп.`;
   }).join('\n');
@@ -79,7 +79,7 @@ export const generateFixesIssuedMessage = (episode: Episode, participants: Parti
 
   const dubberSections = dubberIds.map(id => {
     const { dubber, fixes } = dubberFixes[id];
-    const mention = dubber.telegram.startsWith('@') ? dubber.telegram : `@${dubber.telegram}`;
+    const mention = dubber.telegram?.startsWith('@') ? dubber.telegram : `@${dubber.telegram || dubber.nickname}`;
     
     const fixesText = fixes.map(f => {
       const characterFixes = f.comments.map(c => {
@@ -115,16 +115,22 @@ export const generateStatusMessage = (episode: Episode, participants: Participan
   const assignedDubbers = participants.filter(p => assignedDubberIds.has(p.id));
 
   const roadsMentions = assignedDubbers
-    .filter(p => (episode.assignments || []).some(a => a.dubberId === p.id && a.status === 'PENDING'))
+    .filter(p => {
+      const pAssignments = (episode.assignments || []).filter(a => a.dubberId === p.id);
+      const hasPending = pAssignments.some(a => a.status === 'PENDING');
+      // If track uploaded to QA, it's submitted
+      const hasUpload = (episode.uploads || []).some(u => u.type === 'DUBBER_FILE' && u.uploadedById === p.id);
+      return hasPending && !hasUpload;
+    })
     .map(p => {
-      const mention = p.telegram.startsWith('@') ? p.telegram : `@${p.telegram}`;
+      const mention = p.telegram?.startsWith('@') ? p.telegram : `@${p.telegram || p.nickname}`;
       return `• ${mention}`;
     }).join('\n');
 
   const fixesMentions = assignedDubbers
     .filter(p => (episode.assignments || []).some(a => a.dubberId === p.id && a.status === 'FIXES_NEEDED'))
     .map(p => {
-      const mention = p.telegram.startsWith('@') ? p.telegram : `@${p.telegram}`;
+      const mention = p.telegram?.startsWith('@') ? p.telegram : `@${p.telegram || p.nickname}`;
       return `• ${mention}`;
     }).join('\n');
 
@@ -151,7 +157,7 @@ export const generateTGPostMessage = (episode: Episode, participants: Participan
     .map(id => dubbers.find(d => d.id === id)!);
 
   const dubberLinks = uniqueDubbers.map(d => {
-    const url = d.tgChannel || `https://t.me/${d.telegram.replace('@', '')}`;
+    const url = d.tgChannel || `https://t.me/${(d.telegram || d.nickname).replace('@', '')}`;
     return `[${d.nickname}](${url})`;
   }).join(', ');
 
@@ -160,7 +166,7 @@ export const generateTGPostMessage = (episode: Episode, participants: Participan
 
   const seId = episode.project?.soundEngineerId;
   const se = seId ? participants.find(p => p.id === seId) : null;
-  const seMention = se ? (se.telegram.startsWith('@') ? se.telegram : `@${se.telegram}`) : '@Tenmag';
+  const seMention = se ? (se.telegram?.startsWith('@') ? se.telegram : `@${se.telegram || se.nickname}`) : '@Tenmag';
 
   const emoji = episode.project?.emoji || '📢';
   const releaseType = episode.project?.releaseType === 'VOICEOVER' ? 'Закадр' : episode.project?.releaseType === 'RECAST' ? 'Рекаст' : 'Редаб';
