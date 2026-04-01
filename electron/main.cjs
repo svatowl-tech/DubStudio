@@ -296,10 +296,6 @@ ipcMain.handle('get-raw-subtitles', async (event, assFilePath) => {
   return await getRawSubtitles(assFilePath);
 });
 
-ipcMain.handle('save-translated-subtitles', async (event, { assFilePath, translatedLines }) => {
-  await saveTranslatedSubtitles(assFilePath, translatedLines);
-});
-
 
 ipcMain.handle('split-subs-by-actor', async (event, { assFilePath, outputDirectory, options }) => {
   return await splitSubsByActor(assFilePath, outputDirectory, options);
