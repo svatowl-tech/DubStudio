@@ -1,32 +1,52 @@
 import React, { createContext, useContext, useState, useRef } from 'react';
 
+interface PlayerControls {
+  togglePlayPause: () => void;
+  seekToNext?: () => void;
+}
+
 interface VideoContextType {
   togglePlayPause: () => void;
-  registerPlayer: (playPauseFn: () => void) => void;
+  seekToNext: () => void;
+  registerPlayer: (controls: PlayerControls) => void;
   unregisterPlayer: () => void;
 }
 
 const VideoContext = createContext<VideoContextType | undefined>(undefined);
 
 export const VideoProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const playPauseFnRef = useRef<(() => void) | null>(null);
+  const controlsRef = useRef<PlayerControls | null>(null);
 
-  const registerPlayer = (playPauseFn: () => void) => {
-    playPauseFnRef.current = playPauseFn;
+  const registerPlayer = (controls: PlayerControls) => {
+    controlsRef.current = controls;
   };
 
   const unregisterPlayer = () => {
-    playPauseFnRef.current = null;
+    controlsRef.current = null;
   };
 
   const togglePlayPause = () => {
-    if (playPauseFnRef.current) {
-      playPauseFnRef.current();
+    if (controlsRef.current?.togglePlayPause) {
+      try {
+        controlsRef.current.togglePlayPause();
+      } catch (error) {
+        console.error('VideoContext: Error in togglePlayPause', error);
+      }
+    }
+  };
+
+  const seekToNext = () => {
+    if (controlsRef.current?.seekToNext) {
+      try {
+        controlsRef.current.seekToNext();
+      } catch (error) {
+        console.error('VideoContext: Error in seekToNext', error);
+      }
     }
   };
 
   return (
-    <VideoContext.Provider value={{ togglePlayPause, registerPlayer, unregisterPlayer }}>
+    <VideoContext.Provider value={{ togglePlayPause, seekToNext, registerPlayer, unregisterPlayer }}>
       {children}
     </VideoContext.Provider>
   );

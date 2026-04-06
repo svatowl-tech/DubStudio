@@ -90,19 +90,19 @@ export default function DatabasePanel() {
             <div className="flex gap-2 flex-wrap mt-2">
               {ROLES.map(role => (
                 <button 
-                  key={role}
+                  key={role.id}
                   onClick={() => {
                     const currentRoles = Array.isArray(editing.roles) ? editing.roles : [];
                     setEditing({
                       ...editing, 
-                      roles: currentRoles.includes(role) 
-                        ? currentRoles.filter(r => r !== role) 
-                        : [...currentRoles, role]
+                      roles: currentRoles.includes(role.id) 
+                        ? currentRoles.filter(r => r !== role.id) 
+                        : [...currentRoles, role.id]
                     });
                   }}
-                  className={`px-3 py-1 rounded-full text-sm ${(Array.isArray(editing.roles) ? editing.roles : []).includes(role) ? 'bg-blue-600 text-white' : 'bg-neutral-800 text-neutral-400'}`}
+                  className={`px-3 py-1 rounded-full text-sm ${(Array.isArray(editing.roles) ? editing.roles : []).includes(role.id) ? 'bg-blue-600 text-white' : 'bg-neutral-800 text-neutral-400'}`}
                 >
-                  {role}
+                  {role.name}
                 </button>
               ))}
             </div>

@@ -1,0 +1,61 @@
+appId: com.dubbing.app
+productName: Anime Dub Manager
+copyright: "Copyright © 2026 Svat.Owl"
+
+directories:
+  output: dist/electron
+  buildResources: assets
+
+files:
+  - dist/**/*
+  - electron/**/*
+  - src/**/*
+  - package.json
+
+publish:
+  provider: github
+  owner: SvatOwl
+  repo: anime-dub-manager
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+    - target: portable
+      arch:
+        - x64
+  icon: assets/icon.ico
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  perMachine: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: "Anime Dub Manager"
+  installerIcon: assets/icon.ico
+  uninstallerIcon: assets/icon.ico
+  # Web Setup simulation via nsis configuration
+  # In electron-builder, "Web Setup" is usually just a small installer that downloads the rest, 
+  # but here we'll stick to a standard NSIS installer as requested for "Web Setup" style.
+
+portable:
+  artifactName: "${productName} Portable ${version}.${ext}"
+
+mac:
+  target:
+    - dmg
+    - zip
+  category: public.app-category.video
+  icon: assets/icon.png
+
+linux:
+  target:
+    - AppImage
+    - deb
+  category: Video
+  icon: assets/icon.png
+
+asarUnpack:
+  - "**/node_modules/ffmpeg-static/**/*"

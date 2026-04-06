@@ -11,6 +11,7 @@ declare global {
   interface Window {
     electronAPI: {
       invoke: (channel: string, ...args: any[]) => Promise<any>;
+      send: (channel: string, ...args: any[]) => void;
       on: (channel: string, callback: (...args: any[]) => void) => () => void;
     };
   }
@@ -46,6 +47,7 @@ export interface RoleAssignment {
   status: string; // "PENDING", "RECORDED", "APPROVED", "REJECTED", "FIXES_NEEDED"
   comments?: string; // JSON string
   lineCount?: number;
+  isMain?: boolean;
 }
 
 export interface UploadedFile {
@@ -80,4 +82,17 @@ export interface Project {
   episodes: Episode[];
   createdAt: string;
   updatedAt: string;
+}
+
+export interface Task {
+  id: string;
+  type: string;
+  metadata: any;
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'aborted';
+  progress: number;
+  eta: number | null;
+  error: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
 }

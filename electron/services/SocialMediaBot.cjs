@@ -59,15 +59,12 @@ class SocialMediaBot {
 
       return Array.from(characters).sort();
     } catch (error) {
-      console.error('Ошибка при алгоритмическом извлечении персонажей:', error);
+      const log = require('electron-log');
+      log.error('Ошибка при алгоритмическом извлечении персонажей:', error);
       return [];
     }
   }
 }
-
-module.exports = {
-  SocialMediaBot
-};
 
 module.exports = {
   SocialMediaBot

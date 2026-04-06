@@ -1,5 +1,6 @@
 export const ipcRenderer: {
   invoke: (channel: string, ...args: any[]) => Promise<any>;
+  send: (channel: string, ...args: any[]) => void;
   on: (channel: string, callback: (...args: any[]) => void) => () => void;
   removeListener: (channel: string, callback: (...args: any[]) => void) => void;
 } = {
@@ -106,20 +107,13 @@ export const ipcRenderer: {
       return [{ name: 'Mock GPU 0', index: '0' }];
     }
 
-    if (channel === 'download-file') {
-      const { url } = args[0];
-      let progress = 0;
-      const interval = setInterval(() => {
-        progress += 10;
-        window.dispatchEvent(new CustomEvent('download-progress', { detail: { url, progress } }));
-        if (progress >= 100) clearInterval(interval);
-      }, 500);
-      return { success: true, data: { path: '/mock/downloaded/file' } };
-    }
-
     if (channel === 'import-participants') {
       saveLocalData('participants', args[0]);
       return { success: true };
+    }
+
+    if (channel === 'select-directory') {
+      return { canceled: false, filePaths: ['/mock/release/directory'] };
     }
 
     if (channel === 'select-folder') {
@@ -166,11 +160,30 @@ export const ipcRenderer: {
       return { success: true, data: { path: `${targetDir}/${fileName}` } };
     }
 
-    if (channel === 'generate-release-post') {
-      return { success: true, postText: 'Сгенерированный алгоритмом текст поста для релиза' };
+    if (channel === 'get-debug-stats') {
+      return { cpu: 0, ram: 0, ffmpeg: [] };
+    }
+
+    if (channel === 'get-tasks') {
+      return [];
+    }
+
+    if (channel === 'abort-task') {
+      return true;
+    }
+
+    if (channel === 'clear-task-history') {
+      return true;
     }
 
     return { success: true, mocked: true };
+  },
+  send: (channel: string, ...args: any[]) => {
+    if (window.electronAPI && window.electronAPI.send) {
+      window.electronAPI.send(channel, ...args);
+    } else {
+      console.warn(`IPC channel "${channel}" send called in browser environment. Using fallback.`);
+    }
   },
   on: (channel: string, callback: (...args: any[]) => void) => {
     if (window.electronAPI && window.electronAPI.on) {

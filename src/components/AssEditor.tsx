@@ -17,6 +17,7 @@ import {
   Loader2,
   X,
   FileAudio,
+  AlertCircle,
 } from "lucide-react";
 import TranslatePanel from "./TranslatePanel";
 import { Participant, Episode, RoleAssignment } from "../types";
@@ -28,6 +29,7 @@ import { ipcSafe } from "../lib/ipcSafe";
 import { latinToCyrillic, polivanovToHepburn } from "../lib/translit";
 import { generateStartEpisodeMessage } from "../lib/templates";
 import { ExportModal } from './ExportModal';
+import { SIGN_KEYWORDS, GROUP_KEYWORDS } from "../constants";
 
 interface AssLine {
   id: string;
@@ -71,6 +73,51 @@ export default function AssEditor({
   const [exportRole, setExportRole] = useState<'DABBER' | 'SOUND_ENGINEER'>('DABBER');
   const [isUploading, setIsUploading] = useState(false);
   const [showSigns, setShowSigns] = useState(true);
+  const [unassignedLinesCount, setUnassignedLinesCount] = useState(0);
+
+  const globalMapping = React.useMemo(() => {
+    try {
+      const raw = currentEpisode?.project?.globalMapping || '[]';
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed)
+        ? parsed as {characterName: string, dubberId: string, photoUrl?: string}[]
+        : Object.entries(parsed).map(([k, v]) => ({ characterName: k, dubberId: v as string, photoUrl: undefined }));
+    } catch (e) {
+      return [];
+    }
+  }, [currentEpisode?.project?.globalMapping]);
+
+  const characterAliases = React.useMemo(() => {
+    try {
+      const raw = currentEpisode?.project?.characterAliases || '{}';
+      return JSON.parse(raw) as Record<string, string>;
+    } catch (e) {
+      return {};
+    }
+  }, [currentEpisode?.project?.characterAliases]);
+
+  const getCharacterPortrait = (name: string) => {
+    const mainName = characterAliases[name] || name;
+    return globalMapping.find(m => m.characterName === mainName)?.photoUrl;
+  };
+
+  useEffect(() => {
+    const checkUnassigned = async () => {
+      if (!currentEpisode?.subPath) {
+        setUnassignedLinesCount(0);
+        return;
+      }
+      try {
+        const data = await ipcSafe.invoke('get-raw-subtitles', currentEpisode.subPath);
+        const lines = data.lines || data;
+        const count = lines.filter((l: any) => !l.name || !l.name.trim()).length;
+        setUnassignedLinesCount(count);
+      } catch (e) {
+        console.error("Error checking unassigned lines:", e);
+      }
+    };
+    checkUnassigned();
+  }, [currentEpisode, activeTab]);
 
   useEffect(() => {
     getParticipants().then(setParticipants);
@@ -106,9 +153,17 @@ export default function AssEditor({
 
         const mergedMapping = [...existingMapping];
         currentMapping.forEach(m => {
-          const idx = mergedMapping.findIndex(em => em.characterName === m.characterName);
-          if (idx === -1) mergedMapping.push(m);
-          else mergedMapping[idx].dubberId = m.dubberId;
+          const exists = mergedMapping.some(em => em.characterName === m.characterName && em.dubberId === m.dubberId);
+          if (!exists) {
+            // Check if there's an empty entry for this character to fill
+            const emptyIdx = mergedMapping.findIndex(em => em.characterName === m.characterName && !em.dubberId);
+            if (emptyIdx !== -1) {
+              mergedMapping[emptyIdx].dubberId = m.dubberId;
+            } else {
+              // Add as a new entry to support multiple dubbers
+              mergedMapping.push(m);
+            }
+          }
         });
 
         const updatedProject = {
@@ -124,7 +179,7 @@ export default function AssEditor({
     }
   };
 
-  const handleAnalyzeExisting = async (): Promise<RoleAssignment[]> => {
+  const handleAnalyzeExisting = async (currentAssignments: RoleAssignment[] = assignments): Promise<RoleAssignment[]> => {
     if (!currentEpisode?.subPath) return [];
     
     setStatus("Анализ существующих субтитров...");
@@ -144,29 +199,37 @@ export default function AssEditor({
           lineCounts[mainName] = (lineCounts[mainName] || 0) + 1;
         });
 
-        // Map to main names and deduplicate
+        // Map to main names and deduplicate, filtering out signs
         const mainActors = Array.from(new Set(rawActors.map(name => {
           const nameToUse = name || "Unknown";
           return aliases[nameToUse] || nameToUse;
-        })));
+        }))).filter(name => !SIGN_KEYWORDS.includes(name as string)) as string[];
+        
         setActors(mainActors);
 
         const globalMappingRaw = currentEpisode?.project?.globalMapping || '[]';
-        const globalMapping: {characterName: string, dubberId: string}[] = Array.isArray(JSON.parse(globalMappingRaw)) 
-          ? JSON.parse(globalMappingRaw) 
-          : Object.entries(JSON.parse(globalMappingRaw)).map(([k, v]) => ({ characterName: k, dubberId: v as string }));
+        let globalMapping: {characterName: string, dubberId: string}[] = [];
+        try {
+          const parsed = JSON.parse(globalMappingRaw);
+          if (Array.isArray(parsed)) {
+            globalMapping = parsed;
+          } else if (parsed && typeof parsed === 'object') {
+            globalMapping = Object.entries(parsed).map(([k, v]) => ({ characterName: k, dubberId: v as string }));
+          }
+        } catch (e) {
+          console.error("Error parsing global mapping:", e);
+        }
 
-        const existingAssignments = assignments;
-        const existingNames = new Set(existingAssignments.map(a => a.characterName));
+        const existingNames = new Set(currentAssignments.map(a => a.characterName));
         const toAdd = mainActors.filter((name: string) => !existingNames.has(name));
         
-        const updatedPrev = existingAssignments.map(a => ({
+        const updatedPrev = currentAssignments.map(a => ({
           ...a,
           lineCount: lineCounts[a.characterName] || 0
         }));
 
         let finalAssignments: RoleAssignment[] = [];
-        if (toAdd.length > 0) {
+        if (toAdd?.length > 0) {
           const newAssignments = toAdd.map((actor: string) => {
             // Priority 1: Global mapping
             const mappingEntry = globalMapping.find(m => m.characterName === actor);
@@ -203,7 +266,7 @@ export default function AssEditor({
         saveToDatabase(finalAssignments);
 
         lastAnalyzedEpisodeId.current = currentEpisode.id;
-        setStatus(`Анализ завершен. Найдено ${mainActors.length} персонажей.`);
+        setStatus(`Анализ завершен. Найдено ${mainActors?.length || 0} персонажей.`);
         return finalAssignments;
       }
       return assignments;
@@ -218,7 +281,7 @@ export default function AssEditor({
   useEffect(() => {
     if (!currentEpisode) return;
 
-    if (currentEpisode.assignments && currentEpisode.assignments.length > 0) {
+    if (Array.isArray(currentEpisode.assignments) && currentEpisode.assignments.length > 0) {
       // Sync with global mapping for unassigned characters
       let globalMapping: {characterName: string, dubberId: string}[] = [];
       try {
@@ -231,34 +294,75 @@ export default function AssEditor({
         console.error("Error parsing global mapping:", e);
       }
 
+      const assignedDubbersPerCharacter: Record<string, Set<string>> = {};
+      currentEpisode.assignments.forEach(a => {
+        if (a.dubberId) {
+          if (!assignedDubbersPerCharacter[a.characterName]) {
+            assignedDubbersPerCharacter[a.characterName] = new Set();
+          }
+          assignedDubbersPerCharacter[a.characterName].add(a.dubberId);
+        }
+      });
+
       const updatedAssignments = currentEpisode.assignments.map(a => {
-        if (!a.dubberId) {
-          const mappingEntry = globalMapping.find(m => m.characterName === a.characterName);
-          if (mappingEntry?.dubberId) {
-            const dubber = participants.find(p => p.id === mappingEntry.dubberId);
-            return { ...a, dubberId: mappingEntry.dubberId, dubber };
+        let newA = { ...a };
+        
+        if (!newA.dubberId) {
+          const mappings = globalMapping.filter(m => m.characterName === newA.characterName && m.dubberId);
+          const assignedSet = assignedDubbersPerCharacter[newA.characterName] || new Set();
+          
+          const availableMapping = mappings.find(m => !assignedSet.has(m.dubberId));
+          
+          if (availableMapping) {
+            newA.dubberId = availableMapping.dubberId;
+            assignedSet.add(availableMapping.dubberId);
+            assignedDubbersPerCharacter[newA.characterName] = assignedSet;
           }
         }
-        return a;
+
+        if (newA.dubberId && !newA.dubber) {
+          newA.dubber = participants.find(p => p.id === newA.dubberId);
+        }
+        if (newA.substituteId && !newA.substitute) {
+          newA.substitute = participants.find(p => p.id === newA.substituteId);
+        }
+
+        return newA;
       });
 
       // Only update state if there are actual changes to avoid loops
-      const hasChanges = JSON.stringify(updatedAssignments) !== JSON.stringify(currentEpisode.assignments);
+      const cleanUpdated = updatedAssignments.map(a => {
+        const { dubber, substitute, ...rest } = a;
+        return rest;
+      });
+      const cleanCurrent = currentEpisode.assignments.map(a => {
+        const { dubber, substitute, ...rest } = a;
+        return rest;
+      });
+
+      const hasChanges = JSON.stringify(cleanUpdated) !== JSON.stringify(cleanCurrent);
+      
       if (hasChanges) {
+        console.log("AssEditor: Auto-saving assignments due to changes", {
+          cleanUpdated,
+          cleanCurrent
+        });
         setAssignments(updatedAssignments);
         setActors(updatedAssignments.map(a => a.characterName));
         saveToDatabase(updatedAssignments);
       } else {
-        setAssignments(currentEpisode.assignments);
-        setActors(currentEpisode.assignments.map(a => a.characterName));
+        // Even if no DB changes, we still need to set the state with populated dubbers
+        setAssignments(updatedAssignments);
+        setActors(Array.isArray(currentEpisode.assignments) ? currentEpisode.assignments.map(a => a.characterName) : []);
       }
       
       lastAnalyzedEpisodeId.current = currentEpisode.id;
       
       // If line counts are missing, trigger analysis
       const hasLineCounts = updatedAssignments.some(a => (a.lineCount || 0) > 0);
-      if (!hasLineCounts && currentEpisode.subPath) {
-        handleAnalyzeExisting();
+      if (!hasLineCounts && currentEpisode.subPath && lastAnalyzedEpisodeId.current !== currentEpisode.id + '_auto') {
+        lastAnalyzedEpisodeId.current = currentEpisode.id + '_auto';
+        handleAnalyzeExisting(updatedAssignments);
       }
     } else {
       // Only clear if it's a different episode
@@ -266,7 +370,10 @@ export default function AssEditor({
         setAssignments([]);
         setActors([]);
         if (currentEpisode.subPath) {
-          handleAnalyzeExisting();
+          lastAnalyzedEpisodeId.current = currentEpisode.id + '_auto';
+          handleAnalyzeExisting([]);
+        } else {
+          lastAnalyzedEpisodeId.current = currentEpisode.id;
         }
       }
     }
@@ -369,29 +476,29 @@ export default function AssEditor({
 
   const handleExport = async (targetDir: string, skipConversion: boolean, smartExport?: boolean) => {
     if (!currentEpisode) return;
-    setIsExporting(true);
-    setExportProgress(0);
     
-    let res;
-    if (exportRole === 'DABBER') {
-      res = await ipcSafe.invoke('export-dabber-files', { episode: currentEpisode, targetDir, skipConversion });
-    } else {
-      res = await ipcSafe.invoke('export-sound-engineer-files', { episode: currentEpisode, targetDir, skipConversion, smartExport });
-    }
-    
-    if (res.success) {
-      if (exportRole === 'DABBER') {
-        const msg = generateStartEpisodeMessage(currentEpisode, participants);
-        setGeneratedMessage(msg);
-        setIsMessageModalOpen(true);
-      }
+    try {
+      const taskType = exportRole === 'DABBER' ? 'export-dabber-files' : 'export-sound-engineer-files';
+      const roleName = exportRole === 'DABBER' ? 'Даберам' : 'Звукорежиссеру';
+      
+      await ipcSafe.send('enqueue-ffmpeg-task', {
+        type: taskType,
+        payload: { 
+          episode: currentEpisode, 
+          targetDir, 
+          skipConversion, 
+          smartExport 
+        },
+        metadata: {
+          title: `Экспорт ${roleName}: ${currentEpisode.project?.title} - Серия ${currentEpisode.number}`
+        }
+      });
+      
       setIsExportModalOpen(false);
-      alert('Экспорт успешно завершен!');
-    } else {
-      alert('Ошибка экспорта: ' + res.error);
+      // The TaskQueuePanel will show progress
+    } catch (error: any) {
+      alert('Ошибка при постановке в очередь: ' + error.message);
     }
-
-    setIsExporting(false);
   };
 
   const handleRemoveAssignment = async (assignmentId: string, characterName: string) => {
@@ -433,7 +540,8 @@ export default function AssEditor({
     if (!currentEpisode?.subPath) return;
 
     try {
-      const lines: RawSubtitleLine[] = await ipcSafe.invoke('get-raw-subtitles', currentEpisode.subPath);
+      const data = await ipcSafe.invoke('get-raw-subtitles', currentEpisode.subPath);
+      const lines: RawSubtitleLine[] = data.lines || data;
       
       const warnings: string[] = [];
       
@@ -494,9 +602,7 @@ export default function AssEditor({
         console.error("Error parsing global mapping:", e);
       }
       
-      const mappingEntry = globalMapping.find(m => m.characterName === mainName);
-      const autoDubberId = mappingEntry?.dubberId || "";
-      const autoDubber = participants.find(p => p.id === autoDubberId);
+      const mappingEntries = globalMapping.filter(m => m.characterName === mainName && m.dubberId);
 
       const updatedProject = {
         ...currentEpisode.project,
@@ -510,8 +616,8 @@ export default function AssEditor({
       
       // Transfer dubber assignments from alias to main if they exist
       aliasAssignments.forEach(aa => {
-        const dubberIdToUse = aa.dubberId || autoDubberId;
-        const dubberToUse = aa.dubber || autoDubber;
+        const dubberIdToUse = aa.dubberId;
+        const dubberToUse = aa.dubber;
         
         const alreadyHasThisDubber = updatedAssignments.some(a => a.characterName === mainName && a.dubberId === dubberIdToUse);
         
@@ -521,19 +627,34 @@ export default function AssEditor({
              characterName: mainName,
              dubberId: dubberIdToUse,
              dubber: dubberToUse,
-             id: Math.random().toString()
+             id: Math.random().toString(36).substring(2, 11)
            });
         }
       });
 
-      // If main character still has no assignments, create one (with auto-dubber if available)
+      // Also ensure all dubbers from global mapping for the main character are present
+      mappingEntries.forEach(me => {
+        const alreadyHasThisDubber = updatedAssignments.some(a => a.characterName === mainName && a.dubberId === me.dubberId);
+        if (!alreadyHasThisDubber) {
+          updatedAssignments.push({
+            id: Math.random().toString(36).substring(2, 11),
+            episodeId: currentEpisode.id,
+            characterName: mainName,
+            dubberId: me.dubberId,
+            dubber: participants.find(p => p.id === me.dubberId),
+            status: 'PENDING',
+            lineCount: 0
+          });
+        }
+      });
+
+      // If main character still has no assignments, create one empty
       if (updatedAssignments.filter(a => a.characterName === mainName).length === 0) {
         updatedAssignments.push({
-          id: Math.random().toString(),
+          id: Math.random().toString(36).substring(2, 11),
           episodeId: currentEpisode.id,
           characterName: mainName,
-          dubberId: autoDubberId,
-          dubber: autoDubber,
+          dubberId: "",
           status: "PENDING"
         });
       }
@@ -545,7 +666,7 @@ export default function AssEditor({
       setActors(prev => prev.filter(a => a !== aliasName));
       
       setLinkingCharacter(null);
-      setStatus(`Персонаж "${aliasName}" успешно связан с "${mainName}".${autoDubber ? ` Дабер ${autoDubber.nickname} назначен автоматически.` : ''}`);
+      setStatus(`Персонаж "${aliasName}" успешно связан с "${mainName}".`);
       onRefresh();
     } catch (error) {
       console.error("Link alias error:", error);
@@ -785,7 +906,7 @@ export default function AssEditor({
           <button
             onClick={() => setActiveTab("raw")}
             title="Переключиться на редактор разметки реплик"
-            className={`flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+            className={`flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-colors relative ${
               activeTab === "raw"
                 ? "bg-neutral-800 text-white shadow-sm"
                 : "text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800/50"
@@ -793,6 +914,9 @@ export default function AssEditor({
           >
             <Edit3 className="w-4 h-4" />
             Разметка реплик
+            {unassignedLinesCount > 0 && (
+              <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-red-500 rounded-full border-2 border-neutral-900 animate-pulse" />
+            )}
           </button>
           <button
             onClick={() => setActiveTab("roles")}
@@ -840,14 +964,28 @@ export default function AssEditor({
               </h2>
 
               {currentEpisode?.subPath && (
-                <button
-                  onClick={handleAnalyzeExisting}
-                  title="Проанализировать загруженный файл субтитров"
-                  className="w-full mb-4 px-4 py-3 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-medium transition-colors flex items-center justify-center gap-2 shadow-lg shadow-indigo-500/20"
-                >
-                  <Scissors className="w-4 h-4" />
-                  Анализировать загруженные субтитры
-                </button>
+                <div className="space-y-3">
+                  <button
+                    onClick={() => handleAnalyzeExisting()}
+                    title="Проанализировать загруженный файл субтитров"
+                    className="w-full px-4 py-3 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-medium transition-colors flex items-center justify-center gap-2 shadow-lg shadow-indigo-500/20"
+                  >
+                    <Scissors className="w-4 h-4" />
+                    Анализировать загруженные субтитры
+                  </button>
+                  
+                  {unassignedLinesCount > 0 && (
+                    <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-lg flex items-start gap-3">
+                      <AlertCircle className="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
+                      <div>
+                        <p className="text-sm font-bold text-red-400">Обнаружены неразмеченные реплики</p>
+                        <p className="text-xs text-red-400/70 mt-1">
+                          В файле {unassignedLinesCount} реплик с пустым полем персонажа. Перейдите во вкладку "Разметка реплик", чтобы исправить это.
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                </div>
               )}
 
               {status && (
@@ -1091,15 +1229,14 @@ export default function AssEditor({
                         .filter(a => {
                           if (showSigns) return true;
                           const name = a.characterName.toLowerCase();
-                          const signs = ["sign", "signs", "title", "op", "ed", "song", "note", "music", "logo", "staff", "credit", "credits", "надпись", "титры"];
+                          const signs = ["sign", "signs", "title", "op", "ed", "song", "note", "music", "logo", "staff", "credit", "credits", "надпись", "титры", "инфо", "info"];
                           return !signs.some(s => {
-                            // Для коротких меток (op, ed) используем более строгую проверку границ слова
                             if (s === 'op' || s === 'ed') {
                               const regex = new RegExp(`(^|[^a-z])${s}([^a-z]|$)`, 'i');
                               return regex.test(name);
                             }
                             return name.includes(s);
-                          });
+                          }) && !SIGN_KEYWORDS.some(k => name.includes(k.toLowerCase()));
                         })
                         .reduce((acc: Record<string, RoleAssignment[]>, curr: RoleAssignment) => {
                         const dubberId = curr.dubberId || "unassigned";
@@ -1129,8 +1266,39 @@ export default function AssEditor({
                               <div key={assignment.id} className="flex flex-col gap-1.5 p-2 bg-neutral-900/30 rounded border border-neutral-800/50">
                                 <div className="flex items-center justify-between">
                                   <div className="flex items-center gap-2">
+                                    {(() => {
+                                      const portrait = getCharacterPortrait(assignment.characterName);
+                                      return portrait ? (
+                                        <img 
+                                          src={portrait || undefined} 
+                                          alt="" 
+                                          className="w-6 h-6 rounded-full object-cover border border-neutral-700"
+                                          referrerPolicy="no-referrer"
+                                        />
+                                      ) : (
+                                        <div className="w-6 h-6 rounded-full bg-neutral-800 flex items-center justify-center text-[10px] text-neutral-500 border border-neutral-700">
+                                          <User className="w-3 h-3" />
+                                        </div>
+                                      );
+                                    })()}
                                     <span className="text-sm text-neutral-200 font-medium">{assignment.characterName}</span>
                                     <span className="text-[10px] text-neutral-500">({assignment.lineCount || 0} реп.)</span>
+                                    <button
+                                      onClick={() => {
+                                        const newAssignments = assignments.map(a => 
+                                          a.id === assignment.id ? { ...a, isMain: !a.isMain } : a
+                                        );
+                                        setAssignments(newAssignments);
+                                        saveToDatabase(newAssignments);
+                                      }}
+                                      className={`text-[10px] px-1.5 py-0.5 rounded transition-colors border ${
+                                        assignment.isMain 
+                                          ? 'bg-indigo-500/20 text-indigo-400 border-indigo-500/30' 
+                                          : 'bg-neutral-800 text-neutral-500 border-neutral-700 hover:text-indigo-400'
+                                      }`}
+                                    >
+                                      {assignment.isMain ? 'Главная' : 'Втор.'}
+                                    </button>
                                     <button
                                       onClick={() => setLinkingCharacter(linkingCharacter === assignment.characterName ? null : assignment.characterName)}
                                       className={`text-[10px] px-1 rounded transition-colors ${
@@ -1155,29 +1323,24 @@ export default function AssEditor({
                                   <div className="my-2 p-2 bg-neutral-900 border border-amber-500/30 rounded text-[10px]">
                                     <p className="text-amber-400 mb-1">Связать с персонажем проекта:</p>
                                     <div className="flex flex-wrap gap-1 mb-2">
-                                      {(() => {
-                                        let globalMapping: {characterName: string, dubberId: string}[] = [];
-                                        try {
-                                          const raw = currentEpisode?.project?.globalMapping || '[]';
-                                          const parsed = JSON.parse(raw);
-                                          globalMapping = Array.isArray(parsed)
-                                            ? parsed
-                                            : Object.entries(parsed).map(([k, v]) => ({ characterName: k, dubberId: v as string }));
-                                        } catch (e) {
-                                          console.error("Error parsing global mapping:", e);
-                                        }
-                                        
-                                        return globalMapping.map(m => (
-                                          <button
-                                            key={m.characterName}
-                                            onClick={() => handleLinkAsAlias(assignment.characterName, m.characterName)}
-                                            className="px-1.5 py-0.5 bg-neutral-800 hover:bg-amber-500/20 text-neutral-300 rounded border border-neutral-700 flex items-center gap-1"
-                                          >
-                                            {m.characterName}
-                                            {m.dubberId && <span className="text-[8px] text-indigo-400">({participants.find(p => p.id === m.dubberId)?.nickname})</span>}
-                                          </button>
-                                        ));
-                                      })()}
+                                      {globalMapping.map(m => (
+                                        <button
+                                          key={m.characterName}
+                                          onClick={() => handleLinkAsAlias(assignment.characterName, m.characterName)}
+                                          className="px-1.5 py-0.5 bg-neutral-800 hover:bg-amber-500/20 text-neutral-300 rounded border border-neutral-700 flex items-center gap-1.5"
+                                        >
+                                          {m.photoUrl && (
+                                            <img 
+                                              src={m.photoUrl || undefined} 
+                                              alt="" 
+                                              className="w-4 h-4 rounded-full object-cover border border-neutral-600"
+                                              referrerPolicy="no-referrer"
+                                            />
+                                          )}
+                                          <span>{m.characterName}</span>
+                                          {m.dubberId && <span className="text-[8px] text-indigo-400">({participants.find(p => p.id === m.dubberId)?.nickname})</span>}
+                                        </button>
+                                      ))}
                                     </div>
                                     
                                     <p className="text-neutral-500 mb-1">Или с другим персонажем из субтитров:</p>
@@ -1204,11 +1367,16 @@ export default function AssEditor({
                                     className="flex-1 bg-neutral-900 border border-neutral-700 text-white rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500 transition-all"
                                   >
                                     <option value="">-- Выберите дабера --</option>
-                                    {participants.map((user) => (
-                                      <option key={user.id} value={user.id}>
-                                        {user.nickname}
-                                      </option>
-                                    ))}
+                                    {participants
+                                      .filter(user => 
+                                        currentEpisode?.project?.assignedDubberIds?.includes(user.id) || 
+                                        user.id === assignment.dubberId
+                                      )
+                                      .map((user) => (
+                                        <option key={user.id} value={user.id}>
+                                          {user.nickname}
+                                        </option>
+                                      ))}
                                   </select>
                                   
                                   <select

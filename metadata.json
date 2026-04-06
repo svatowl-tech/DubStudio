@@ -1,7 +1,5 @@
 {
   "name": "Anime Dub Manager",
   "description": "Гибридное кроссплатформенное десктопное приложение для студии озвучки и фандаба.",
-  "requestFramePermissions": [
-    "microphone"
-  ]
+  "requestFramePermissions": []
 }

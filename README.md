@@ -1,9 +1,9 @@
 # 🎙️ Anime Dub Manager (ADM)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-![Version](https://img.shields.io/badge/version-1.2.0-purple.svg)
-![Electron](https://img.shields.io/badge/Electron-v30.0-informational)
-![React](https://img.shields.io/badge/React-v18.0-blue)
+![Version](https://img.shields.io/badge/version-1.0.0-purple.svg)
+![Electron](https://img.shields.io/badge/Electron-v41.1-informational)
+![React](https://img.shields.io/badge/React-v19.0-blue)
 
 **Anime Dub Manager** — это мощная кроссплатформенная экосистема для студий озвучки и фандаб-сообществ. Приложение объединяет в себе менеджмент проектов, умную работу с субтитрами, контроль качества звука и автоматизацию релизов.
 
@@ -36,9 +36,9 @@
 ## 🛠 Технологический стек
 
 *   **Core:** Electron (Main & Renderer IPC)
-*   **Frontend:** React 18, TypeScript, Vite
+*   **Frontend:** React 19, TypeScript, Vite
 *   **Styling:** Tailwind CSS, Lucide Icons
-*   **Database:** SQLite + Prisma ORM
+*   **Database:** Local JSON Storage (getData/saveData)
 *   **Media Processing:** FFmpeg (fluent-ffmpeg), Wavesurfer.js
 *   **AI Integration:** OpenRouter API (Gemini 2.0 / Claude 3.5)
 

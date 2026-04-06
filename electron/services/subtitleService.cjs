@@ -1,95 +1,129 @@
 const fs = require('fs/promises');
 const path = require('path');
-const { parse } = require('ass-compiler');
+const log = require('electron-log');
 
-async function getRawSubtitles(assFilePath) {
-  const content = await fs.readFile(assFilePath, 'utf-8');
-  const lines = content.split('\n');
-  const result = [];
+const SIGN_KEYWORDS = ["НАДПИСЬ", "Надпись", "надпись", "НАДПИСИ", "Надписи", "надписи", "SIGNS", "Signs", "signs", "SIGN", "Sign", "sign", "TEXT", "Text", "text", "ТЕКСТ", "Текст", '"текст"'];
+
+// Cache for parsed subtitles to avoid memory spikes when multiple components request the same file concurrently
+const subtitleCache = new Map();
+
+/**
+ * Вспомогательная функция для парсинга строки Dialogue в ASS файле.
+ */
+function parseDialogueLine(line, formatParts) {
+  const colonIndex = line.indexOf(':');
+  if (colonIndex === -1) return null;
+
+  const nameIndex = formatParts.indexOf('Name');
+  const textIndex = formatParts.indexOf('Text');
+  const startIndex = formatParts.indexOf('Start');
+  const endIndex = formatParts.indexOf('End');
+  const styleIndex = formatParts.indexOf('Style');
+  const totalFields = formatParts.length;
+
+  if (nameIndex === -1 || textIndex === -1) return null;
+
+  const data = line.substring(colonIndex + 1);
+  const allParts = data.split(',');
   
-  let inEvents = false;
-  let formatParts = [];
-  let nameIndex = -1;
-  let startIndex = -1;
-  let endIndex = -1;
-  let styleIndex = -1;
-  let textIndex = -1;
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trimEnd();
-    const trimmedLine = line.trim();
-
-    if (trimmedLine.startsWith('[Events]')) {
-      inEvents = true;
-      continue;
-    }
-
-    if (inEvents && trimmedLine.startsWith('Format:')) {
-      formatParts = trimmedLine.substring(7).split(',').map(s => s.trim());
-      nameIndex = formatParts.indexOf('Name');
-      startIndex = formatParts.indexOf('Start');
-      endIndex = formatParts.indexOf('End');
-      styleIndex = formatParts.indexOf('Style');
-      textIndex = formatParts.indexOf('Text');
-      continue;
-    }
-
-    if (inEvents && trimmedLine.startsWith('Dialogue:')) {
-      if (nameIndex !== -1 && textIndex !== -1) {
-        const data = line.substring(9);
-        const allParts = data.split(',');
-        
-        // Robust parsing:
-        // Fields before Name are fixed
-        const beforeName = allParts.slice(0, nameIndex);
-        
-        // Fields after Name but before Text are fixed (counting from the end of the non-text parts)
-        // Number of fields between Name and Text
-        const numBetween = textIndex - nameIndex - 1;
-        
-        // Total fields in Format
-        const totalFields = formatParts.length;
-        
-        // Standard ASS parsing: split by totalFields - 1 commas
-        const standardParts = allParts.slice(0, totalFields - 1);
-        standardParts.push(allParts.slice(totalFields - 1).join(','));
-        
-        const fieldsBefore = standardParts.slice(0, nameIndex);
-        const fieldsBetween = standardParts.slice(nameIndex + 1, textIndex);
-        const textPart = standardParts[textIndex];
-        const namePart = standardParts[nameIndex];
-
-        result.push({
-          id: i,
-          start: fieldsBefore[startIndex]?.trim() || '',
-          end: fieldsBefore[endIndex]?.trim() || '',
-          style: fieldsBefore[styleIndex]?.trim() || '',
-          name: namePart.trim(),
-          text: textPart,
-          rawLineIndex: i,
-          // Store other fields to reconstruct exactly
-          fieldsBefore,
-          fieldsBetween,
-          formatInfo: { nameIndex, textIndex, totalFields }
-        });
-      }
-    } else if (trimmedLine.startsWith('[')) {
-      if (trimmedLine !== '[Events]') inEvents = false;
-    }
-  }
-
-  const actors = new Set();
-  for (const line of result) {
-    if (line.name && line.name.trim() !== '') {
-      const names = line.name.split(',').map(n => n.trim()).filter(n => n !== '');
-      names.forEach(n => actors.add(n));
-    }
-  }
+  // Standard ASS parsing: split by totalFields - 1 commas
+  const standardParts = allParts.slice(0, totalFields - 1);
+  standardParts.push(allParts.slice(totalFields - 1).join(','));
 
   return {
-    lines: result,
-    actors: Array.from(actors)
+    start: standardParts[startIndex]?.trim() || '',
+    end: standardParts[endIndex]?.trim() || '',
+    style: standardParts[styleIndex]?.trim() || '',
+    name: standardParts[nameIndex]?.trim() || '',
+    text: standardParts[textIndex],
+    standardParts,
+    prefix: line.substring(0, colonIndex + 1),
+    formatInfo: { nameIndex, textIndex, startIndex, endIndex, styleIndex, totalFields }
   };
+}
+
+async function getRawSubtitles(assFilePath) {
+  try {
+    const stats = await fs.stat(assFilePath);
+    const mtime = stats.mtimeMs;
+    
+    if (subtitleCache.has(assFilePath)) {
+      const cached = subtitleCache.get(assFilePath);
+      if (cached.mtime === mtime) {
+        return cached.data;
+      }
+    }
+
+    const content = await fs.readFile(assFilePath, 'utf-8');
+    const lines = content.split('\n');
+    const result = [];
+    
+    let inEvents = false;
+    let formatParts = [];
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trimEnd();
+      const trimmedLine = line.trim();
+
+      if (trimmedLine.startsWith('[Events]')) {
+        inEvents = true;
+        continue;
+      }
+
+      if (inEvents && trimmedLine.startsWith('Format:')) {
+        formatParts = trimmedLine.substring(7).split(',').map(s => s.trim());
+        continue;
+      }
+
+      if (inEvents && trimmedLine.startsWith('Dialogue:')) {
+        const parsed = parseDialogueLine(line, formatParts);
+        if (parsed) {
+          result.push({
+            id: i,
+            start: parsed.start,
+            end: parsed.end,
+            style: parsed.style,
+            name: parsed.name,
+            text: parsed.text,
+            rawLineIndex: i
+          });
+        }
+      } else if (trimmedLine.startsWith('[')) {
+        if (trimmedLine !== '[Events]') inEvents = false;
+      }
+    }
+
+    const actors = new Set();
+    
+    for (const line of result) {
+      if (line.name) {
+        const names = line.name.split(',').map(n => n.trim()).filter(n => n !== '');
+        names.forEach(n => {
+          if (!SIGN_KEYWORDS.includes(n)) {
+            actors.add(n);
+          }
+        });
+      }
+    }
+
+    const data = {
+      lines: result,
+      actors: Array.from(actors)
+    };
+
+    subtitleCache.set(assFilePath, { mtime, data });
+    
+    // Keep cache size manageable
+    if (subtitleCache.size > 10) {
+      const firstKey = subtitleCache.keys().next().value;
+      subtitleCache.delete(firstKey);
+    }
+
+    return data;
+  } catch (error) {
+    log.error("Error reading subtitles:", error);
+    throw error;
+  }
 }
 
 async function saveRawSubtitles(assFilePath, updates) {
@@ -98,8 +132,6 @@ async function saveRawSubtitles(assFilePath, updates) {
   
   let inEvents = false;
   let formatParts = [];
-  let nameIndex = -1;
-  let textIndex = -1;
 
   const updatesMap = new Map();
   for (const update of updates) {
@@ -117,26 +149,17 @@ async function saveRawSubtitles(assFilePath, updates) {
 
     if (inEvents && trimmedLine.startsWith('Format:')) {
       formatParts = trimmedLine.substring(7).split(',').map(s => s.trim());
-      nameIndex = formatParts.indexOf('Name');
-      textIndex = formatParts.indexOf('Text');
       continue;
     }
 
     if (inEvents && trimmedLine.startsWith('Dialogue:')) {
-      if (updatesMap.has(i) && nameIndex !== -1 && textIndex !== -1) {
-        const prefix = line.substring(0, 9);
-        const data = line.substring(9);
-        const allParts = data.split(',');
-        const totalFields = formatParts.length;
-
-        // Standard ASS parsing: split by totalFields - 1 commas
-        const standardParts = allParts.slice(0, totalFields - 1);
-        standardParts.push(allParts.slice(totalFields - 1).join(','));
-
-        const newName = updatesMap.get(i) || '';
-        standardParts[nameIndex] = newName;
-        
-        lines[i] = `${prefix}${standardParts.join(',')}`;
+      if (updatesMap.has(i)) {
+        const parsed = parseDialogueLine(line, formatParts);
+        if (parsed) {
+          const standardParts = parsed.standardParts.map((p, idx) => idx === parsed.formatInfo.textIndex ? p : p.trim());
+          standardParts[parsed.formatInfo.nameIndex] = (updatesMap.get(i) || '').replace(/,/g, ';');
+          lines[i] = `${parsed.prefix}${standardParts.join(',')}`;
+        }
       }
     } else if (trimmedLine.startsWith('[')) {
       if (trimmedLine !== '[Events]') inEvents = false;
@@ -157,15 +180,10 @@ async function splitSubsByActor(assFilePath, outputDirectory, options) {
   const content = await fs.readFile(assFilePath, 'utf-8');
   const lines = content.split('\n');
   
-  const signKeywords = ["НАДПИСЬ", "Надпись", "надпись", "НАДПИСИ", "Надписи", "надписи", "SIGNS", "Signs", "signs", "SIGN", "Sign", "sign", "TEXT", "Text", "text", "ТЕКСТ", "Текст", '"текст"'];
   const groupKeywords = ["гуры", "все"];
 
   let inEvents = false;
   let formatParts = [];
-  let nameIndex = -1;
-  let textIndex = -1;
-  let startIndex = -1;
-  let endIndex = -1;
 
   const parsedLines = [];
   const uniqueActors = new Set();
@@ -182,42 +200,26 @@ async function splitSubsByActor(assFilePath, outputDirectory, options) {
 
     if (inEvents && trimmedLine.startsWith('Format:')) {
       formatParts = trimmedLine.substring(7).split(',').map(s => s.trim());
-      nameIndex = formatParts.indexOf('Name');
-      textIndex = formatParts.indexOf('Text');
-      startIndex = formatParts.indexOf('Start');
-      endIndex = formatParts.indexOf('End');
       parsedLines.push({ type: 'format', text: line });
       continue;
     }
 
     if (inEvents && trimmedLine.startsWith('Dialogue:')) {
-      if (nameIndex !== -1 && textIndex !== -1) {
-        const data = line.substring(9);
-        const allParts = data.split(',');
-        const totalFields = formatParts.length;
-
-        // Standard ASS parsing: split by totalFields - 1 commas
-        const standardParts = allParts.slice(0, totalFields - 1);
-        standardParts.push(allParts.slice(totalFields - 1).join(','));
-
-        const currentNameRawPart = standardParts[nameIndex];
-        const currentNames = currentNameRawPart.split(/[,;]/).map(n => n.trim()).filter(n => n !== '');
+      const parsed = parseDialogueLine(line, formatParts);
+      if (parsed) {
+        const currentNames = parsed.name.split(/[,;]/).map(n => n.trim()).filter(n => n !== '');
         
-        const textPart = standardParts[textIndex];
-        const startPart = standardParts[startIndex];
-        const endPart = standardParts[endIndex];
-
         parsedLines.push({ 
           type: 'dialogue', 
           text: line, 
           names: currentNames,
-          start: startPart,
-          end: endPart,
-          textContent: textPart
+          start: parsed.start,
+          end: parsed.end,
+          textContent: parsed.text
         });
 
         for (const name of currentNames) {
-          if (signKeywords.includes(name)) continue;
+          if (SIGN_KEYWORDS.includes(name)) continue;
           if (groupKeywords.includes(name)) continue;
           if (name.startsWith('!')) continue;
           uniqueActors.add(name);
@@ -264,7 +266,7 @@ async function splitSubsByActor(assFilePath, outputDirectory, options) {
 
         if (names.length === 0) continue;
 
-        if (names.some(n => signKeywords.includes(n))) {
+        if (names.some(n => SIGN_KEYWORDS.includes(n))) {
           continue;
         }
 
@@ -312,7 +314,7 @@ async function splitSubsByActor(assFilePath, outputDirectory, options) {
     let signCount = 0;
     for (const parsed of parsedLines) {
       if (parsed.type === 'dialogue') {
-        if (parsed.names.some(n => signKeywords.includes(n))) {
+        if (parsed.names.some(n => SIGN_KEYWORDS.includes(n))) {
           signLines.push(parsed.text);
           signCount++;
         }
@@ -331,7 +333,6 @@ async function splitSubsByActor(assFilePath, outputDirectory, options) {
 }
 
 async function splitSubsByDubber(assFilePath, outputDirectory, assignments, dubbersData) {
-  console.log(`Starting splitSubsByDubber for ${assFilePath}`);
   const content = await fs.readFile(assFilePath, 'utf-8');
   const lines = content.split('\n');
   
@@ -354,7 +355,6 @@ async function splitSubsByDubber(assFilePath, outputDirectory, assignments, dubb
       .filter(a => (a.substituteId || a.dubberId) === dubberId)
       .map(a => a.characterName.trim());
 
-    // Create mapping for this dubber
     const mapping = {};
     for (const assignment of assignments) {
       const targetId = assignment.substituteId || assignment.dubberId;
@@ -368,13 +368,9 @@ async function splitSubsByDubber(assFilePath, outputDirectory, assignments, dubb
       }
     }
 
-    console.log(`Processing dubber: ${dubber.nickname}, assigned characters: ${assignedCharacters.join(', ')}`);
-
     const newLines = [];
     let inEvents = false;
     let formatParts = [];
-    let nameIndex = -1;
-    let textIndex = -1;
     let lineCount = 0;
 
     for (let i = 0; i < lines.length; i++) {
@@ -389,39 +385,26 @@ async function splitSubsByDubber(assFilePath, outputDirectory, assignments, dubb
 
       if (inEvents && trimmedLine.startsWith('Format:')) {
         formatParts = trimmedLine.substring(7).split(',').map(s => s.trim());
-        nameIndex = formatParts.indexOf('Name');
-        textIndex = formatParts.indexOf('Text');
         newLines.push(line);
         continue;
       }
 
       if (inEvents && trimmedLine.startsWith('Dialogue:')) {
-        if (nameIndex !== -1 && textIndex !== -1) {
-          const prefix = line.substring(0, 9);
-          const data = line.substring(9);
-          const allParts = data.split(',');
-          const totalFields = formatParts.length;
-
-          // Standard ASS parsing: split by totalFields - 1 commas
-          const standardParts = allParts.slice(0, totalFields - 1);
-          standardParts.push(allParts.slice(totalFields - 1).join(','));
-
-          // Robust name extraction
-          const currentNameRawPart = standardParts[nameIndex];
-          const currentNames = currentNameRawPart.split(/[,;]/).map(n => n.trim()).filter(n => n !== '');
-
+        const parsed = parseDialogueLine(line, formatParts);
+        if (parsed) {
+          const currentNames = parsed.name.split(/[,;]/).map(n => n.trim()).filter(n => n !== '');
           const isAssigned = currentNames.some(name => assignedCharacters.includes(name));
 
           if (isAssigned) {
-            // Replace names
             const mappedNames = currentNames.flatMap(name => {
               if (mapping[name] && mapping[name].length > 0) {
                 return mapping[name];
               }
               return [name];
             });
-            standardParts[nameIndex] = mappedNames.join(', ');
-            newLines.push(`${prefix}${standardParts.join(',')}`);
+            const standardParts = parsed.standardParts.map((p, idx) => idx === parsed.formatInfo.textIndex ? p : p.trim());
+            standardParts[parsed.formatInfo.nameIndex] = mappedNames.join('; ');
+            newLines.push(`${parsed.prefix}${standardParts.join(',')}`);
             lineCount++;
           }
         } else {
@@ -438,14 +421,12 @@ async function splitSubsByDubber(assFilePath, outputDirectory, assignments, dubb
     const outputPath = path.join(outputDirectory, `${dubber.nickname} (${lineCount}).ass`);
     await fs.writeFile(outputPath, newLines.join('\n'), 'utf-8');
     generatedFiles.push(outputPath);
-    console.log(`Generated file for ${dubber.nickname}: ${outputPath} with ${lineCount} lines`);
   }
 
   return { success: true, generatedFiles };
 }
 
 async function exportFullAssWithRoles(assFilePath, outputPath, assignments, participantsData) {
-  console.log(`Starting exportFullAssWithRoles for ${assFilePath} to ${outputPath}`);
   const content = await fs.readFile(assFilePath, 'utf-8');
   const lines = content.split('\n');
   
@@ -463,12 +444,8 @@ async function exportFullAssWithRoles(assFilePath, outputPath, assignments, part
     }
   }
 
-  console.log('Role mapping:', JSON.stringify(mapping));
-
   let inEvents = false;
   let formatParts = [];
-  let nameIndex = -1;
-  let textIndex = -1;
   let replacedCount = 0;
 
   for (let i = 0; i < lines.length; i++) {
@@ -482,26 +459,14 @@ async function exportFullAssWithRoles(assFilePath, outputPath, assignments, part
 
     if (inEvents && trimmedLine.startsWith('Format:')) {
       formatParts = trimmedLine.substring(7).split(',').map(s => s.trim());
-      nameIndex = formatParts.indexOf('Name');
-      textIndex = formatParts.indexOf('Text');
       continue;
     }
 
     if (inEvents && trimmedLine.startsWith('Dialogue:')) {
-      if (nameIndex !== -1 && textIndex !== -1) {
-        const prefix = line.substring(0, 9);
-        const data = line.substring(9);
-        const allParts = data.split(',');
-        const totalFields = formatParts.length;
-
-        // Standard ASS parsing: split by totalFields - 1 commas
-        const standardParts = allParts.slice(0, totalFields - 1);
-        standardParts.push(allParts.slice(totalFields - 1).join(','));
-
-        const currentNameRawPart = standardParts[nameIndex];
-        const currentNames = currentNameRawPart.split(/[,;]/).map(n => n.trim()).filter(n => n !== '');
+      const parsed = parseDialogueLine(line, formatParts);
+      if (parsed) {
+        const currentNames = parsed.name.split(/[,;]/).map(n => n.trim()).filter(n => n !== '');
         
-        // Map each character name to its assigned dubber name
         let changed = false;
         const mappedNames = currentNames.flatMap(name => {
           if (mapping[name] && mapping[name].length > 0) {
@@ -512,9 +477,9 @@ async function exportFullAssWithRoles(assFilePath, outputPath, assignments, part
         });
         
         if (changed) {
-          const newName = mappedNames.join(', ');
-          standardParts[nameIndex] = newName;
-          lines[i] = `${prefix}${standardParts.join(',')}`;
+          const standardParts = parsed.standardParts.map((p, idx) => idx === parsed.formatInfo.textIndex ? p : p.trim());
+          standardParts[parsed.formatInfo.nameIndex] = mappedNames.join('; ');
+          lines[i] = `${parsed.prefix}${standardParts.join(',')}`;
           replacedCount++;
         }
       }
@@ -523,7 +488,6 @@ async function exportFullAssWithRoles(assFilePath, outputPath, assignments, part
     }
   }
 
-  console.log(`Export finished. Replaced roles in ${replacedCount} lines.`);
   await fs.mkdir(path.dirname(outputPath), { recursive: true });
   await fs.writeFile(outputPath, lines.join('\n'), 'utf-8');
   return outputPath;
@@ -535,8 +499,6 @@ async function saveTranslatedSubtitles(assFilePath, translatedLines) {
   
   let inEvents = false;
   let formatParts = [];
-  let nameIndex = -1;
-  let textIndex = -1;
 
   const translatedMap = new Map();
   for (const line of translatedLines) {
@@ -554,26 +516,17 @@ async function saveTranslatedSubtitles(assFilePath, translatedLines) {
 
     if (inEvents && trimmedLine.startsWith('Format:')) {
       formatParts = trimmedLine.substring(7).split(',').map(s => s.trim());
-      nameIndex = formatParts.indexOf('Name');
-      textIndex = formatParts.indexOf('Text');
       continue;
     }
 
     if (inEvents && trimmedLine.startsWith('Dialogue:')) {
-      if (translatedMap.has(i) && nameIndex !== -1 && textIndex !== -1) {
-        const prefix = line.substring(0, 9);
-        const data = line.substring(9);
-        const allParts = data.split(',');
-        const totalFields = formatParts.length;
-
-        // Standard ASS parsing: split by totalFields - 1 commas
-        const standardParts = allParts.slice(0, totalFields - 1);
-        standardParts.push(allParts.slice(totalFields - 1).join(','));
-
-        const newText = translatedMap.get(i) || '';
-        standardParts[textIndex] = newText;
-        
-        lines[i] = `${prefix}${standardParts.join(',')}`;
+      if (translatedMap.has(i)) {
+        const parsed = parseDialogueLine(line, formatParts);
+        if (parsed) {
+          const standardParts = parsed.standardParts.map((p, idx) => idx === parsed.formatInfo.textIndex ? p : p.trim());
+          standardParts[parsed.formatInfo.textIndex] = translatedMap.get(i) || '';
+          lines[i] = `${parsed.prefix}${standardParts.join(',')}`;
+        }
       }
     } else if (trimmedLine.startsWith('[')) {
       if (trimmedLine !== '[Events]') inEvents = false;
@@ -586,11 +539,9 @@ async function saveTranslatedSubtitles(assFilePath, translatedLines) {
 async function extractSignsAss(assFilePath, outputPath) {
   const content = await fs.readFile(assFilePath, 'utf-8');
   const lines = content.split('\n');
-  const signKeywords = ["НАДПИСЬ", "Надпись", "надпись", "НАДПИСИ", "Надписи", "надписи", "SIGNS", "Signs", "signs", "SIGN", "Sign", "sign", "TEXT", "Text", "text", "ТЕКСТ", "Текст", '"текст"'];
   
   let inEvents = false;
   let formatParts = [];
-  let nameIndex = -1;
   const newLines = [];
   let signCount = 0;
 
@@ -606,25 +557,15 @@ async function extractSignsAss(assFilePath, outputPath) {
 
     if (inEvents && trimmedLine.startsWith('Format:')) {
       formatParts = trimmedLine.substring(7).split(',').map(s => s.trim());
-      nameIndex = formatParts.indexOf('Name');
       newLines.push(line);
       continue;
     }
 
     if (inEvents && trimmedLine.startsWith('Dialogue:')) {
-      if (nameIndex !== -1) {
-        const prefix = line.substring(0, 9);
-        const data = line.substring(9);
-        const allParts = data.split(',');
-        const totalFields = formatParts.length;
-        
-        const standardParts = allParts.slice(0, totalFields - 1);
-        standardParts.push(allParts.slice(totalFields - 1).join(','));
-        
-        const currentNameRawPart = standardParts[nameIndex];
-        const currentNames = currentNameRawPart.split(/[,;]/).map(n => n.trim()).filter(n => n !== '');
-        
-        if (currentNames.some(n => signKeywords.includes(n))) {
+      const parsed = parseDialogueLine(line, formatParts);
+      if (parsed) {
+        const currentNames = parsed.name.split(/[,;]/).map(n => n.trim()).filter(n => n !== '');
+        if (currentNames.some(n => SIGN_KEYWORDS.includes(n))) {
           newLines.push(line);
           signCount++;
         }

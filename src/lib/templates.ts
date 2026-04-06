@@ -29,13 +29,15 @@ export const generateStartEpisodeMessage = (episode: Episode, participants: Part
     return `${d.nickname} (${mention}) — ${count} реп.`;
   }).join('\n');
 
-  return `📢 ${episode.project?.title}
+  const emoji = episode.project?.emoji || '📢';
+
+  return `${emoji} ${episode.project?.title}
 👾Серия: #${episode.number}
 📅 ДЕДЛАЙН: ${formatDeadline(episode.deadline)}
 ━━━━━━ ◦ ❖ ◦ ━━━━━━
 Если вы по каким то причинам не успеваете в дедлайн и знаете об этом, напишите об этом сразу, чтобы я мог найти вам замену или распределить сабы.
 
-В серии учавствуют:
+В серии участвуют:
 ${dubberMentions || '• Даберы не назначены'}`;
 };
 
@@ -95,8 +97,9 @@ export const generateFixesIssuedMessage = (episode: Episode, participants: Parti
   }).join('\n\n');
 
   const projectSlug = episode.project?.title.toLowerCase().replace(/\s+/g, '_') || 'project';
+  const emoji = episode.project?.emoji || '✏️';
 
-  return `✏️ ВЫПИСАНЫ ФИКСЫ: ${episode.project?.title}
+  return `${emoji} ВЫПИСАНЫ ФИКСЫ: ${episode.project?.title}
 👾 Серия: ${episode.number}
 📅 ДЕДЛАЙН ФИКСОВ: ${formatDeadline(episode.deadline)}
 ━━━━━━ ◦ ❖ ◦ ━━━━━━
@@ -134,7 +137,9 @@ export const generateStatusMessage = (episode: Episode, participants: Participan
       return `• ${mention}`;
     }).join('\n');
 
-  return `📢 ${episode.project?.title}
+  const emoji = episode.project?.emoji || '📢';
+
+  return `${emoji} ${episode.project?.title}
 👾 Серия: ${episode.number}
 📅 ДЕДЛАЙН ФИКСОВ: ${formatDeadline(episode.deadline)}
 ━━━━━━ ◦ ❖ ◦ ━━━━━━
@@ -149,14 +154,21 @@ ${fixesMentions || '• Фиксов нет!'}
 };
 
 export const generateTGPostMessage = (episode: Episode, participants: Participant[]) => {
-  const dubbers = episode.assignments
-    .map(a => participants.find(p => p.id === a.dubberId))
-    .filter(Boolean) as Participant[];
+  const assignments = episode.assignments || [];
+  const isRecastOrRedub = episode.project?.releaseType === 'RECAST' || episode.project?.releaseType === 'REDUB';
   
-  const uniqueDubbers = Array.from(new Set(dubbers.map(d => d.id)))
-    .map(id => dubbers.find(d => d.id === id)!);
+  const mainRoles = assignments.filter(a => a.isMain);
+  const secondaryDubberIds = new Set(assignments.filter(a => !a.isMain).map(a => a.dubberId).filter(Boolean));
+  const secondaryDubbers = participants.filter(p => secondaryDubberIds.has(p.id));
 
-  const dubberLinks = uniqueDubbers.map(d => {
+  const mainRolesText = mainRoles.map(a => {
+    const dubber = participants.find(p => p.id === a.dubberId);
+    if (!dubber) return null;
+    const url = dubber.tgChannel || `https://t.me/${(dubber.telegram || dubber.nickname).replace('@', '')}`;
+    return `➤ ${a.characterName} - [${dubber.nickname}](${url})`;
+  }).filter(Boolean).join('\n');
+
+  const secondaryDubbersText = secondaryDubbers.map(d => {
     const url = d.tgChannel || `https://t.me/${(d.telegram || d.nickname).replace('@', '')}`;
     return `[${d.nickname}](${url})`;
   }).join(', ');
@@ -169,10 +181,44 @@ export const generateTGPostMessage = (episode: Episode, participants: Participan
   const seMention = se ? (se.telegram?.startsWith('@') ? se.telegram : `@${se.telegram || se.nickname}`) : '@Tenmag';
 
   const emoji = episode.project?.emoji || '📢';
-  const releaseType = episode.project?.releaseType === 'VOICEOVER' ? 'Закадр' : episode.project?.releaseType === 'RECAST' ? 'Рекаст' : 'Редаб';
+  const releaseTypeLabel = episode.project?.releaseType === 'VOICEOVER' ? 'Закадр' : episode.project?.releaseType === 'RECAST' ? 'Рекаст' : 'Редаб';
+  
+  const title = `${episode.project?.title} [${releaseTypeLabel}]`;
+  const progress = isRecastOrRedub ? `🖤${episode.number}/${total}🖤` : `👾${episode.number}/${total}👾`;
 
-  return `${emoji} ${episode.project?.title} (${releaseType})
-👾${episode.number}/${total}👾
+  if (isRecastOrRedub) {
+    return `${emoji} ${title}
+
+${progress}
+
+━━━━━━ ◦ ❖ ◦ ━━━━━━
+Роли озвучили:
+${mainRolesText}
+——————————————-
+Второстепенные герои: ${secondaryDubbersText}
+
+Тайминг и работа со звуком: 
+${seMention}
+━━━━━━ ◦ ❖ ◦ ━━━━━━
+
+#${projectSlug}`;
+  }
+
+  // Original VOICEOVER format
+  const dubbers = assignments
+    .map(a => participants.find(p => p.id === a.dubberId))
+    .filter(Boolean) as Participant[];
+  
+  const uniqueDubbers = Array.from(new Set(dubbers.map(d => d.id)))
+    .map(id => dubbers.find(d => d.id === id)!);
+
+  const dubberLinks = uniqueDubbers.map(d => {
+    const url = d.tgChannel || `https://t.me/${(d.telegram || d.nickname).replace('@', '')}`;
+    return `[${d.nickname}](${url})`;
+  }).join(', ');
+
+  return `${emoji} ${title}
+${progress}
  
 ━━━━━━ ◦ ❖ ◦ ━━━━━━
 Роли озвучили:
@@ -186,14 +232,21 @@ ${seMention}
 };
 
 export const generateVKPostMessage = (episode: Episode, participants: Participant[]) => {
-  const dubbers = episode.assignments
-    .map(a => participants.find(p => p.id === a.dubberId))
-    .filter(Boolean) as Participant[];
+  const assignments = episode.assignments || [];
+  const isRecastOrRedub = episode.project?.releaseType === 'RECAST' || episode.project?.releaseType === 'REDUB';
   
-  const uniqueDubbers = Array.from(new Set(dubbers.map(d => d.id)))
-    .map(id => dubbers.find(d => d.id === id)!);
+  const mainRoles = assignments.filter(a => a.isMain);
+  const secondaryDubberIds = new Set(assignments.filter(a => !a.isMain).map(a => a.dubberId).filter(Boolean));
+  const secondaryDubbers = participants.filter(p => secondaryDubberIds.has(p.id));
 
-  const dubberInfo = uniqueDubbers.map(d => {
+  const mainRolesInfo = mainRoles.map(a => {
+    const dubber = participants.find(p => p.id === a.dubberId);
+    if (!dubber) return null;
+    const vk = dubber.vkLink ? `@${dubber.vkLink.split('/').pop()}` : dubber.telegram;
+    return `${a.characterName} - ${vk} (${dubber.nickname})`;
+  }).filter(Boolean).join(', ');
+
+  const secondaryDubbersInfo = secondaryDubbers.map(d => {
     const vk = d.vkLink ? `@${d.vkLink.split('/').pop()}` : d.telegram;
     return `${vk} (${d.nickname})`;
   }).join(', ');
@@ -206,10 +259,40 @@ export const generateVKPostMessage = (episode: Episode, participants: Participan
   const seName = se ? se.nickname : 'Tenmag';
 
   const emoji = episode.project?.emoji || '📢';
-  const releaseType = episode.project?.releaseType === 'VOICEOVER' ? 'Закадр' : episode.project?.releaseType === 'RECAST' ? 'Рекаст' : 'Редаб';
+  const releaseTypeLabel = episode.project?.releaseType === 'VOICEOVER' ? 'Закадр' : episode.project?.releaseType === 'RECAST' ? 'Рекаст' : 'Редаб';
 
-  return `${emoji} ${episode.project?.title} (${releaseType})
-👾${episode.number}/${total}👾
+  const title = `${episode.project?.title} [${releaseTypeLabel}]`;
+  const progress = isRecastOrRedub ? `🖤${episode.number}/${total}🖤` : `👾${episode.number}/${total}👾`;
+
+  if (isRecastOrRedub) {
+    return `${emoji} ${title}
+${progress}
+ 
+| Роли озвучили: ${mainRolesInfo}
+| Второстепенные герои: ${secondaryDubbersInfo}
+ 
+| Тайминг и работа со звуком: ${seName}
+ 
+➪ Аниме 365: : ${links.anime365 || ''}
+➪ Телеграмм:: ${links.tg || ''}
+➪ Kodik: : ${links.kodik || ''}`;
+  }
+
+  // Original VOICEOVER format
+  const dubbers = assignments
+    .map(a => participants.find(p => p.id === a.dubberId))
+    .filter(Boolean) as Participant[];
+  
+  const uniqueDubbers = Array.from(new Set(dubbers.map(d => d.id)))
+    .map(id => dubbers.find(d => d.id === id)!);
+
+  const dubberInfo = uniqueDubbers.map(d => {
+    const vk = d.vkLink ? `@${d.vkLink.split('/').pop()}` : d.telegram;
+    return `${vk} (${d.nickname})`;
+  }).join(', ');
+
+  return `${emoji} ${title}
+${progress}
  
 | Роли озвучили: ${dubberInfo}
  
@@ -224,8 +307,9 @@ export const generateFinalTGMessage = (episode: Episode, participants: Participa
   const total = episode.project?.totalEpisodes || 12;
   const links = episode.project?.links ? JSON.parse(episode.project.links) : {};
   const projectSlug = episode.project?.title.toLowerCase().replace(/\s+/g, '_') || 'project';
+  const emoji = episode.project?.emoji || '✅';
 
-  return `✅ СЕРИЯ ВЫЛОЖЕНА: ${episode.project?.title}
+  return `${emoji} СЕРИЯ ВЫЛОЖЕНА: ${episode.project?.title}
 👾${episode.number}/${total}👾
 ━━━━━━ ◦ ❖ ◦ ━━━━━━
 Ребята, всем спасибо за работу! Серия доступна по ссылкам ниже:

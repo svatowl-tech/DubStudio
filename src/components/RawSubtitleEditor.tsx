@@ -1,14 +1,24 @@
-import React, { useState, useEffect, useRef } from "react";
-import { Save, Edit3, Loader2, Languages } from "lucide-react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
+import { Save, Edit3, Loader2, Languages, Eye, EyeOff, AlertCircle } from "lucide-react";
 import { ipcSafe } from '../lib/ipcSafe';
 import { Episode } from "../types";
 import { latinToCyrillic, polivanovToHepburn } from "../lib/translit";
 import { useVideoContext } from "../contexts/VideoContext";
+import { SIGN_KEYWORDS } from "../constants";
+
+const SHORTCUT_KEYS = [
+  '1', '2', '3', '4', '5', '6', '7', '8', '9', '0',
+  'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p',
+  'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l',
+  'z', 'x', 'c', 'v', 'b', 'n', 'm'
+];
 
 interface RawSubtitleLine {
   id: number;
   start: string;
   end: string;
+  startSec: number;
+  endSec: number;
   style: string;
   name: string;
   text: string;
@@ -29,8 +39,10 @@ export default function RawSubtitleEditor({
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState("");
   const [updates, setUpdates] = useState<Record<number, string>>({});
+  const [unassignedCount, setUnassignedCount] = useState(0);
   const [currentTime, setCurrentTime] = useState(0);
   const [activeLineIndex, setActiveLineIndex] = useState<number | null>(null);
+  const [showSigns, setShowSigns] = useState(false);
 
   // For mass assignment
   const [selectedLines, setSelectedLines] = useState<Set<number>>(new Set());
@@ -40,30 +52,6 @@ export default function RawSubtitleEditor({
   const { registerPlayer, unregisterPlayer } = useVideoContext();
   const videoRef = useRef<HTMLVideoElement>(null);
   const activeLineRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (videoRef.current) {
-      const player = videoRef.current;
-      
-      const handleTimeUpdate = () => {
-        setCurrentTime(player.currentTime);
-      };
-      
-      player.addEventListener('timeupdate', handleTimeUpdate);
-
-      registerPlayer(() => {
-        if (player.paused) {
-          player.play().catch(e => console.error('Play error', e));
-        } else {
-          player.pause();
-        }
-      });
-
-      return () => {
-        player.removeEventListener('timeupdate', handleTimeUpdate);
-      };
-    }
-  }, [registerPlayer, unregisterPlayer]);
 
   const parseAssTimeToSeconds = (timeStr: string) => {
     const parts = timeStr.split(':');
@@ -77,10 +65,43 @@ export default function RawSubtitleEditor({
   };
 
   useEffect(() => {
+    if (videoRef.current) {
+      const player = videoRef.current;
+      
+      const handleTimeUpdate = () => {
+        setCurrentTime(player.currentTime);
+      };
+      
+      player.addEventListener('timeupdate', handleTimeUpdate);
+
+      registerPlayer({
+        togglePlayPause: () => {
+          if (player.paused) {
+            player.play().catch(e => console.error('Play error', e));
+          } else {
+            player.pause();
+          }
+        },
+        seekToNext: () => {
+          const nextSub = lines.find(l => {
+            return l.startSec > player.currentTime + 0.1;
+          });
+          if (nextSub) {
+            player.currentTime = nextSub.startSec;
+          }
+        }
+      });
+
+      return () => {
+        player.removeEventListener('timeupdate', handleTimeUpdate);
+        unregisterPlayer();
+      };
+    }
+  }, [registerPlayer, unregisterPlayer, lines]);
+
+  useEffect(() => {
     const active = lines.find(line => {
-      const start = parseAssTimeToSeconds(line.start);
-      const end = parseAssTimeToSeconds(line.end);
-      return currentTime >= start && currentTime <= end;
+      return currentTime >= line.startSec && currentTime <= line.endSec;
     });
     
     if (active && active.rawLineIndex !== activeLineIndex) {
@@ -110,8 +131,17 @@ export default function RawSubtitleEditor({
     setStatus("Загрузка субтитров...");
     try {
       const data = await ipcSafe.invoke('get-raw-subtitles', currentEpisode.subPath);
-      const subtitleLines = data.lines || data; // Fallback for safety
+      const subtitleLines = (data.lines || data).map((l: any) => ({
+        ...l,
+        startSec: parseAssTimeToSeconds(l.start),
+        endSec: parseAssTimeToSeconds(l.end)
+      })).sort((a: any, b: any) => a.startSec - b.startSec);
+      
       setLines(subtitleLines);
+      
+      const unassigned = subtitleLines.filter((l: any) => !l.name || !l.name.trim()).length;
+      setUnassignedCount(unassigned);
+      
       setUpdates({});
       setSelectedLines(new Set());
       setLastSelectedLine(null);
@@ -125,7 +155,18 @@ export default function RawSubtitleEditor({
   };
 
   const handleNameChange = (rawLineIndex: number, newName: string) => {
-    setUpdates((prev) => ({ ...prev, [rawLineIndex]: newName }));
+    setUpdates((prev) => {
+      const next = { ...prev, [rawLineIndex]: newName };
+      
+      // Recalculate unassigned count based on updates
+      const newUnassigned = lines.filter(l => {
+        const name = next[l.rawLineIndex] !== undefined ? next[l.rawLineIndex] : l.name;
+        return !name || !name.trim();
+      }).length;
+      setUnassignedCount(newUnassigned);
+      
+      return next;
+    });
   };
 
   const toggleLineSelection = (
@@ -272,22 +313,65 @@ export default function RawSubtitleEditor({
     ]),
   ).sort();
 
-  const handleQuickAssign = (name: string) => {
+  const handleQuickAssign = useCallback((name: string) => {
     if (selectedLines.size > 0) {
       const newUpdates = { ...updates };
       selectedLines.forEach((index) => {
-        newUpdates[index] = name;
+        const line = lines.find(l => l.rawLineIndex === index);
+        const currentVal = newUpdates[index] !== undefined ? newUpdates[index] : (line?.name || "");
+        
+        if (currentVal) {
+          const names = currentVal.split(/[,;]/).map(n => n.trim()).filter(Boolean);
+          if (!names.includes(name)) {
+            newUpdates[index] = [...names, name].join('; ');
+          }
+        } else {
+          newUpdates[index] = name;
+        }
       });
       setUpdates(newUpdates);
       setSelectedLines(new Set());
     } else if (activeLineIndex !== null) {
       const newUpdates = { ...updates };
-      newUpdates[activeLineIndex] = name;
+      const line = lines.find(l => l.rawLineIndex === activeLineIndex);
+      const currentVal = newUpdates[activeLineIndex] !== undefined ? newUpdates[activeLineIndex] : (line?.name || "");
+      
+      if (currentVal) {
+        const names = currentVal.split(/[,;]/).map(n => n.trim()).filter(Boolean);
+        if (!names.includes(name)) {
+          newUpdates[activeLineIndex] = [...names, name].join('; ');
+        }
+      } else {
+        newUpdates[activeLineIndex] = name;
+      }
       setUpdates(newUpdates);
     } else {
       setMassName(name);
     }
-  };
+  }, [selectedLines, updates, lines, activeLineIndex]);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Ignore if user is typing in an input or textarea
+      if (
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement
+      ) {
+        return;
+      }
+
+      const key = e.key.toLowerCase();
+      const index = SHORTCUT_KEYS.indexOf(key);
+      
+      if (index !== -1 && index < uniqueNames.length) {
+        e.preventDefault();
+        handleQuickAssign(uniqueNames[index]);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [uniqueNames, handleQuickAssign]);
 
   const handleApplyAliases = () => {
     if (!currentEpisode?.project?.characterAliases) return;
@@ -341,7 +425,7 @@ export default function RawSubtitleEditor({
             onClick={loadRawSubtitles}
             disabled={loading || saving}
             title="Обновить список субтитров"
-            className="px-4 py-2 bg-neutral-800 hover:bg-neutral-700 text-white rounded-lg text-sm transition-colors border border-neutral-700"
+            className="px-4 py-2 bg-neutral-800 hover:bg-neutral-700 text-white rounded-lg text-sm transition-colors border border-neutral-700 flex items-center gap-2"
           >
             {loading ? (
               <Loader2 className="w-4 h-4 animate-spin" />
@@ -350,6 +434,12 @@ export default function RawSubtitleEditor({
             )}
           </button>
           <span className="text-sm text-neutral-400">{status}</span>
+          {unassignedCount > 0 && (
+            <div className="flex items-center gap-2 px-3 py-1 bg-red-500/10 border border-red-500/20 rounded-full text-red-400 text-xs font-bold animate-pulse">
+              <AlertCircle className="w-3.5 h-3.5" />
+              Не размечено: {unassignedCount}
+            </div>
+          )}
         </div>
 
         <div className="flex items-center gap-3">
@@ -416,6 +506,19 @@ export default function RawSubtitleEditor({
             )}
             Сохранить ({Object.keys(updates).length})
           </button>
+
+          <button
+            onClick={() => setShowSigns(!showSigns)}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors border ${
+              showSigns 
+                ? "bg-amber-600/20 text-amber-400 border-amber-500/30 hover:bg-amber-600/30" 
+                : "bg-neutral-800 text-neutral-400 border-neutral-700 hover:bg-neutral-700 hover:text-white"
+            }`}
+            title={showSigns ? "Скрыть технические субтитры" : "Показать технические субтитры"}
+          >
+            {showSigns ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
+            {showSigns ? "Надписи: ВКЛ" : "Надписи: ВЫКЛ"}
+          </button>
         </div>
       </div>
 
@@ -424,17 +527,22 @@ export default function RawSubtitleEditor({
           <span className="text-xs text-neutral-500 uppercase tracking-wider mr-2">
             Быстрый выбор:
           </span>
-          {uniqueNames.map((name) => (
+          {uniqueNames.map((name, index) => (
             <button
               key={name}
               onClick={() => handleQuickAssign(name)}
-              className="px-2.5 py-1 bg-neutral-800 hover:bg-neutral-700 text-neutral-300 hover:text-white rounded text-xs transition-colors border border-neutral-700"
+              className="px-2.5 py-1 bg-neutral-800 hover:bg-neutral-700 text-neutral-300 hover:text-white rounded text-xs transition-colors border border-neutral-700 flex items-center gap-2 group"
               title={
                 selectedLines.size > 0
                   ? `Применить к выбранным (${selectedLines.size})`
                   : "Выбрать имя"
               }
             >
+              {index < SHORTCUT_KEYS.length && (
+                <span className="text-[9px] bg-neutral-950 text-neutral-500 px-1 rounded border border-neutral-800 group-hover:text-indigo-400 group-hover:border-indigo-500/30 transition-colors uppercase">
+                  {SHORTCUT_KEYS[index]}
+                </span>
+              )}
               {name}
             </button>
           ))}
@@ -465,7 +573,29 @@ export default function RawSubtitleEditor({
         </div>
 
         <div className="flex-1 overflow-y-auto p-2 space-y-1">
-          {lines.map((line) => {
+          {lines
+            .filter(line => {
+              if (showSigns) return true;
+              const name = (line.name || "").toLowerCase();
+              const style = (line.style || "").toLowerCase();
+              const text = (line.text || "").toLowerCase();
+              
+              const signs = ["sign", "signs", "title", "op", "ed", "song", "note", "music", "logo", "staff", "credit", "credits", "надпись", "титры", "инфо", "info"];
+              
+              const isSign = signs.some(s => {
+                if (s === 'op' || s === 'ed') {
+                  const regex = new RegExp(`(^|[^a-z])${s}([^a-z]|$)`, 'i');
+                  return regex.test(name) || regex.test(style);
+                }
+                return name.includes(s) || style.includes(s);
+              }) || SIGN_KEYWORDS.some(k => name.includes(k.toLowerCase()) || style.includes(k.toLowerCase()));
+
+              // Also check if it's a technical line by style if it doesn't have a name
+              if (!name && style && isSign) return false;
+              
+              return !isSign;
+            })
+            .map((line) => {
             const isSelected = selectedLines.has(line.rawLineIndex);
             const isActive = activeLineIndex === line.rawLineIndex;
             const currentName =
@@ -481,7 +611,7 @@ export default function RawSubtitleEditor({
                 onClick={(e) => {
                   // Don't toggle if clicking on the input
                   if ((e.target as HTMLElement).tagName === "INPUT") return;
-                  toggleLineSelection(line.rawLineIndex, e.shiftKey);
+                  // toggleLineSelection(line.rawLineIndex, e.shiftKey);
                   handlePlayFromTime(line.start);
                 }}
                 className={`grid grid-cols-[40px_100px_100px_150px_200px_1fr] gap-4 p-2 items-center rounded-lg border transition-colors cursor-pointer ${
@@ -512,21 +642,26 @@ export default function RawSubtitleEditor({
                 >
                   {line.style}
                 </div>
-                <div>
+                <div className="relative">
                   <input
                     type="text"
                     value={currentName}
                     onChange={(e) =>
                       handleNameChange(line.rawLineIndex, e.target.value)
                     }
-                    className={`w-full bg-neutral-900 border rounded px-2 py-1 text-sm focus:outline-none focus:border-indigo-500 transition-colors ${
+                    className={`w-full bg-neutral-900 border rounded px-2 py-1 pr-8 text-sm focus:outline-none focus:border-indigo-500 transition-colors ${
                       isModified
                         ? "border-indigo-500/50 text-indigo-300"
+                        : !currentName || !currentName.trim()
+                        ? "border-red-500/50 text-red-300 bg-red-500/5"
                         : "border-neutral-800 text-neutral-300"
                     }`}
                     placeholder="Имя (Имя1, Имя2)..."
                     title="Можно указать несколько имен через запятую"
                   />
+                  {(!currentName || !currentName.trim()) && (
+                    <AlertCircle className="w-3.5 h-3.5 text-red-500 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  )}
                 </div>
                 <div
                   className="text-sm text-neutral-200 truncate"

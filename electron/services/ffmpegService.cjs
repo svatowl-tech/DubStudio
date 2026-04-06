@@ -2,6 +2,24 @@ const ffmpeg = require('fluent-ffmpeg');
 let ffmpegPath = require('ffmpeg-static');
 const fs = require('fs');
 const path = require('path');
+const log = require('electron-log');
+
+let activeProcesses = [];
+let processIdCounter = 0;
+
+function addProcess(commandLine) {
+  const id = ++processIdCounter;
+  activeProcesses.push({ id, commandLine });
+  return id;
+}
+
+function removeProcess(id) {
+  activeProcesses = activeProcesses.filter(p => p.id !== id);
+}
+
+function getActiveProcesses() {
+  return activeProcesses;
+}
 
 // Настройка пути к FFmpeg для работы в составе Electron
 // Если путь находится внутри app.asar, заменяем его на app.asar.unpacked
@@ -12,7 +30,7 @@ if (ffmpegPath) {
     console.log('FFmpeg found at:', ffmpegPath);
     ffmpeg.setFfmpegPath(ffmpegPath);
   } else {
-    console.error('FFmpeg NOT found at:', ffmpegPath, '- attempting to use system ffmpeg');
+    log.error('FFmpeg NOT found at:', ffmpegPath, '- attempting to use system ffmpeg');
     // Fallback to system ffmpeg if static binary is missing
     try {
       const { execSync } = require('child_process');
@@ -22,7 +40,7 @@ if (ffmpegPath) {
         ffmpeg.setFfmpegPath(systemFfmpeg);
       }
     } catch (e) {
-      console.error('System FFmpeg not found in path');
+      log.error('System FFmpeg not found in path');
     }
   }
 }
@@ -37,7 +55,7 @@ if (ffmpegPath) {
  * @param onProgress Коллбэк для отправки прогресса (в процентах) на фронтенд
  * @returns Promise с путем к готовому файлу
  */
-function bakeSubtitles(videoPath, finalAssPath, outputPath, onProgress, options = {}) {
+function bakeSubtitles(videoPath, finalAssPath, outputPath, onProgress, onCommand, options = {}) {
   return new Promise((resolve, reject) => {
     // Normalize paths for Windows
     const vPath = path.resolve(videoPath);
@@ -45,8 +63,10 @@ function bakeSubtitles(videoPath, finalAssPath, outputPath, onProgress, options 
     const oPath = path.resolve(outputPath);
 
     let currentCommandLine = '';
+    let processId = null;
     let command = ffmpeg(vPath).outputOptions('-y');
     
+    if (onCommand) onCommand(command);
     // Apply hardware acceleration if requested
     if (options.useNvenc) {
       command = command
@@ -80,6 +100,7 @@ function bakeSubtitles(videoPath, finalAssPath, outputPath, onProgress, options 
       .on('start', (commandLine) => {
         console.log('FFmpeg started with command: ' + commandLine);
         currentCommandLine = commandLine;
+        processId = addProcess(commandLine);
         onProgress(0);
       })
       .on('progress', (progress) => {
@@ -89,12 +110,14 @@ function bakeSubtitles(videoPath, finalAssPath, outputPath, onProgress, options 
       })
       .on('end', () => {
         console.log('FFmpeg processing finished successfully');
+        if (processId) removeProcess(processId);
         onProgress(100);
         resolve(oPath);
       })
       .on('error', (err, stdout, stderr) => {
-        console.error('FFmpeg processing error: ', err);
-        console.error('FFmpeg stderr: ', stderr);
+        log.error('FFmpeg processing error: ', err);
+        log.error('FFmpeg stderr: ', stderr);
+        if (processId) removeProcess(processId);
         reject(new Error(`FFmpeg Error: ${err.message}\n\nCommand: ${currentCommandLine}\n\nStderr: ${stderr}`));
       })
       .run();
@@ -110,14 +133,16 @@ function bakeSubtitles(videoPath, finalAssPath, outputPath, onProgress, options 
  * @param options Опции (например, использование NVENC)
  * @returns Promise с путем к готовому файлу
  */
-function transcodeToMp4(videoPath, outputPath, onProgress, options = {}) {
+function transcodeToMp4(videoPath, outputPath, onProgress, onCommand, options = {}) {
   return new Promise((resolve, reject) => {
     const vPath = path.resolve(videoPath);
     const oPath = path.resolve(outputPath);
 
     let currentCommandLine = '';
+    let processId = null;
     let command = ffmpeg(vPath).outputOptions('-y');
 
+    if (onCommand) onCommand(command);
     if (options.useNvenc) {
       command = command
         .inputOptions('-hwaccel cuda')
@@ -141,6 +166,7 @@ function transcodeToMp4(videoPath, outputPath, onProgress, options = {}) {
       .on('start', (commandLine) => {
         console.log('FFmpeg transcode started: ' + commandLine);
         currentCommandLine = commandLine;
+        processId = addProcess(commandLine);
         onProgress(0);
       })
       .on('progress', (progress) => {
@@ -150,12 +176,14 @@ function transcodeToMp4(videoPath, outputPath, onProgress, options = {}) {
       })
       .on('end', () => {
         console.log('FFmpeg transcode finished');
+        if (processId) removeProcess(processId);
         onProgress(100);
         resolve(oPath);
       })
       .on('error', (err, stdout, stderr) => {
-        console.error('FFmpeg transcode error: ', err);
-        console.error('FFmpeg stderr: ', stderr);
+        log.error('FFmpeg transcode error: ', err);
+        log.error('FFmpeg stderr: ', stderr);
+        if (processId) removeProcess(processId);
         reject(new Error(`FFmpeg Transcode Error: ${err.message}\n\nCommand: ${currentCommandLine}\n\nStderr: ${stderr}`));
       })
       .run();
@@ -182,15 +210,17 @@ function setCustomFfmpegPath(path) {
  * @param onProgress Коллбэк для прогресса
  * @returns Promise с путем к готовому файлу
  */
-function muxRelease(videoPath, audioPath, signsAssPath, outputPath, onProgress) {
+function muxRelease(videoPath, audioPath, signsAssPath, outputPath, onProgress, onCommand) {
   return new Promise((resolve, reject) => {
     const vPath = path.resolve(videoPath);
     const aPath = path.resolve(audioPath);
     const oPath = path.resolve(outputPath);
 
     let currentCommandLine = '';
+    let processId = null;
     let command = ffmpeg(vPath).input(aPath).outputOptions('-y');
 
+    if (onCommand) onCommand(command);
     // Если есть надписи, накладываем их хардсабом (требует перекодирования видео)
     if (signsAssPath && fs.existsSync(signsAssPath)) {
       const sPath = path.resolve(signsAssPath);
@@ -217,6 +247,7 @@ function muxRelease(videoPath, audioPath, signsAssPath, outputPath, onProgress) 
       .on('start', (commandLine) => {
         console.log('Muxing started: ' + commandLine);
         currentCommandLine = commandLine;
+        processId = addProcess(commandLine);
         onProgress(0);
       })
       .on('progress', (progress) => {
@@ -226,12 +257,14 @@ function muxRelease(videoPath, audioPath, signsAssPath, outputPath, onProgress) 
       })
       .on('end', () => {
         console.log('Muxing finished');
+        if (processId) removeProcess(processId);
         onProgress(100);
         resolve(oPath);
       })
       .on('error', (err, stdout, stderr) => {
-        console.error('Muxing error: ', err);
-        console.error('FFmpeg stderr: ', stderr);
+        log.error('Muxing error: ', err);
+        log.error('FFmpeg stderr: ', stderr);
+        if (processId) removeProcess(processId);
         reject(new Error(`Muxing Error: ${err.message}\n\nCommand: ${currentCommandLine}\n\nStderr: ${stderr}`));
       })
       .save(oPath);
@@ -251,14 +284,21 @@ function takeScreenshot(videoPath, timestamp, outputPath) {
     const vPath = path.resolve(videoPath);
     const oPath = path.resolve(outputPath);
 
+    let processId = null;
+
     ffmpeg(vPath)
       .seekInput(timestamp)
       .frames(1)
       .output(oPath)
+      .on('start', (commandLine) => {
+        processId = addProcess(commandLine);
+      })
       .on('end', () => {
+        if (processId) removeProcess(processId);
         resolve(oPath);
       })
       .on('error', (err) => {
+        if (processId) removeProcess(processId);
         reject(err);
       })
       .run();
@@ -280,5 +320,6 @@ module.exports = {
   muxRelease,
   takeScreenshot,
   getVideoMetadata,
-  setCustomFfmpegPath
+  setCustomFfmpegPath,
+  getActiveProcesses
 };

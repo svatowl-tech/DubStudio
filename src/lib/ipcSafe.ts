@@ -11,6 +11,13 @@ export const ipcSafe = {
       throw error;
     }
   },
+  send: (channel: string, ...args: any[]) => {
+    try {
+      ipcRenderer.send(channel, ...args);
+    } catch (error) {
+      console.error(`IPC Send Error on channel "${channel}":`, error);
+    }
+  },
   on: ipcRenderer.on,
   removeListener: ipcRenderer.removeListener
 };

@@ -1,30 +1,224 @@
-const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, globalShortcut } = require('electron');
 const path = require('path');
 const fs = require('fs/promises');
-const axios = require('axios');
 const { exec } = require('child_process');
-const { bakeSubtitles, transcodeToMp4, muxRelease, takeScreenshot, getVideoMetadata, setCustomFfmpegPath } = require('./services/ffmpegService.cjs');
-const { getRawSubtitles, saveRawSubtitles, saveTranslatedSubtitles, splitSubsByActor, splitSubsByDubber, exportFullAssWithRoles, extractSignsAss } = require('./services/subtitleService.cjs');
+const log = require('electron-log');
+const { autoUpdater } = require('electron-updater');
+const DataManager = require('./lib/DataManager.cjs');
+const TaskQueue = require('./lib/TaskQueue.cjs');
 
+let dataManager;
+let taskQueue;
+
+// Setup electron-log
+log.transports.file.resolvePathFn = () => path.join(process.cwd(), 'logs', 'main.log');
+log.info('Application starting...');
+
+// Auto-updater logging
+autoUpdater.logger = log;
+autoUpdater.logger.transports.file.level = 'info';
+
+process.on('uncaughtException', (error) => {
+  log.error('Uncaught Exception:', error);
+});
+process.on('unhandledRejection', (error) => {
+  log.error('Unhandled Rejection:', error);
+});
+
+ipcMain.on('log-error', (event, error) => {
+  log.error('Renderer Error:', error);
+});
+
+const { bakeSubtitles, transcodeToMp4, muxRelease, takeScreenshot, getVideoMetadata, setCustomFfmpegPath, getActiveProcesses } = require('./services/ffmpegService.cjs');
+const { getRawSubtitles, saveRawSubtitles, saveTranslatedSubtitles, splitSubsByActor, splitSubsByDubber, exportFullAssWithRoles, extractSignsAss } = require('./services/subtitleService.cjs');
 const { translateText } = require('./services/translateService.cjs');
-const { SocialMediaBot } = require('./services/SocialMediaBot.cjs');
+const { searchAnime, getAnimeDetails, getAnimeCharacters, getNextEpisodeDate } = require('./services/animeApiService.cjs');
+const AISubtitleProcessor = require('./services/AISubtitleProcessor.cjs');
+const { registerEpisodeHandlers } = require('./handlers/episodeHandlers.cjs');
+const { registerFfmpegHandlers } = require('./handlers/ffmpegHandlers.cjs');
 
 
 let mainWindow = null;
+let debugWindow = null;
+
+function createDebugWindow() {
+  debugWindow = new BrowserWindow({
+    width: 600,
+    height: 400,
+    title: 'Debug Console',
+    show: false,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(__dirname, 'preload.cjs'),
+    },
+  });
+
+  if (process.env.NODE_ENV === 'development') {
+    debugWindow.loadURL('http://localhost:5173/#/debug');
+  } else {
+    debugWindow.loadFile(path.join(__dirname, '../dist/index.html'), { hash: 'debug' });
+  }
+
+  debugWindow.on('close', (e) => {
+    e.preventDefault();
+    debugWindow.hide();
+  });
+}
+
+// Auto-updater handlers
+autoUpdater.on('checking-for-update', () => {
+  log.info('Checking for update...');
+});
+autoUpdater.on('update-available', (info) => {
+  log.info('Update available.');
+  if (mainWindow) {
+    mainWindow.webContents.send('update-available', info);
+  }
+});
+autoUpdater.on('update-not-available', (info) => {
+  log.info('Update not available.');
+});
+autoUpdater.on('error', (err) => {
+  log.error('Error in auto-updater: ' + err);
+});
+autoUpdater.on('download-progress', (progressObj) => {
+  let log_message = "Download speed: " + progressObj.bytesPerSecond;
+  log_message = log_message + ' - Downloaded ' + progressObj.percent + '%';
+  log_message = log_message + ' (' + progressObj.transferred + "/" + progressObj.total + ')';
+  log.info(log_message);
+});
+autoUpdater.on('update-downloaded', (info) => {
+  log.info('Update downloaded');
+  if (mainWindow) {
+    mainWindow.webContents.send('update-downloaded');
+  }
+});
+
+ipcMain.handle('install-update', () => {
+  autoUpdater.quitAndInstall();
+});
+
+ipcMain.handle('get-tasks', () => taskQueue.getTasksSummary());
+ipcMain.handle('abort-task', (event, taskId) => taskQueue.abort(taskId));
+ipcMain.handle('clear-task-history', () => taskQueue.clearHistory());
+
+ipcMain.handle('enqueue-ffmpeg-task', async (event, { type, payload, metadata }) => {
+  let taskFn;
+  let args = [];
+  
+  try {
+    switch (type) {
+      case 'bake-subtitles': {
+        const { videoPath, assPath, outputPath, options } = payload;
+        taskFn = (id, v, a, o, opts, onProgress, onCommand) => 
+          bakeSubtitles(v, a, o, onProgress, onCommand, opts); 
+        args = [videoPath, assPath, outputPath, options];
+        break;
+      }
+      case 'transcode-video': {
+        const { videoPath, outputPath, options } = payload;
+        taskFn = (id, v, o, opts, onProgress, onCommand) => 
+          transcodeToMp4(v, o, onProgress, onCommand, opts); 
+        args = [videoPath, outputPath, options];
+        break;
+      }
+      case 'mux-release': {
+        const { episode, targetDir, customAudioPath, customRawPath } = payload;
+        const { rawPath, subPath, uploads, number, project } = episode;
+        
+        const finalRawPath = customRawPath || rawPath;
+        if (!finalRawPath) throw new Error('Raw video is missing');
+        
+        let audioPath = customAudioPath;
+        if (!audioPath) {
+          const soundEngineerUpload = (uploads || [])
+            .filter(u => u.role === 'SOUND_ENGINEER' || u.type === 'SOUND_ENGINEER_FILE')
+            .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
+            
+          if (!soundEngineerUpload) throw new Error('Sound engineer audio is missing');
+          audioPath = soundEngineerUpload.path;
+        }
+        
+        let signsPath = null;
+        if (subPath) {
+          const tempSignsPath = path.join(path.dirname(subPath), `temp_signs_${Date.now()}.ass`);
+          const hasSigns = await extractSignsAss(subPath, tempSignsPath);
+          if (hasSigns) {
+            signsPath = tempSignsPath;
+          }
+        }
+        
+        const title = project?.title || 'Project';
+        const typeAndSeason = project?.typeAndSeason || '';
+        const fileName = `[${number} серия] ${title} ${typeAndSeason} [Оканэ].mp4`.replace(/\s+/g, ' ');
+        const outputPath = path.join(targetDir, fileName);
+        
+        taskFn = async (id, v, a, s, o, onProgress, onCommand) => {
+          try {
+            const res = await muxRelease(v, a, s, o, onProgress, onCommand);
+            if (s) await fs.unlink(s).catch(() => {});
+            return res;
+          } catch (err) {
+            if (s) await fs.unlink(s).catch(() => {});
+            throw err;
+          }
+        };
+        args = [finalRawPath, audioPath, signsPath, outputPath];
+        break;
+      }
+      case 'export-dabber-files': {
+        const { episode, targetDir, skipConversion } = payload;
+        taskFn = async (id, ep, tDir, sConv, onProgress, onCommand) => {
+          return await exportDabberFilesInternal(ep, tDir, sConv, onProgress, onCommand);
+        };
+        args = [episode, targetDir, skipConversion];
+        break;
+      }
+      case 'export-sound-engineer-files': {
+        const { episode, targetDir, skipConversion, smartExport } = payload;
+        taskFn = async (id, ep, tDir, sConv, sExp, onProgress, onCommand) => {
+          return await exportSoundEngineerFilesInternal(ep, tDir, sConv, sExp, onProgress, onCommand);
+        };
+        args = [episode, targetDir, skipConversion, smartExport];
+        break;
+      }
+      default: throw new Error('Unknown task type');
+    }
+    
+    return taskQueue.enqueue(type, taskFn, args, metadata);
+  } catch (error) {
+    log.error('Enqueue task error:', error);
+    throw error;
+  }
+});
+
+ipcMain.handle('get-debug-stats', async () => {
+  const cpuUsage = process.getCPUUsage().percentCPUUsage;
+  const memoryInfo = await process.getProcessMemoryInfo();
+  const ffmpegProcesses = getActiveProcesses();
+  
+  return {
+    cpu: cpuUsage,
+    ram: memoryInfo.residentSet,
+    ffmpeg: ffmpegProcesses
+  };
+});
 
 async function getData(filename) {
-  const filePath = path.join(app.getPath('userData'), filename);
-  try {
-    const data = await fs.readFile(filePath, 'utf-8');
-    return JSON.parse(data);
-  } catch (e) {
-    return [];
+  if (!dataManager) {
+    dataManager = new DataManager(app.getPath('userData'));
+    await dataManager.init();
   }
+  return await dataManager.getData(filename);
 }
 
 async function saveData(filename, data) {
-  const filePath = path.join(app.getPath('userData'), filename);
-  await fs.writeFile(filePath, JSON.stringify(data, null, 2));
+  if (!dataManager) {
+    dataManager = new DataManager(app.getPath('userData'));
+    await dataManager.init();
+  }
+  await dataManager.saveData(filename, data);
 }
 
 // Generic IPC handler factory
@@ -34,42 +228,52 @@ function createHandlers(entityName, filename) {
   }
   
   ipcMain.handle(`save-${entityName}`, async (event, item) => {
-    const items = await getData(filename);
-    const index = items.findIndex((i) => i.id === item.id);
-    
-    let dataToSave = item;
-    if (entityName === 'episode') {
-      const { project, ...episodeData } = item;
-      if (episodeData.assignments) {
-        episodeData.assignments = episodeData.assignments.map(a => {
-          const { dubber, substitute, ...rest } = a;
-          return rest;
-        });
+    try {
+      const items = await getData(filename);
+      const index = items.findIndex((i) => i.id === item.id);
+      
+      let dataToSave = item;
+      if (entityName === 'episode') {
+        const { project, ...episodeData } = item;
+        if (episodeData.assignments) {
+          episodeData.assignments = episodeData.assignments.map(a => {
+            const { dubber, substitute, ...rest } = a;
+            return rest;
+          });
+        }
+        if (episodeData.uploads) {
+          episodeData.uploads = episodeData.uploads.map(u => {
+            const { uploadedBy, ...rest } = u;
+            return rest;
+          });
+        }
+        dataToSave = episodeData;
+      } else if (entityName === 'project') {
+        const { episodes, ...projectData } = item;
+        dataToSave = projectData;
       }
-      if (episodeData.uploads) {
-        episodeData.uploads = episodeData.uploads.map(u => {
-          const { uploadedBy, ...rest } = u;
-          return rest;
-        });
-      }
-      dataToSave = episodeData;
-    } else if (entityName === 'project') {
-      const { episodes, ...projectData } = item;
-      dataToSave = projectData;
-    }
 
-    if (index !== -1) {
-      items[index] = dataToSave;
-    } else {
-      items.push(dataToSave);
+      if (index !== -1) {
+        items[index] = dataToSave;
+      } else {
+        items.push(dataToSave);
+      }
+      await saveData(filename, items);
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: error.message };
     }
-    await saveData(filename, items);
   });
   
   ipcMain.handle(`delete-${entityName}`, async (event, id) => {
-    const items = await getData(filename);
-    const filtered = items.filter((i) => i.id !== id);
-    await saveData(filename, filtered);
+    try {
+      const items = await getData(filename);
+      const filtered = items.filter((i) => i.id !== id);
+      await saveData(filename, filtered);
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
   });
 }
 
@@ -111,7 +315,9 @@ ipcMain.handle('get-projects', async () => {
 // Initialize handlers for all entities
 createHandlers('participant', 'participants.json');
 createHandlers('project', 'projects.json');
-createHandlers('episode', 'episodes.json');
+
+registerEpisodeHandlers(getData, saveData);
+registerFfmpegHandlers(getData, mainWindow);
 
 ipcMain.handle('get-config', async () => {
   const config = await getData('config.json');
@@ -119,9 +325,14 @@ ipcMain.handle('get-config', async () => {
 });
 
 ipcMain.handle('save-config', async (event, config) => {
-  await saveData('config.json', config);
-  if (config.ffmpegPath) {
-    setCustomFfmpegPath(config.ffmpegPath);
+  try {
+    await saveData('config.json', config);
+    if (config.ffmpegPath) {
+      setCustomFfmpegPath(config.ffmpegPath);
+    }
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
   }
 });
 
@@ -160,7 +371,7 @@ ipcMain.handle('copy-file', async (event, { sourcePath, targetDir, fileName }) =
     await fs.copyFile(sourcePath, targetPath);
     return { success: true, data: { path: targetPath } };
   } catch (error) {
-    console.error('Copy file error:', error);
+    log.error('Copy file error:', error);
     return { success: false, error: error.message };
   }
 });
@@ -177,14 +388,19 @@ ipcMain.handle('save-file-buffer', async (event, { buffer, targetDir, fileName }
     await fs.writeFile(targetPath, Buffer.from(buffer));
     return { success: true, data: { path: targetPath } };
   } catch (error) {
-    console.error('Save file buffer error:', error);
+    log.error('Save file buffer error:', error);
     return { success: false, error: error.message };
   }
 });
 
 // Specific import handler for participants
 ipcMain.handle('import-participants', async (event, imported) => {
-  await saveData('participants.json', imported);
+  try {
+    await saveData('participants.json', imported);
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
 });
 
 ipcMain.handle('create-dir', async (event, dirPath) => {
@@ -195,7 +411,7 @@ ipcMain.handle('create-dir', async (event, dirPath) => {
     await fs.mkdir(fullDir, { recursive: true });
     return { success: true, data: { path: fullDir } };
   } catch (error) {
-    console.error('Create dir error:', error);
+    log.error('Create dir error:', error);
     return { success: false, error: error.message };
   }
 });
@@ -216,84 +432,22 @@ ipcMain.handle('get-gpus', async () => {
   });
 });
 
-ipcMain.handle('download-file', async (event, { url, targetDir, fileName }) => {
-  try {
-    const config = await getData('config.json');
-    const baseDir = config.baseDir || app.getPath('userData');
-    const fullTargetDir = path.join(baseDir, targetDir);
-    await fs.mkdir(fullTargetDir, { recursive: true });
-    const targetPath = path.join(fullTargetDir, fileName);
-
-    const response = await axios({
-      method: 'GET',
-      url: url,
-      responseType: 'stream'
-    });
-
-    const totalLength = response.headers['content-length'];
-    let downloadedLength = 0;
-
-    const writer = (await import('fs')).createWriteStream(targetPath);
-    response.data.pipe(writer);
-
-    return new Promise((resolve, reject) => {
-      response.data.on('data', (chunk) => {
-        downloadedLength += chunk.length;
-        if (totalLength && mainWindow) {
-          const progress = Math.round((downloadedLength / totalLength) * 100);
-          mainWindow.webContents.send('download-progress', { url, progress });
-        }
-      });
-
-      writer.on('finish', () => resolve({ success: true, data: { path: targetPath } }));
-      writer.on('error', (err) => reject(err));
-    });
-  } catch (error) {
-    console.error('Download error:', error);
-    return { success: false, error: error.message };
-  }
-});
-
 // FFmpeg Handlers
-ipcMain.handle('bake-subtitles', async (event, { videoPath, finalAssPath, outputPath }) => {
-  const config = await getData('config.json');
-  const baseDir = config.baseDir || app.getPath('userData');
-  
-  // Ensure absolute paths
-  const absVideoPath = path.isAbsolute(videoPath) ? videoPath : path.join(baseDir, videoPath);
-  const absAssPath = path.isAbsolute(finalAssPath) ? finalAssPath : path.join(baseDir, finalAssPath);
-  const absOutputPath = path.isAbsolute(outputPath) ? outputPath : path.join(baseDir, outputPath);
-
-  await fs.mkdir(path.dirname(absOutputPath), { recursive: true });
-
-  const options = {
-    useNvenc: config.useNvenc,
-    gpuIndex: config.gpuIndex
-  };
-
-  return await bakeSubtitles(absVideoPath, absAssPath, absOutputPath, (percent) => {
-    if (mainWindow) {
-      mainWindow.webContents.send('ffmpeg-progress', percent);
-    }
-  }, options);
-});
-
-ipcMain.handle('transcode-video', async (event, { videoPath, outputPath }) => {
-  const config = await getData('config.json');
-  const options = {
-    useNvenc: config.useNvenc,
-    gpuIndex: config.gpuIndex
-  };
-  return await transcodeToMp4(videoPath, outputPath, (percent) => {
-    if (mainWindow) {
-      mainWindow.webContents.send('ffmpeg-progress', percent);
-    }
-  }, options);
-});
+// Handlers are registered in registerFfmpegHandlers
 
 // Subtitle Handlers
 ipcMain.handle('get-raw-subtitles', async (event, assFilePath) => {
   return await getRawSubtitles(assFilePath);
+});
+
+ipcMain.handle('save-raw-subtitles', async (event, { assFilePath, updates }) => {
+  try {
+    await saveRawSubtitles(assFilePath, updates);
+    return { success: true };
+  } catch (error) {
+    log.error('Save raw subtitles error:', error);
+    return { success: false, error: error.message };
+  }
 });
 
 
@@ -311,27 +465,8 @@ ipcMain.handle('export-full-ass-with-roles', async (event, { assFilePath, output
   return await exportFullAssWithRoles(assFilePath, outputPath, assignments, participantsData);
 });
 
-// Social Media Bot Handlers
-ipcMain.handle('generate-release-post', async (event, { apiKey, data }) => {
-  try {
-    const config = await getData('config.json');
-    const keyToUse = apiKey || config.polzaApiKey || '';
-    
-    if (!keyToUse) {
-      throw new Error('API ключ Polza.ai не настроен');
-    }
-
-    const bot = new SocialMediaBot(keyToUse);
-    const postText = await bot.generateReleasePost(data);
-    return { success: true, postText };
-  } catch (error) {
-    console.error('Generate post error:', error);
-    throw error;
-  }
-});
-
 // Export Handlers
-ipcMain.handle('export-dabber-files', async (event, { episode, targetDir, skipConversion }) => {
+async function exportDabberFilesInternal(episode, targetDir, skipConversion, onProgress, onCommand) {
   try {
     const config = await getData('config.json');
     const baseDir = config.baseDir || app.getPath('userData');
@@ -339,22 +474,23 @@ ipcMain.handle('export-dabber-files', async (event, { episode, targetDir, skipCo
     
     await fs.mkdir(exportDir, { recursive: true });
 
-    // 1. Process video for dubbers
+    // 1. Process video for dabbers
     if (episode.rawPath) {
       const videoName = path.basename(episode.rawPath);
       
-      const onProgress = (percent) => {
+      const progressCb = (percent) => {
+        if (onProgress) onProgress(percent);
         if (mainWindow) mainWindow.webContents.send('ffmpeg-progress', percent);
       };
 
       if (skipConversion) {
         let outVideoPath = path.join(exportDir, videoName);
         if (path.resolve(outVideoPath) !== path.resolve(episode.rawPath)) {
-          onProgress(50);
+          progressCb(50);
           await fs.copyFile(episode.rawPath, outVideoPath);
-          onProgress(100);
+          progressCb(100);
         } else {
-          onProgress(100);
+          progressCb(100);
         }
       } else if (episode.isHardsub) {
         // Just compress
@@ -368,7 +504,7 @@ ipcMain.handle('export-dabber-files', async (event, { episode, targetDir, skipCo
           outVideoPath = path.join(exportDir, `${nameWithoutExt}_exported${ext}`);
         }
 
-        await transcodeToMp4(episode.rawPath, outVideoPath, onProgress, { 
+        await transcodeToMp4(episode.rawPath, outVideoPath, progressCb, onCommand, { 
           useNvenc: config.useNvenc, 
           gpuIndex: config.gpuIndex,
           crf: 28 // Lower quality for dabbers
@@ -385,14 +521,14 @@ ipcMain.handle('export-dabber-files', async (event, { episode, targetDir, skipCo
         }
 
         if (episode.subPath) {
-          await bakeSubtitles(episode.rawPath, episode.subPath, outVideoPath, onProgress, { 
+          await bakeSubtitles(episode.rawPath, episode.subPath, outVideoPath, progressCb, onCommand, { 
             useNvenc: config.useNvenc, 
             gpuIndex: config.gpuIndex,
             crf: 28 // Lower quality for dabbers
           });
         } else {
           // Fallback if no subtitles
-          await transcodeToMp4(episode.rawPath, outVideoPath, onProgress, { 
+          await transcodeToMp4(episode.rawPath, outVideoPath, progressCb, onCommand, { 
             useNvenc: config.useNvenc, 
             gpuIndex: config.gpuIndex,
             crf: 28 // Lower quality for dabbers
@@ -415,19 +551,24 @@ ipcMain.handle('export-dabber-files', async (event, { episode, targetDir, skipCo
 
     return { success: true };
   } catch (error) {
-    console.error('Export dabber files error:', error);
-    return { success: false, error: error.message };
+    log.error('Export dabber files error:', error);
+    throw error;
   }
+}
+
+ipcMain.handle('export-dabber-files', async (event, { episode, targetDir, skipConversion }) => {
+  return await exportDabberFilesInternal(episode, targetDir, skipConversion);
 });
 
-ipcMain.handle('export-sound-engineer-files', async (event, { episode, targetDir, skipConversion, smartExport }) => {
+async function exportSoundEngineerFilesInternal(episode, targetDir, skipConversion, smartExport, onProgress, onCommand) {
   try {
     const config = await getData('config.json');
     const baseDir = config.baseDir || app.getPath('userData');
     const exportDir = path.isAbsolute(targetDir) ? targetDir : path.join(baseDir, targetDir);
     await fs.mkdir(exportDir, { recursive: true });
 
-    const onProgress = (percent) => {
+    const progressCb = (percent) => {
+      if (onProgress) onProgress(percent);
       if (mainWindow) mainWindow.webContents.send('ffmpeg-progress', percent);
     };
 
@@ -438,11 +579,11 @@ ipcMain.handle('export-sound-engineer-files', async (event, { episode, targetDir
       if (skipConversion) {
         let outVideoPath = path.join(exportDir, videoName);
         if (path.resolve(outVideoPath) !== path.resolve(episode.rawPath)) {
-          onProgress(50);
+          progressCb(50);
           await fs.copyFile(episode.rawPath, outVideoPath);
-          onProgress(100);
+          progressCb(100);
         } else {
-          onProgress(100);
+          progressCb(100);
         }
       } else if (episode.isHardsub) {
         // Just copy the hardsub video
@@ -450,9 +591,9 @@ ipcMain.handle('export-sound-engineer-files', async (event, { episode, targetDir
         const nameWithoutExt = path.basename(videoName, ext);
         const finalName = nameWithoutExt.endsWith('_hardsub') ? videoName : `${nameWithoutExt}_hardsub${ext}`;
         const markedVideoPath = path.join(exportDir, finalName);
-        onProgress(50);
+        progressCb(50);
         await fs.copyFile(episode.rawPath, markedVideoPath);
-        onProgress(100);
+        progressCb(100);
       } else {
         // Burn only signs
         const bakedVideoPath = path.join(exportDir, `baked_${videoName}`);
@@ -462,7 +603,7 @@ ipcMain.handle('export-sound-engineer-files', async (event, { episode, targetDir
           const hasSigns = await extractSignsAss(episode.subPath, signsAssPath);
           
           if (hasSigns) {
-            await bakeSubtitles(episode.rawPath, signsAssPath, bakedVideoPath, onProgress, { 
+            await bakeSubtitles(episode.rawPath, signsAssPath, bakedVideoPath, progressCb, onCommand, { 
               useNvenc: config.useNvenc, 
               gpuIndex: config.gpuIndex,
               crf: 18 // High quality for sound engineer
@@ -470,15 +611,15 @@ ipcMain.handle('export-sound-engineer-files', async (event, { episode, targetDir
             await fs.unlink(signsAssPath).catch(() => {}); // Cleanup temp file
           } else {
             // No signs found, just copy the raw video
-            onProgress(50);
+            progressCb(50);
             await fs.copyFile(episode.rawPath, bakedVideoPath);
-            onProgress(100);
+            progressCb(100);
           }
         } else {
           // No subtitles at all, just copy
-          onProgress(50);
+          progressCb(50);
           await fs.copyFile(episode.rawPath, bakedVideoPath);
-          onProgress(100);
+          progressCb(100);
         }
       }
     }
@@ -531,7 +672,7 @@ ipcMain.handle('export-sound-engineer-files', async (event, { episode, targetDir
             await fs.copyFile(latestFix.path, path.join(exportDir, getExportName(latestFix, true)));
           }
         } catch (e) {
-          console.error('Smart export stat error:', e);
+          log.error('Smart export stat error:', e);
           // Fallback: copy both
           await fs.copyFile(latestOriginal.path, path.join(exportDir, getExportName(latestOriginal, false)));
           await fs.copyFile(latestFix.path, path.join(exportDir, getExportName(latestFix, true)));
@@ -545,9 +686,13 @@ ipcMain.handle('export-sound-engineer-files', async (event, { episode, targetDir
 
     return { success: true };
   } catch (error) {
-    console.error('Export sound engineer files error:', error);
-    return { success: false, error: error.message };
+    log.error('Export sound engineer files error:', error);
+    throw error;
   }
+}
+
+ipcMain.handle('export-sound-engineer-files', async (event, { episode, targetDir, skipConversion, smartExport }) => {
+  return await exportSoundEngineerFilesInternal(episode, targetDir, skipConversion, smartExport);
 });
 
 ipcMain.handle('build-release', async (event, { episode, targetDir, customAudioPath, customRawPath }) => {
@@ -598,7 +743,7 @@ ipcMain.handle('build-release', async (event, { episode, targetDir, customAudioP
     
     return { success: true, path: outputPath };
   } catch (error) {
-    console.error('Build release error:', error);
+    log.error('Build release error:', error);
     return { success: false, error: error.message };
   }
 });
@@ -607,7 +752,7 @@ ipcMain.handle('get-video-metadata', async (event, videoPath) => {
   try {
     return await getVideoMetadata(videoPath);
   } catch (error) {
-    console.error('Get video metadata error:', error);
+    log.error('Get video metadata error:', error);
     return { error: error.message };
   }
 });
@@ -617,18 +762,46 @@ ipcMain.handle('take-screenshot', async (event, { videoPath, timestamp, outputPa
     await takeScreenshot(videoPath, timestamp, outputPath);
     return { success: true, path: outputPath };
   } catch (error) {
-    console.error('Take screenshot error:', error);
+    log.error('Take screenshot error:', error);
     return { success: false, error: error.message };
   }
 });
 
-ipcMain.handle('generate-post', async (event, data) => {
-  const bot = new SocialMediaBot();
-  return await bot.generateReleasePost(data);
-});
-
 ipcMain.handle('translate-text', async (event, { text, sourceLang, destLang }) => {
   return await translateText(text, sourceLang, destLang);
+});
+
+ipcMain.handle('search-anime', async (event, { query }) => {
+  return await searchAnime(query);
+});
+
+ipcMain.handle('get-anime-details', async (event, { id, source }) => {
+  return await getAnimeDetails(id, source);
+});
+
+ipcMain.handle('get-anime-characters', async (event, { id, source }) => {
+  return await getAnimeCharacters(id, source);
+});
+
+ipcMain.handle('get-next-episode-date', async (event, { title }) => {
+  return await getNextEpisodeDate(title);
+});
+
+ipcMain.handle('ai-process-subtitles', async (event, { lines, glossary }) => {
+  try {
+    const config = await getData('config.json');
+    const apiKey = config?.openRouterKey;
+    
+    if (!apiKey) {
+      throw new Error('OpenRouter API key is not configured. Please add it in Settings.');
+    }
+
+    const processor = new AISubtitleProcessor(apiKey, glossary);
+    return await processor.processSubtitles(lines);
+  } catch (error) {
+    log.error('AI Subtitle Processing error:', error);
+    throw error;
+  }
 });
 
 ipcMain.handle('save-translated-subtitles', async (event, { assFilePath, translatedLines }) => {
@@ -636,7 +809,7 @@ ipcMain.handle('save-translated-subtitles', async (event, { assFilePath, transla
     await saveTranslatedSubtitles(assFilePath, translatedLines);
     return { success: true };
   } catch (error) {
-    console.error('Save translated subtitles error:', error);
+    log.error('Save translated subtitles error:', error);
     return { success: false, error: error.message };
   }
 });
@@ -646,6 +819,7 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
+    title: 'Anime Dub Manager',
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -661,12 +835,41 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
+  dataManager = new DataManager(app.getPath('userData'));
+  await dataManager.init();
+
+  taskQueue = new TaskQueue(2);
+  
+  taskQueue.on('queue-updated', (summary) => {
+    if (mainWindow) mainWindow.webContents.send('task-queue-updated', summary);
+  });
+
+  taskQueue.on('task-progress', (data) => {
+    if (mainWindow) mainWindow.webContents.send('task-progress', data);
+  });
+
   const config = await getData('config.json');
   if (config && config.ffmpegPath) {
     setCustomFfmpegPath(config.ffmpegPath);
   }
   
   createWindow();
+  createDebugWindow();
+
+  // Check for updates
+  if (process.env.NODE_ENV !== 'development') {
+    autoUpdater.checkForUpdatesAndNotify();
+  }
+
+  globalShortcut.register('CommandOrControl+Shift+D', () => {
+    if (debugWindow) {
+      if (debugWindow.isVisible()) {
+        debugWindow.hide();
+      } else {
+        debugWindow.show();
+      }
+    }
+  });
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

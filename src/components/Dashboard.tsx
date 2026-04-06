@@ -1,13 +1,19 @@
-import React, { useState, useEffect } from 'react';
-import { Plus, X, CheckCircle2, Clock, AlertCircle, Mic, FileAudio, UserPlus, Link as LinkIcon, MessageSquare, ExternalLink, Calendar, FileText, Image as ImageIcon, Database, FolderPlus, ChevronRight, Download, Save, Loader2, FileVideo, Activity, Users, Settings2, Hash, Globe, User } from 'lucide-react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { Plus, X, CheckCircle2, Clock, AlertCircle, Mic, FileAudio, UserPlus, Link as LinkIcon, MessageSquare, ExternalLink, Calendar, FileText, Image as ImageIcon, Database, FolderPlus, ChevronRight, Save, Loader2, FileVideo, Activity, Users, Settings2, Hash, Globe, User } from 'lucide-react';
 import { getParticipants } from '../services/dbService';
 import { Participant, Project, Episode, EpisodeStatus, ReleaseType } from '../types';
 import { ipcSafe } from '../lib/ipcSafe';
-import { getNextEpisodeDate, searchAnime, getAnimeCharacters, getAnimeDetails } from '../services/animeService';
+import { getNextEpisodeDate } from '../services/animeService';
 import { ExportModal } from './ExportModal';
+import CreateProjectModal from './dashboard/CreateProjectModal';
+import CreateEpisodeModal from './dashboard/CreateEpisodeModal';
+import CharacterManagementModal from './dashboard/CharacterManagementModal';
+import AssignDubbersModal from './dashboard/AssignDubbersModal';
+import AssignSoundEngineerModal from './dashboard/AssignSoundEngineerModal';
 import { generateStartEpisodeMessage, generateStatusMessage } from '../lib/templates';
 import { sanitizeFolderName } from '../lib/pathUtils';
 import GettingStartedGuide from './GettingStartedGuide';
+import { SIGN_KEYWORDS } from '../constants';
 
 interface DashboardProps {
   onNavigate?: (tab: string) => void;
@@ -55,22 +61,8 @@ export default function Dashboard({
   const [participants, setParticipants] = useState<Participant[]>([]);
   
   const [isNewProjectModalOpen, setIsNewProjectModalOpen] = useState(false);
-  const [newProjectTitle, setNewProjectTitle] = useState('');
-  const [newProjectOriginalTitle, setNewProjectOriginalTitle] = useState('');
-  const [newProjectReleaseType, setNewProjectReleaseType] = useState<ReleaseType>('VOICEOVER');
-  const [newProjectEmoji, setNewProjectEmoji] = useState('❤️');
-  const [newProjectIsOngoing, setNewProjectIsOngoing] = useState(true);
-  const [newProjectSynopsis, setNewProjectSynopsis] = useState('');
-  const [newProjectPosterUrl, setNewProjectPosterUrl] = useState('');
-  const [newProjectTypeAndSeason, setNewProjectTypeAndSeason] = useState('');
-  const [newProjectTotalEpisodes, setNewProjectTotalEpisodes] = useState(12);
-  const [newProjectCharacters, setNewProjectCharacters] = useState<{name: string, dubberId: string, photoUrl?: string}[]>([]);
-  const [animeSearchQuery, setAnimeSearchQuery] = useState('');
-  const [animeSearchResults, setAnimeSearchResults] = useState<any[]>([]);
-  const [isSearchingAnime, setIsSearchingAnime] = useState(false);
   
   const [isNewEpisodeModalOpen, setIsNewEpisodeModalOpen] = useState(false);
-  const [newEpisodeNumber, setNewEpisodeNumber] = useState(1);
 
   const [isDeleteProjectModalOpen, setIsDeleteProjectModalOpen] = useState(false);
   const [isDeleteEpisodeModalOpen, setIsDeleteEpisodeModalOpen] = useState(false);
@@ -80,10 +72,8 @@ export default function Dashboard({
   const [isAssignSoundEngineerModalOpen, setIsAssignSoundEngineerModalOpen] = useState(false);
   const [selectedUserId, setSelectedUserId] = useState('');
   const [characterName, setCharacterName] = useState('');
-  const [selectedSoundEngineerId, setSelectedSoundEngineerId] = useState('');
 
   const [isAssignDubbersModalOpen, setIsAssignDubbersModalOpen] = useState(false);
-  const [selectedProjectDubbers, setSelectedProjectDubbers] = useState<string[]>([]);
 
   const [isUploading, setIsUploading] = useState(false);
   const [transcodingProgress, setTranscodingProgress] = useState<number | null>(null);
@@ -91,6 +81,7 @@ export default function Dashboard({
 
   const [isProjectSettingsModalOpen, setIsProjectSettingsModalOpen] = useState(false);
   const [projectSearch, setProjectSearch] = useState('');
+
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [exportRole, setExportRole] = useState<'DABBER' | 'SOUND_ENGINEER'>('DABBER');
 
@@ -98,11 +89,110 @@ export default function Dashboard({
   const [isMessageModalOpen, setIsMessageModalOpen] = useState(false);
   const [isHardsubEnabled, setIsHardsubEnabled] = useState(false);
 
+  const selectedProject = useMemo(() => projects.find(p => p.id === selectedProjectId), [projects, selectedProjectId]);
+
   useEffect(() => {
     if (currentEpisode) {
       setIsHardsubEnabled(currentEpisode.isHardsub || false);
     }
   }, [currentEpisode]);
+
+  const syncEpisodeWithGlobalMapping = useCallback(async () => {
+    if (!currentEpisode || !selectedProject) return;
+    
+    let globalMapping: any[] = [];
+    try {
+      const parsed = JSON.parse(selectedProject.globalMapping || '[]');
+      if (Array.isArray(parsed)) {
+        globalMapping = parsed;
+      } else if (parsed && typeof parsed === 'object') {
+        globalMapping = Object.entries(parsed).map(([k, v]) => ({ characterName: k, dubberId: v as string }));
+      }
+    } catch (e) {
+      console.error("Error parsing global mapping:", e);
+      return;
+    }
+
+    if (globalMapping.length === 0) return;
+
+    const existingAssignments = Array.isArray(currentEpisode.assignments) ? currentEpisode.assignments : [];
+    const updatedAssignments = [...existingAssignments];
+    let hasChanges = false;
+
+    // 1. Update existing assignments if dubber changed in global mapping (only if unassigned)
+    const assignedDubbersPerCharacter: Record<string, Set<string>> = {};
+    updatedAssignments.forEach(a => {
+      if (a.dubberId) {
+        if (!assignedDubbersPerCharacter[a.characterName]) {
+          assignedDubbersPerCharacter[a.characterName] = new Set();
+        }
+        assignedDubbersPerCharacter[a.characterName].add(a.dubberId);
+      }
+    });
+
+    updatedAssignments.forEach((as, idx) => {
+      if (!as.dubberId) {
+        const mappings = globalMapping.filter(m => m.characterName === as.characterName && m.dubberId);
+        const assignedSet = assignedDubbersPerCharacter[as.characterName] || new Set();
+        
+        const availableMapping = mappings.find(m => !assignedSet.has(m.dubberId));
+        
+        if (availableMapping) {
+          console.log("Updating assignment:", as, "to dubber:", availableMapping.dubberId);
+          updatedAssignments[idx] = { ...as, dubberId: availableMapping.dubberId };
+          assignedSet.add(availableMapping.dubberId);
+          assignedDubbersPerCharacter[as.characterName] = assignedSet;
+          hasChanges = true;
+        }
+      }
+    });
+
+    // 2. Add missing characters from global mapping that have a dubber assigned
+    // This ensures they "fall into" the dashboard even before ASS analysis
+    globalMapping.forEach(m => {
+      if (m.dubberId && !SIGN_KEYWORDS.includes(m.characterName)) {
+        const alreadyAssigned = updatedAssignments.some(as => as.characterName === m.characterName && as.dubberId === m.dubberId);
+        if (!alreadyAssigned) {
+          console.log("Adding new assignment from global mapping:", m);
+          updatedAssignments.push({
+            id: Math.random().toString(36).substring(2, 11),
+            episodeId: currentEpisode.id,
+            characterName: m.characterName,
+            dubberId: m.dubberId,
+            status: 'PENDING',
+            lineCount: 0
+          });
+          
+          if (!assignedDubbersPerCharacter[m.characterName]) {
+            assignedDubbersPerCharacter[m.characterName] = new Set();
+          }
+          assignedDubbersPerCharacter[m.characterName].add(m.dubberId);
+          
+          hasChanges = true;
+        }
+      }
+    });
+
+    if (hasChanges) {
+      console.log("Auto-syncing episode assignments with global mapping...", {
+        updatedAssignments,
+        existingAssignments
+      });
+      const res = await ipcSafe.invoke('save-episode', { 
+        ...currentEpisode, 
+        assignments: updatedAssignments 
+      });
+      if (res && res.success) {
+        onRefresh();
+      } else {
+        console.error("Failed to auto-sync episode assignments:", res?.error);
+      }
+    }
+  }, [currentEpisode, selectedProject?.globalMapping, onRefresh]);
+
+  useEffect(() => {
+    syncEpisodeWithGlobalMapping();
+  }, [currentEpisode?.id, selectedProject?.globalMapping, syncEpisodeWithGlobalMapping]);
 
   const handleExport = async (targetDir: string, skipConversion: boolean, smartExport?: boolean) => {
     if (!currentEpisode) return;
@@ -140,67 +230,7 @@ export default function Dashboard({
     setIsMessageModalOpen(true);
   };
 
-  const handleAnimeSearch = async () => {
-    if (!animeSearchQuery.trim()) return;
-    setIsSearchingAnime(true);
-    const results = await searchAnime(animeSearchQuery);
-    setAnimeSearchResults(results);
-    setIsSearchingAnime(false);
-  };
 
-  const handleSelectAnime = async (anime: any) => {
-    setNewProjectTitle(anime.title);
-    
-    // Fetch full details using the source from search results
-    const details = await getAnimeDetails(anime.mal_id, anime.source || 'shikimori');
-    
-    // The user wants original title in Romaji. 
-    // Shikimori 'name' is Romaji. Jikan 'title' is Romaji.
-    // We already set original_title in searchAnime.
-    const originalTitle = anime.original_title || anime.title;
-    
-    setNewProjectOriginalTitle(originalTitle);
-    setNewProjectTotalEpisodes(anime.episodes || details?.episodes || 12);
-    setNewProjectIsOngoing(anime.status === 'Currently Airing' || details?.status === 'Currently Airing');
-    setNewProjectSynopsis(anime.synopsis || details?.description || details?.synopsis || '');
-    setNewProjectPosterUrl(anime.images?.jpg?.large_image_url || details?.image?.original || '');
-    setAnimeSearchResults([]);
-    setAnimeSearchQuery('');
-    
-    // Auto-fill characters
-    const characters = await getAnimeCharacters(anime.mal_id, anime.source || 'shikimori');
-    if (characters && characters.length > 0) {
-      const mapping = characters.slice(0, 15).map((c: any) => ({
-        name: c.name,
-        dubberId: '',
-        photoUrl: c.image || ''
-      }));
-      setNewProjectCharacters(mapping);
-    }
-  };
-
-  const handleAddCharacter = () => {
-    setNewProjectCharacters(prev => [...prev, { name: '', dubberId: '', photoUrl: '' }]);
-    // Use a small timeout to allow the DOM to update before scrolling
-    setTimeout(() => {
-      const container = document.getElementById('character-list-container');
-      if (container) {
-        container.scrollTop = container.scrollHeight;
-      }
-    }, 50);
-  };
-
-  const handleRemoveCharacter = (index: number) => {
-    setNewProjectCharacters(prev => prev.filter((_, i) => i !== index));
-  };
-
-  const handleUpdateCharacter = (index: number, name: string) => {
-    setNewProjectCharacters(prev => {
-      const updated = [...prev];
-      updated[index] = { ...updated[index], name };
-      return updated;
-    });
-  };
 
   const handleFileSelect = async (type: 'RAW' | 'SUB') => {
     if (!currentEpisode) return;
@@ -298,8 +328,6 @@ export default function Dashboard({
     };
   }, []);
 
-  const selectedProject = projects.find(p => p.id === selectedProjectId);
-
   const [nextEpisodeDate, setNextEpisodeDate] = useState<string | null>(null);
 
   useEffect(() => {
@@ -316,9 +344,9 @@ export default function Dashboard({
 
   const stats = {
     totalProjects: projects.length,
-    activeEpisodes: projects.reduce((acc, p) => acc + (p.episodes?.filter(e => e.status !== 'FINISHED').length || 0), 0),
-    finishedEpisodes: projects.reduce((acc, p) => acc + (p.episodes?.filter(e => e.status === 'FINISHED').length || 0), 0),
-    pendingFixes: projects.reduce((acc, p) => acc + (p.episodes?.filter(e => e.status === 'FIXES').length || 0), 0)
+    activeEpisodes: projects.reduce((acc, p) => acc + (p.episodes?.filter(e => e.status !== 'FINISHED')?.length || 0), 0),
+    finishedEpisodes: projects.reduce((acc, p) => acc + (p.episodes?.filter(e => e.status === 'FINISHED')?.length || 0), 0),
+    pendingFixes: projects.reduce((acc, p) => acc + (p.episodes?.filter(e => e.status === 'FIXES')?.length || 0), 0)
   };
 
   const recentEpisodes = projects
@@ -326,17 +354,11 @@ export default function Dashboard({
     .sort((a, b) => new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime())
     .slice(0, 5);
 
-  useEffect(() => {
-    if (selectedProject) {
-      setSelectedProjectDubbers(selectedProject.assignedDubberIds || []);
-    }
-  }, [selectedProject]);
-
-  const handleSaveProjectDubbers = async () => {
+  const handleSaveProjectDubbers = async (selectedDubbers: string[]) => {
     if (!selectedProject) return;
     const updatedProject = {
       ...selectedProject,
-      assignedDubberIds: selectedProjectDubbers
+      assignedDubberIds: selectedDubbers
     };
     await ipcSafe.invoke('save-project', updatedProject);
     onRefresh();
@@ -344,22 +366,19 @@ export default function Dashboard({
   };
 
 
-  const handleCreateProject = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newProjectTitle.trim()) return;
-    
+  const handleCreateProject = async (projectData: any) => {
     const newProject = {
       id: Date.now().toString(),
-      title: newProjectTitle,
-      originalTitle: newProjectOriginalTitle,
-      releaseType: newProjectReleaseType,
-      emoji: newProjectEmoji,
-      isOngoing: newProjectIsOngoing,
-      synopsis: newProjectSynopsis,
-      posterUrl: newProjectPosterUrl,
-      typeAndSeason: newProjectTypeAndSeason,
-      totalEpisodes: newProjectTotalEpisodes,
-      globalMapping: JSON.stringify(newProjectCharacters.map(c => ({ characterName: c.name, dubberId: c.dubberId, photoUrl: c.photoUrl }))),
+      title: projectData.title,
+      originalTitle: projectData.originalTitle,
+      releaseType: projectData.releaseType,
+      emoji: projectData.emoji,
+      isOngoing: projectData.isOngoing,
+      synopsis: projectData.synopsis,
+      posterUrl: projectData.posterUrl,
+      typeAndSeason: projectData.typeAndSeason,
+      totalEpisodes: projectData.totalEpisodes,
+      globalMapping: JSON.stringify(projectData.characters.map((c: any) => ({ characterName: c.name, dubberId: c.dubberId, photoUrl: c.photoUrl }))),
       status: 'ACTIVE' as const,
       lastActiveEpisode: 1,
       assignedDubberIds: [],
@@ -372,16 +391,6 @@ export default function Dashboard({
     onRefresh();
     onProjectSelect(newProject.id);
     setIsNewProjectModalOpen(false);
-    setNewProjectTitle('');
-    setNewProjectOriginalTitle('');
-    setNewProjectReleaseType('VOICEOVER');
-    setNewProjectEmoji('❤️');
-    setNewProjectIsOngoing(true);
-    setNewProjectCharacters([]);
-    setNewProjectSynopsis('');
-    setNewProjectPosterUrl('');
-    setNewProjectTypeAndSeason('');
-    setNewProjectTotalEpisodes(12);
   };
 
   const handleDeleteProject = async () => {
@@ -403,14 +412,13 @@ export default function Dashboard({
     setIsDeleteEpisodeModalOpen(false);
   };
 
-  const handleCreateEpisode = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleCreateEpisode = async (episodeNumber: number) => {
     if (!selectedProjectId) return;
     
     const newEpisode = {
       id: Date.now().toString(),
       projectId: selectedProjectId,
-      number: newEpisodeNumber,
+      number: episodeNumber,
       status: 'UPLOAD',
       assignments: [],
       uploads: [],
@@ -425,12 +433,7 @@ export default function Dashboard({
   };
 
   useEffect(() => {
-    if (selectedProject?.episodes) {
-      const maxEp = Math.max(0, ...selectedProject.episodes.map(e => e.number));
-      setNewEpisodeNumber(maxEp + 1);
-    } else {
-      setNewEpisodeNumber(1);
-    }
+    // We don't need to set newEpisodeNumber here anymore
   }, [selectedProject, isNewEpisodeModalOpen]);
 
   const handleExportProject = async () => {
@@ -448,10 +451,10 @@ export default function Dashboard({
       participants: allParticipants,
       // We can also include some summary stats for the "Audit"
       audit: {
-        totalEpisodes: selectedProject.episodes.length,
-        totalAssignments: selectedProject.episodes.reduce((acc, ep) => acc + (ep.assignments?.length || 0), 0),
-        totalUploads: selectedProject.episodes.reduce((acc, ep) => acc + (ep.uploads?.length || 0), 0),
-        completedEpisodes: selectedProject.episodes.filter(ep => ep.status === 'FINISHED').length
+        totalEpisodes: selectedProject.episodes?.length || 0,
+        totalAssignments: selectedProject.episodes?.reduce((acc, ep) => acc + (ep.assignments?.length || 0), 0) || 0,
+        totalUploads: selectedProject.episodes?.reduce((acc, ep) => acc + (ep.uploads?.length || 0), 0) || 0,
+        completedEpisodes: selectedProject.episodes?.filter(ep => ep.status === 'FINISHED')?.length || 0
       }
     };
 
@@ -473,7 +476,7 @@ export default function Dashboard({
     const mainName = aliases[characterName] || characterName;
 
     // Check if already assigned in this episode
-    const existing = currentEpisode.assignments?.find(a => a.characterName === mainName);
+    const existing = Array.isArray(currentEpisode.assignments) ? currentEpisode.assignments.find(a => a.characterName === mainName) : undefined;
     if (existing) {
       if (existing.dubberId === selectedUserId) {
         alert('Этот дабер уже назначен на этого персонажа в этой серии.');
@@ -483,7 +486,7 @@ export default function Dashboard({
         return;
       }
       // Remove existing assignment for this character
-      currentEpisode.assignments = currentEpisode.assignments.filter(a => a.characterName !== mainName);
+      currentEpisode.assignments = Array.isArray(currentEpisode.assignments) ? currentEpisode.assignments.filter(a => a.characterName !== mainName) : [];
     }
 
     const newAssignment = {
@@ -496,25 +499,33 @@ export default function Dashboard({
     
     const updatedEpisode = {
       ...currentEpisode,
-      assignments: [...(currentEpisode.assignments || []), newAssignment]
+      assignments: [...(Array.isArray(currentEpisode.assignments) ? currentEpisode.assignments : []), newAssignment]
     };
     
     await ipcSafe.invoke('save-episode', updatedEpisode);
 
     // Also update global mapping if not already there
-    const globalMapping: {characterName: string, dubberId: string}[] = JSON.parse(selectedProject.globalMapping || '[]');
-    const charIndex = globalMapping.findIndex(c => c.characterName === mainName);
-    if (charIndex === -1) {
-      globalMapping.push({ characterName: mainName, dubberId: selectedUserId });
-      await ipcSafe.invoke('save-project', { ...selectedProject, globalMapping: JSON.stringify(globalMapping) });
-    } else if (globalMapping[charIndex].dubberId !== selectedUserId) {
-      // Optional: Update global mapping if it's different? 
-      // User might want to keep it as is or update it. 
-      // Let's ask or just update if it was empty.
-      if (!globalMapping[charIndex].dubberId) {
-        globalMapping[charIndex].dubberId = selectedUserId;
-        await ipcSafe.invoke('save-project', { ...selectedProject, globalMapping: JSON.stringify(globalMapping) });
+    let globalMapping: {characterName: string, dubberId: string}[] = [];
+    try {
+      const parsed = JSON.parse(selectedProject.globalMapping || '[]');
+      if (Array.isArray(parsed)) {
+        globalMapping = parsed;
+      } else if (parsed && typeof parsed === 'object') {
+        globalMapping = Object.entries(parsed).map(([k, v]) => ({ characterName: k, dubberId: v as string }));
       }
+    } catch (e) {
+      console.error("Error parsing global mapping:", e);
+    }
+    const pairExists = globalMapping.some(c => c.characterName === mainName && c.dubberId === selectedUserId);
+    
+    if (!pairExists) {
+      const emptyIdx = globalMapping.findIndex(c => c.characterName === mainName && !c.dubberId);
+      if (emptyIdx !== -1) {
+        globalMapping[emptyIdx].dubberId = selectedUserId;
+      } else {
+        globalMapping.push({ characterName: mainName, dubberId: selectedUserId });
+      }
+      await ipcSafe.invoke('save-project', { ...selectedProject, globalMapping: JSON.stringify(globalMapping) });
     }
 
     onRefresh();
@@ -523,14 +534,13 @@ export default function Dashboard({
     setCharacterName('');
   };
 
-  const handleAssignSoundEngineer = async () => {
+  const handleAssignSoundEngineer = async (soundEngineerId: string) => {
     if (selectedProject) {
-      const updatedProject = { ...selectedProject, soundEngineerId: selectedSoundEngineerId };
+      const updatedProject = { ...selectedProject, soundEngineerId };
       await ipcSafe.invoke('save-project', updatedProject);
     }
     onRefresh();
     setIsAssignSoundEngineerModalOpen(false);
-    setSelectedSoundEngineerId('');
   };
 
   return (
@@ -630,7 +640,7 @@ export default function Dashboard({
               {projects
                 ?.filter(p => p.title.toLowerCase().includes(projectSearch.toLowerCase()))
                 .map(p => (
-                  <option key={p.id} value={p.id}>{p.title}</option>
+                  <option key={p.id} value={p.id}>{p.emoji || '❤️'} {p.title}</option>
                 ))}
             </select>
             <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-neutral-500">
@@ -647,6 +657,7 @@ export default function Dashboard({
           />
 
           <button 
+            id="step-new-project"
             onClick={() => setIsNewProjectModalOpen(true)}
             className="p-2 bg-neutral-800 hover:bg-neutral-700 rounded-lg text-neutral-400 hover:text-white transition-colors"
             title="Создать новый проект озвучки"
@@ -729,7 +740,7 @@ export default function Dashboard({
             <div className="p-6 flex-1 space-y-4 text-left">
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
                 <div>
-                  <h1 className="text-3xl font-bold text-white mb-1">{selectedProject.title}</h1>
+                  <h1 className="text-3xl font-bold text-white mb-1">{selectedProject.emoji || '❤️'} {selectedProject.title}</h1>
                   <div className="text-neutral-500 font-medium italic">{selectedProject.originalTitle}</div>
                 </div>
                 <div className="flex items-center gap-3">
@@ -746,7 +757,7 @@ export default function Dashboard({
               </div>
               
               {selectedProject.synopsis && (
-                <div className="text-neutral-400 text-sm leading-relaxed line-clamp-3 hover:line-clamp-none transition-all cursor-pointer">
+                <div className="text-neutral-400 text-sm leading-relaxed">
                   {selectedProject.synopsis}
                 </div>
               )}
@@ -829,7 +840,7 @@ export default function Dashboard({
                     </div>
                     <div className="flex items-center gap-2">
                       <Users className="w-4 h-4" />
-                      <span>Даберы: <span className="text-emerald-400 font-medium">{selectedProject?.assignedDubberIds?.length > 0 ? selectedProject.assignedDubberIds.map(id => participants.find(p => p.id === id)?.nickname).filter(Boolean).join(', ') : 'Не назначены'}</span></span>
+                      <span>Даберы: <span className="text-emerald-400 font-medium">{Array.isArray(selectedProject?.assignedDubberIds) && selectedProject.assignedDubberIds.length > 0 ? selectedProject.assignedDubberIds.map(id => participants.find(p => p.id === id)?.nickname).filter(Boolean).join(', ') : 'Не назначены'}</span></span>
                     </div>
                     <div className="flex items-center gap-2">
                       <Calendar className="w-4 h-4" />
@@ -938,7 +949,11 @@ export default function Dashboard({
                       </span>
                     )}
                   </div>
-                  <label className={`flex items-center justify-center gap-2 w-full ${currentEpisode.subPath ? 'bg-green-500/5 border-green-500/20' : 'bg-neutral-950 border-neutral-800'} border border-dashed hover:border-indigo-500/50 text-neutral-400 hover:text-indigo-400 px-4 py-4 rounded-lg cursor-pointer transition-all group`} onClick={() => handleFileSelect('SUB')}>
+                  <label 
+                    id="step-upload-sub"
+                    className={`flex items-center justify-center gap-2 w-full ${currentEpisode.subPath ? 'bg-green-500/5 border-green-500/20' : 'bg-neutral-950 border-neutral-800'} border border-dashed hover:border-indigo-500/50 text-neutral-400 hover:text-indigo-400 px-4 py-4 rounded-lg cursor-pointer transition-all group`} 
+                    onClick={() => handleFileSelect('SUB')}
+                  >
                     {isUploading ? <Loader2 className="w-5 h-5 animate-spin" /> : <FileText className="w-5 h-5 group-hover:scale-110 transition-transform" />}
                     <span className="text-sm font-medium">{isUploading ? 'Загрузка...' : 'Выбрать субтитры'}</span>
                   </label>
@@ -1039,7 +1054,7 @@ export default function Dashboard({
                           );
                         });
                       })()}
-                      {(!currentEpisode?.assignments || currentEpisode.assignments.length === 0) && (
+                      {(!currentEpisode?.assignments || currentEpisode.assignments?.length === 0) && (
                         <tr>
                           <td colSpan={4} className="px-6 py-12 text-center text-neutral-500 italic">
                             Роли еще не распределены. Используйте утилиту ASS или назначьте вручную.
@@ -1057,279 +1072,28 @@ export default function Dashboard({
 
 
       {/* New Project Modal */}
-      {isNewProjectModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-          <div className="bg-neutral-900 border border-neutral-800 rounded-2xl shadow-2xl w-full max-w-2xl overflow-hidden max-h-[90vh] flex flex-col">
-            <div className="p-6 border-b border-neutral-800 flex items-center justify-between">
-              <h2 className="text-xl font-semibold text-white">Новый проект</h2>
-              <button onClick={() => setIsNewProjectModalOpen(false)} className="text-neutral-400 hover:text-white"><X className="w-5 h-5" /></button>
-            </div>
-            
-            <div className="flex-1 overflow-y-auto p-6 space-y-6 text-left">
-              {/* Anime Search Section */}
-              <div className="bg-neutral-950 p-4 rounded-xl border border-neutral-800">
-                <label className="block text-sm font-medium text-neutral-400 mb-2">Поиск в базе аниме (MAL)</label>
-                <div className="flex gap-2">
-                  <input 
-                    type="text" 
-                    value={animeSearchQuery} 
-                    onChange={(e) => setAnimeSearchQuery(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && handleAnimeSearch()}
-                    className="flex-1 bg-neutral-900 border border-neutral-800 text-white rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500/50"
-                    placeholder="Введите название для поиска..."
-                  />
-                  <button 
-                    type="button"
-                    onClick={handleAnimeSearch}
-                    disabled={isSearchingAnime}
-                    className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg disabled:opacity-50 flex items-center gap-2"
-                  >
-                    {isSearchingAnime ? <Loader2 className="w-4 h-4 animate-spin" /> : <Activity className="w-4 h-4" />}
-                    Найти
-                  </button>
-                </div>
-                
-                {animeSearchResults.length > 0 && (
-                  <div className="mt-4 space-y-2 max-h-40 overflow-y-auto pr-2">
-                    {animeSearchResults.map((anime, idx) => (
-                      <button
-                        key={(anime.mal_id || 'anime') + idx}
-                        type="button"
-                        onClick={() => handleSelectAnime(anime)}
-                        className="w-full flex items-center gap-3 p-2 rounded-lg hover:bg-neutral-800 text-left transition-colors group"
-                      >
-                        <img src={anime.images?.jpg?.small_image_url} alt="" className="w-10 h-14 object-cover rounded" referrerPolicy="no-referrer" />
-                        <div className="flex-1 min-w-0">
-                          <div className="text-sm font-medium text-white truncate group-hover:text-blue-400">{anime.title}</div>
-                          <div className="text-xs text-neutral-500">{anime.type} • {anime.episodes || '?'} эп. • {anime.status}</div>
-                        </div>
-                        <Plus className="w-4 h-4 text-neutral-600 group-hover:text-blue-400" />
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              <form onSubmit={handleCreateProject} className="space-y-4">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-neutral-300 mb-2">Название аниме</label>
-                    <input 
-                      type="text" 
-                      value={newProjectTitle} 
-                      onChange={(e) => setNewProjectTitle(e.target.value)}
-                      onKeyDown={(e) => e.stopPropagation()}
-                      className="w-full bg-neutral-950 border border-neutral-800 text-white rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500/50"
-                      placeholder="Напр: Твоё имя"
-                      required
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-neutral-300 mb-2">Оригинальное название</label>
-                    <input 
-                      type="text" 
-                      value={newProjectOriginalTitle} 
-                      onChange={(e) => setNewProjectOriginalTitle(e.target.value)}
-                      onKeyDown={(e) => e.stopPropagation()}
-                      className="w-full bg-neutral-950 border border-neutral-800 text-white rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500/50"
-                      placeholder="Напр: Kimi no Na wa"
-                    />
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-neutral-300 mb-2">Тип релиза</label>
-                    <select 
-                      value={newProjectReleaseType}
-                      onChange={(e) => setNewProjectReleaseType(e.target.value as ReleaseType)}
-                      className="w-full bg-neutral-950 border border-neutral-800 text-white rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500/50"
-                    >
-                      <option value="VOICEOVER">Закадр</option>
-                      <option value="RECAST">Рекаст</option>
-                      <option value="REDUB">Редаб</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-neutral-300 mb-2">Тип и Сезон</label>
-                    <input 
-                      type="text" 
-                      value={newProjectTypeAndSeason} 
-                      onChange={(e) => setNewProjectTypeAndSeason(e.target.value)}
-                      className="w-full bg-neutral-950 border border-neutral-800 text-white rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500/50"
-                      placeholder="TV1, Movie..."
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-neutral-300 mb-2">Кол-во серий</label>
-                    <input 
-                      type="number" 
-                      value={newProjectTotalEpisodes} 
-                      onChange={(e) => setNewProjectTotalEpisodes(parseInt(e.target.value) || 1)}
-                      className="w-full bg-neutral-950 border border-neutral-800 text-white rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500/50"
-                    />
-                  </div>
-                </div>
-
-                <div>
-                  <label className="flex items-center gap-2 cursor-pointer group">
-                    <input 
-                      type="checkbox" 
-                      checked={newProjectIsOngoing} 
-                      onChange={(e) => setNewProjectIsOngoing(e.target.checked)}
-                      className="w-4 h-4 bg-neutral-950 border-neutral-800 rounded text-blue-600 focus:ring-blue-500/50"
-                    />
-                    <span className="text-sm text-neutral-300 group-hover:text-white transition-colors">Онгоинг (выходит сейчас)</span>
-                  </label>
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-neutral-300 mb-2">Постер (URL)</label>
-                  <input 
-                    type="text" 
-                    value={newProjectPosterUrl} 
-                    onChange={(e) => setNewProjectPosterUrl(e.target.value)}
-                    className="w-full bg-neutral-950 border border-neutral-800 text-white rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500/50"
-                    placeholder="https://..."
-                  />
-                </div>
-
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between">
-                    <label className="block text-sm font-medium text-neutral-300">Список персонажей (Character List)</label>
-                    <button 
-                      type="button"
-                      onClick={handleAddCharacter}
-                      className="text-xs text-blue-400 hover:text-blue-300 flex items-center gap-1"
-                    >
-                      <Plus className="w-3 h-3" /> Добавить
-                    </button>
-                  </div>
-                    <div id="character-list-container" className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-40 overflow-y-auto p-1 scroll-smooth">
-                      {newProjectCharacters.map((char, idx) => (
-                        <div key={char.name || ('char-' + idx)} className="flex gap-2 group items-center">
-                          {char.photoUrl ? (
-                            <img src={char.photoUrl} alt="" className="w-8 h-8 rounded-full object-cover border border-neutral-800" referrerPolicy="no-referrer" />
-                          ) : (
-                            <div className="w-8 h-8 rounded-full bg-neutral-900 border border-neutral-800 flex items-center justify-center text-neutral-700">
-                              <User className="w-4 h-4" />
-                            </div>
-                          )}
-                          <input 
-                            type="text"
-                            value={char.name}
-                            onChange={(e) => handleUpdateCharacter(idx, e.target.value)}
-                            placeholder="Имя персонажа"
-                            className="flex-1 bg-neutral-950 border border-neutral-800 text-white rounded-lg px-3 py-1.5 text-xs focus:ring-1 focus:ring-blue-500/50"
-                          />
-                          <button 
-                            type="button"
-                            onClick={() => handleRemoveCharacter(idx)}
-                            className="text-neutral-600 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity"
-                          >
-                            <X className="w-4 h-4" />
-                          </button>
-                        </div>
-                      ))}
-                    {newProjectCharacters.length === 0 && (
-                      <div className="col-span-full text-center py-4 text-xs text-neutral-500 italic border border-dashed border-neutral-800 rounded-lg">
-                        Список пуст. Найдите аниме или добавьте вручную.
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-neutral-300 mb-2">Описание (Синопсис)</label>
-                  <textarea 
-                    value={newProjectSynopsis} 
-                    onChange={(e) => setNewProjectSynopsis(e.target.value)}
-                    rows={4}
-                    className="w-full bg-neutral-950 border border-neutral-800 text-white rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500/50 resize-none text-sm"
-                    placeholder="Краткое описание сюжета..."
-                  />
-                </div>
-
-                <div className="flex gap-3 pt-4">
-                  <button 
-                    type="button"
-                    onClick={() => setIsNewProjectModalOpen(false)}
-                    className="flex-1 px-4 py-2.5 bg-neutral-800 hover:bg-neutral-700 text-white rounded-lg font-medium transition-colors"
-                  >
-                    Отмена
-                  </button>
-                  <button 
-                    type="submit"
-                    className="flex-1 px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-medium transition-colors shadow-lg shadow-blue-500/20"
-                  >
-                    Создать проект
-                  </button>
-                </div>
-              </form>
-            </div>
-          </div>
-        </div>
-      )}
+      <CreateProjectModal 
+        isOpen={isNewProjectModalOpen} 
+        onClose={() => setIsNewProjectModalOpen(false)} 
+        onCreate={handleCreateProject} 
+      />
 
       {/* New Episode Modal */}
-      {isNewEpisodeModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-          <div className="bg-neutral-900 border border-neutral-800 rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
-            <div className="p-6 border-b border-neutral-800 flex items-center justify-between">
-              <h2 className="text-xl font-semibold text-white">Добавить серию</h2>
-              <button onClick={() => setIsNewEpisodeModalOpen(false)} className="text-neutral-400 hover:text-white"><X className="w-5 h-5" /></button>
-            </div>
-            <form onSubmit={handleCreateEpisode} className="p-6 space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-neutral-300 mb-2">Номер серии</label>
-                <input 
-                  type="number" 
-                  value={newEpisodeNumber} 
-                  onChange={(e) => setNewEpisodeNumber(parseInt(e.target.value))}
-                  className="w-full bg-neutral-950 border border-neutral-800 text-white rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500/50"
-                  min="1"
-                  required
-                />
-              </div>
-              <button type="submit" className="w-full py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-medium transition-colors">Добавить</button>
-            </form>
-          </div>
-        </div>
-      )}
+      <CreateEpisodeModal
+        isOpen={isNewEpisodeModalOpen}
+        onClose={() => setIsNewEpisodeModalOpen(false)}
+        onCreate={handleCreateEpisode}
+        defaultEpisodeNumber={(selectedProject?.episodes?.reduce((max, ep) => Math.max(max, ep.number), 0) || 0) + 1}
+      />
 
       {/* Assign Dubbers Modal */}
-      {isAssignDubbersModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-          <div className="bg-neutral-900 border border-neutral-800 rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
-            <div className="p-6 border-b border-neutral-800 flex items-center justify-between">
-              <h2 className="text-xl font-semibold text-white">Назначить даберов на проект</h2>
-              <button onClick={() => setIsAssignDubbersModalOpen(false)} className="text-neutral-400 hover:text-white"><X className="w-5 h-5" /></button>
-            </div>
-            <div className="p-6 space-y-4 max-h-96 overflow-y-auto">
-              {participants.map((p, idx) => (
-                <label key={(p.id || 'p') + idx} className="flex items-center gap-3 p-3 rounded-lg hover:bg-neutral-800 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={selectedProjectDubbers.includes(p.id)}
-                    onChange={(e) => {
-                      if (e.target.checked) {
-                        setSelectedProjectDubbers([...selectedProjectDubbers, p.id]);
-                      } else {
-                        setSelectedProjectDubbers(selectedProjectDubbers.filter(id => id !== p.id));
-                      }
-                    }}
-                    className="w-4 h-4 rounded border-neutral-700 bg-neutral-950 text-blue-600 focus:ring-blue-500"
-                  />
-                  <span className="text-neutral-200">{p.nickname}</span>
-                </label>
-              ))}
-            </div>
-            <div className="p-6 border-t border-neutral-800">
-              <button onClick={handleSaveProjectDubbers} className="w-full py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-medium transition-colors">Сохранить</button>
-            </div>
-          </div>
-        </div>
-      )}
+      <AssignDubbersModal
+        isOpen={isAssignDubbersModalOpen}
+        onClose={() => setIsAssignDubbersModalOpen(false)}
+        participants={participants}
+        initialSelectedDubbers={selectedProject?.assignedDubberIds || []}
+        onSave={handleSaveProjectDubbers}
+      />
 
       {/* Assign Role Modal */}
       {isAssignModalOpen && (
@@ -1360,7 +1124,7 @@ export default function Dashboard({
                   required
                 >
                   <option value="">Выберите дабера</option>
-                  {participants.filter(p => selectedProject?.assignedDubberIds?.includes(p.id)).map((p, idx) => (
+                  {participants.map((p, idx) => (
                     <option key={(p.id || 'p') + idx} value={p.id}>{p.nickname}</option>
                   ))}
                 </select>
@@ -1372,197 +1136,27 @@ export default function Dashboard({
       )}
 
       {/* Character Management Modal */}
-      {isCharacterManagementModalOpen && selectedProject && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-          <div className="bg-neutral-900 border border-neutral-800 rounded-2xl shadow-2xl w-full max-w-4xl overflow-hidden max-h-[90vh] flex flex-col">
-            <div className="p-6 border-b border-neutral-800 flex items-center justify-between">
-              <h2 className="text-xl font-semibold text-white">Управление персонажами и алиасами</h2>
-              <button onClick={() => setIsCharacterManagementModalOpen(false)} className="text-neutral-400 hover:text-white"><X className="w-5 h-5" /></button>
-            </div>
-            
-            <div className="flex-1 overflow-y-auto p-6 space-y-8">
-              {/* Characters Table */}
-              <div className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-lg font-medium text-white">Список персонажей</h3>
-                  <div className="flex items-center gap-3">
-                    <button 
-                      onClick={async () => {
-                        const name = prompt('Введите имя персонажа:');
-                        if (name) {
-                          const mapping = JSON.parse(selectedProject.globalMapping || '[]');
-                          mapping.push({ characterName: name, dubberId: '' });
-                          await ipcSafe.invoke('save-project', { ...selectedProject, globalMapping: JSON.stringify(mapping) });
-                          onRefresh();
-                        }
-                      }}
-                      className="flex items-center gap-2 text-sm text-blue-400 hover:text-blue-300"
-                    >
-                      <Plus className="w-4 h-4" /> Добавить персонажа
-                    </button>
-                  </div>
-                </div>
-                
-                <div className="bg-neutral-950 rounded-xl border border-neutral-800 overflow-hidden">
-                  <table className="w-full text-left">
-                    <thead>
-                      <tr className="bg-neutral-900/50 text-neutral-400 text-xs uppercase tracking-wider">
-                        <th className="px-4 py-3 font-semibold">Фото</th>
-                        <th className="px-4 py-3 font-semibold">Персонаж</th>
-                        <th className="px-4 py-3 font-semibold">Дабер по умолчанию</th>
-                        <th className="px-4 py-3 font-semibold">Алиасы (через запятую)</th>
-                        <th className="px-4 py-3 font-semibold text-right">Действия</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-neutral-800">
-                      {(() => {
-                        const mapping: {characterName: string, dubberId: string, photoUrl?: string}[] = JSON.parse(selectedProject.globalMapping || '[]');
-                        const aliases: Record<string, string> = JSON.parse(selectedProject.characterAliases || '{}');
-                        
-                        // Group aliases by main character
-                        const aliasesByMain: Record<string, string[]> = {};
-                        Object.entries(aliases).forEach(([alias, main]) => {
-                          if (!aliasesByMain[main]) aliasesByMain[main] = [];
-                          aliasesByMain[main].push(alias);
-                        });
-
-                        return mapping.map((char, idx) => (
-                          <tr key={char.characterName || ('char-' + idx)} className="hover:bg-neutral-900/30 transition-colors">
-                            <td className="px-4 py-3">
-                              {char.photoUrl ? (
-                                <img src={char.photoUrl} alt={char.characterName} className="w-10 h-10 rounded-full object-cover" />
-                              ) : (
-                                <div className="w-10 h-10 rounded-full bg-neutral-800 flex items-center justify-center text-neutral-500">
-                                  <ImageIcon className="w-5 h-5" />
-                                </div>
-                              )}
-                            </td>
-                            <td className="px-4 py-3 text-white font-medium">{char.characterName}</td>
-                            <td className="px-4 py-3">
-                              <select 
-                                value={char.dubberId}
-                                onChange={async (e) => {
-                                  const updatedMapping = [...mapping];
-                                  updatedMapping[idx] = { ...char, dubberId: e.target.value };
-                                  await ipcSafe.invoke('save-project', { ...selectedProject, globalMapping: JSON.stringify(updatedMapping) });
-                                  onRefresh();
-                                }}
-                                className="bg-neutral-900 border border-neutral-800 text-white rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500"
-                              >
-                                <option value="">Не назначен</option>
-                                {participants.filter(p => selectedProject.assignedDubberIds?.includes(p.id)).map((p, idx) => (
-                                  <option key={(p.id || 'p') + idx} value={p.id}>{p.nickname}</option>
-                                ))}
-                              </select>
-                            </td>
-                            <td className="px-4 py-3">
-                              <input 
-                                type="text"
-                                defaultValue={aliasesByMain[char.characterName]?.join(', ') || ''}
-                                onBlur={async (e) => {
-                                  const newAliasesList = e.target.value.split(',').map(s => s.trim()).filter(Boolean);
-                                  const updatedAliases = { ...aliases };
-                                  
-                                  // Remove old aliases for this character
-                                  Object.keys(updatedAliases).forEach(k => {
-                                    if (updatedAliases[k] === char.characterName) delete updatedAliases[k];
-                                  });
-                                  
-                                  // Add new ones
-                                  newAliasesList.forEach(alias => {
-                                    updatedAliases[alias] = char.characterName;
-                                  });
-                                  
-                                  await ipcSafe.invoke('save-project', { ...selectedProject, characterAliases: JSON.stringify(updatedAliases) });
-                                  onRefresh();
-                                }}
-                                placeholder="Напр: Наруто Узумаки, Нарик"
-                                className="w-full bg-neutral-900 border border-neutral-800 text-neutral-300 rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500"
-                              />
-                            </td>
-                            <td className="px-4 py-3 text-right">
-                              <button 
-                                onClick={async () => {
-                                  if (confirm(`Удалить персонажа "${char.characterName}"?`)) {
-                                    const updatedMapping = mapping.filter((_, i) => i !== idx);
-                                    // Also remove aliases
-                                    const updatedAliases = { ...aliases };
-                                    Object.keys(updatedAliases).forEach(k => {
-                                      if (updatedAliases[k] === char.characterName) delete updatedAliases[k];
-                                    });
-                                    await ipcSafe.invoke('save-project', { 
-                                      ...selectedProject, 
-                                      globalMapping: JSON.stringify(updatedMapping),
-                                      characterAliases: JSON.stringify(updatedAliases)
-                                    });
-                                    onRefresh();
-                                  }
-                                }}
-                                className="text-neutral-600 hover:text-red-400 transition-colors"
-                              >
-                                <X className="w-4 h-4" />
-                              </button>
-                            </td>
-                          </tr>
-                        ));
-                      })()}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            </div>
-            
-            <div className="p-6 border-t border-neutral-800 flex justify-end">
-              <button 
-                onClick={() => setIsCharacterManagementModalOpen(false)}
-                className="px-6 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-medium transition-colors"
-              >
-                Закрыть
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <CharacterManagementModal
+        isOpen={isCharacterManagementModalOpen}
+        onClose={() => setIsCharacterManagementModalOpen(false)}
+        selectedProject={selectedProject}
+        participants={participants}
+        onRefresh={onRefresh}
+      />
 
       {/* Assign Sound Engineer Modal */}
-      {isAssignSoundEngineerModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-          <div className="bg-neutral-900 border border-neutral-800 rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
-            <div className="p-6 border-b border-neutral-800 flex items-center justify-between">
-              <h2 className="text-xl font-semibold text-white">Назначить звукорежиссера</h2>
-              <button onClick={() => setIsAssignSoundEngineerModalOpen(false)} className="text-neutral-400 hover:text-white"><X className="w-5 h-5" /></button>
-            </div>
-            <div className="p-6 space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-neutral-300 mb-2">Звукорежиссер</label>
-                <select 
-                  value={selectedSoundEngineerId} 
-                  onChange={(e) => setSelectedSoundEngineerId(e.target.value)}
-                  className="w-full bg-neutral-950 border border-neutral-800 text-white rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500/50"
-                >
-                  <option value="">Выберите звукорежиссера</option>
-                  {participants.map((p, idx) => (
-                    <option key={(p.id || 'p') + idx} value={p.id}>{p.nickname}</option>
-                  ))}
-                </select>
-              </div>
-              <div className="flex gap-3">
-                <button 
-                  onClick={() => handleAssignSoundEngineer()}
-                  className="w-full py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-medium transition-colors"
-                >
-                  Назначить
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      <AssignSoundEngineerModal
+        isOpen={isAssignSoundEngineerModalOpen}
+        onClose={() => setIsAssignSoundEngineerModalOpen(false)}
+        participants={participants}
+        initialSoundEngineerId={selectedProject?.soundEngineerId || ''}
+        onAssign={handleAssignSoundEngineer}
+      />
 
       {/* Project Settings Modal */}
       {isProjectSettingsModalOpen && projects.find(p => p.id === selectedProjectId) && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
-          <div className="bg-neutral-900 border border-neutral-800 rounded-2xl shadow-2xl w-full max-w-2xl overflow-hidden">
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/80">
+          <div className="bg-neutral-900 border border-neutral-800 rounded-2xl shadow-2xl w-full max-w-2xl overflow-hidden pointer-events-auto">
             <div className="p-6 border-b border-neutral-800 flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <Settings2 className="w-5 h-5 text-indigo-400" />
@@ -1579,6 +1173,25 @@ export default function Dashboard({
                 return (
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                     <div className="space-y-6">
+                      <div>
+                        <label className="block text-xs font-bold text-neutral-500 uppercase mb-2 ml-1">Эмодзи проекта</label>
+                        <div className="relative">
+                          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-neutral-500">✨</span>
+                          <input
+                            type="text"
+                            value={project.emoji || ''}
+                            onChange={async (e) => {
+                              await ipcSafe.invoke('save-project', { 
+                                ...project, 
+                                emoji: e.target.value 
+                              });
+                              onRefresh();
+                            }}
+                            className="w-full bg-black border border-neutral-800 rounded-xl py-3 pl-10 pr-4 text-white focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                            placeholder="❤️, 📢..."
+                          />
+                        </div>
+                      </div>
                       <div>
                         <label className="block text-xs font-bold text-neutral-500 uppercase mb-2 ml-1">Тип и Сезон (напр. TV1)</label>
                         <div className="relative">
@@ -1692,8 +1305,8 @@ export default function Dashboard({
 
       {/* Message Modal */}
       {isMessageModalOpen && generatedMessage && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-[60] p-4">
-          <div className="bg-neutral-900 border border-neutral-800 rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden flex flex-col max-h-[80vh]">
+        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-[9999] p-4">
+          <div className="bg-neutral-900 border border-neutral-800 rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden flex flex-col max-h-[80vh] pointer-events-auto">
             <div className="p-4 border-b border-neutral-800 flex items-center justify-between bg-neutral-950/50">
               <h3 className="text-lg font-bold text-white flex items-center gap-2">
                 <MessageSquare className="w-5 h-5 text-blue-400" />

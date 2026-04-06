@@ -22,6 +22,10 @@ interface TrackSidebarProps {
   onGenerateFixesMessage?: () => void;
   onGenerateReminderMessage?: () => void;
   onExportSoundEngineer?: () => void;
+  onBakeSubtitles?: () => void;
+  isBaking?: boolean;
+  bakeProgress?: number;
+  bakeStatus?: string;
 }
 
 export const TrackSidebar: React.FC<TrackSidebarProps> = ({
@@ -33,7 +37,11 @@ export const TrackSidebar: React.FC<TrackSidebarProps> = ({
   setTracks,
   onGenerateFixesMessage,
   onGenerateReminderMessage,
-  onExportSoundEngineer
+  onExportSoundEngineer,
+  onBakeSubtitles,
+  isBaking,
+  bakeProgress,
+  bakeStatus
 }) => {
   return (
     <div className="w-80 border-r border-neutral-800 flex flex-col">
@@ -84,7 +92,7 @@ export const TrackSidebar: React.FC<TrackSidebarProps> = ({
                 track.status === 'rejected' ? 'text-red-400' :
                 track.status === 'fixes_needed' ? 'text-yellow-400' : 'text-blue-400'
               }`}>
-                {STATUS_MAP[track.status] || track.status}
+                {STATUS_MAP[track.status.toUpperCase()]?.label || track.status}
               </span>
               {track.files.length > 0 && <CheckCircle className="w-3 h-3 text-green-500" />}
             </div>
@@ -158,6 +166,14 @@ export const TrackSidebar: React.FC<TrackSidebarProps> = ({
         >
           <Mic className="w-3.5 h-3.5" />
           Экспорт для звукача
+        </button>
+        <button 
+          onClick={onBakeSubtitles}
+          disabled={isBaking}
+          className="w-full py-2 bg-purple-600/20 hover:bg-purple-600/40 text-purple-400 rounded-lg text-xs font-bold transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
+        >
+          <Activity className="w-3.5 h-3.5" />
+          {isBaking ? `Рендеринг ${Math.round(bakeProgress || 0)}%` : 'Вшить субтитры'}
         </button>
       </div>
     </div>

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { PlaySquare, Send, Copy, MessageSquare, Sparkles, CheckCircle2, Globe, Link2, Save, Package, Loader2, Camera, Image as ImageIcon } from 'lucide-react';
 import { getParticipants } from '../services/dbService';
 import { Participant, Episode } from '../types';
@@ -8,6 +8,7 @@ import {
   generateVKPostMessage, 
   generateFinalTGMessage 
 } from '../lib/templates';
+import { useVideoContext } from '../contexts/VideoContext';
 
 interface ReleasePanelProps {
   currentEpisode: Episode | null;
@@ -37,16 +38,42 @@ export default function ReleasePanel({ currentEpisode, onRefresh }: ReleasePanel
   const [screenshotTime, setScreenshotTime] = useState(0);
   const [screenshotPath, setScreenshotPath] = useState('');
   const [isCapturing, setIsCapturing] = useState(false);
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  const { registerPlayer, unregisterPlayer } = useVideoContext();
+
+  const togglePlayPause = useCallback(() => {
+    if (videoRef.current) {
+      if (videoRef.current.paused) {
+        videoRef.current.play().catch(e => console.error('Play error', e));
+      } else {
+        videoRef.current.pause();
+      }
+    }
+  }, []);
 
   useEffect(() => {
-    if (currentEpisode?.rawPath) {
-      ipcSafe.invoke('get-video-metadata', currentEpisode.rawPath).then(meta => {
+    registerPlayer({ 
+      togglePlayPause,
+      seekToNext: () => {
+        if (videoRef.current) {
+          videoRef.current.currentTime += 5;
+        }
+      }
+    });
+    return () => unregisterPlayer();
+  }, [registerPlayer, unregisterPlayer, togglePlayPause]);
+
+  useEffect(() => {
+    const path = customRawPath || currentEpisode?.rawPath;
+    if (path) {
+      ipcSafe.invoke('get-video-metadata', path).then(meta => {
         if (meta && meta.format && meta.format.duration) {
           setVideoDuration(meta.format.duration);
         }
       });
     }
-  }, [currentEpisode?.rawPath]);
+  }, [currentEpisode?.rawPath, customRawPath]);
 
   const handleTakeScreenshot = async () => {
     const videoPath = customRawPath || currentEpisode?.rawPath;
@@ -93,26 +120,24 @@ export default function ReleasePanel({ currentEpisode, onRefresh }: ReleasePanel
       if (result.canceled || !result.filePaths || result.filePaths.length === 0) return;
       
       const targetDir = result.filePaths[0];
-      setIsBuilding(true);
-      setBuildProgress(0);
       
-      const response = await ipcSafe.invoke('build-release', { 
-        episode: currentEpisode, 
-        targetDir,
-        customAudioPath: customAudioPath || undefined,
-        customRawPath: customRawPath || undefined
+      // Enqueue task instead of direct invocation
+      await ipcSafe.send('enqueue-ffmpeg-task', {
+        type: 'mux-release',
+        payload: { 
+          episode: currentEpisode, 
+          targetDir,
+          customAudioPath: customAudioPath || undefined,
+          customRawPath: customRawPath || undefined
+        },
+        metadata: {
+          title: `Сборка: ${currentEpisode.project?.title} - Серия ${currentEpisode.number}`
+        }
       });
       
-      if (response.success) {
-        alert(`Релиз успешно собран: ${response.path}`);
-      } else {
-        alert(`Ошибка при сборке релиза: ${response.error}`);
-      }
+      // We don't wait for result here, the TaskQueuePanel will show progress
     } catch (error: any) {
-      alert(`Ошибка: ${error.message}`);
-    } finally {
-      setIsBuilding(false);
-      setBuildProgress(0);
+      alert(`Ошибка при постановке в очередь: ${error.message}`);
     }
   };
 
@@ -296,26 +321,26 @@ export default function ReleasePanel({ currentEpisode, onRefresh }: ReleasePanel
         <div className="p-6 flex flex-col md:flex-row gap-8">
           <div className="flex-1 space-y-6">
             <div className="space-y-4">
-              <div className="flex justify-between items-center">
-                <label className="text-[10px] font-bold text-neutral-500 uppercase tracking-widest">Таймкод: {formatTime(screenshotTime)}</label>
-                <span className="text-[10px] text-neutral-500">{formatTime(videoDuration)}</span>
+              <div className="aspect-video bg-black rounded-xl overflow-hidden relative">
+                {(customRawPath || currentEpisode?.rawPath) ? (
+                  <video 
+                    ref={videoRef}
+                    src={`file://${customRawPath || currentEpisode?.rawPath}`}
+                    controls
+                    className="w-full h-full object-contain"
+                    onTimeUpdate={(e) => setScreenshotTime(e.currentTarget.currentTime)}
+                  />
+                ) : (
+                  <div className="absolute inset-0 flex items-center justify-center text-neutral-600">
+                    <span className="text-xs">Видео не найдено</span>
+                  </div>
+                )}
               </div>
-              <input 
-                type="range"
-                min={0}
-                max={videoDuration || 100}
-                step={1}
-                value={screenshotTime}
-                onChange={(e) => setScreenshotTime(parseInt(e.target.value))}
-                className="w-full h-1.5 bg-neutral-800 rounded-lg appearance-none cursor-pointer accent-purple-500"
-              />
               <div className="flex gap-4">
-                <input 
-                  type="number"
-                  value={screenshotTime}
-                  onChange={(e) => setScreenshotTime(Math.min(videoDuration, Math.max(0, parseInt(e.target.value) || 0)))}
-                  className="w-24 bg-black/50 border border-neutral-800 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none"
-                />
+                <div className="flex-1 flex items-center gap-3 bg-black/50 border border-neutral-800 rounded-xl px-4 py-2">
+                  <span className="text-xs font-bold text-neutral-500 uppercase tracking-widest">Таймкод:</span>
+                  <span className="text-sm text-white font-mono">{formatTime(screenshotTime)}</span>
+                </div>
                 <button
                   onClick={handleTakeScreenshot}
                   disabled={isCapturing || !videoDuration}
@@ -395,7 +420,7 @@ export default function ReleasePanel({ currentEpisode, onRefresh }: ReleasePanel
             rel="noopener noreferrer"
             className="flex flex-col items-center gap-2 p-4 bg-black/30 border border-neutral-800 rounded-xl hover:bg-indigo-600/10 hover:border-indigo-500/50 transition-all group"
           >
-            <GlobeIcon className="w-6 h-6 text-indigo-400 group-hover:scale-110 transition-transform" />
+            <Globe className="w-6 h-6 text-indigo-400 group-hover:scale-110 transition-transform" />
             <span className="text-xs font-bold text-white">VK Кабинет</span>
           </a>
           <a 
@@ -413,7 +438,7 @@ export default function ReleasePanel({ currentEpisode, onRefresh }: ReleasePanel
             rel="noopener noreferrer"
             className="flex flex-col items-center gap-2 p-4 bg-black/30 border border-neutral-800 rounded-xl hover:bg-blue-500/10 hover:border-blue-500/50 transition-all group"
           >
-            <GlobeIcon className="w-6 h-6 text-blue-500 group-hover:scale-110 transition-transform" />
+            <Globe className="w-6 h-6 text-blue-500 group-hover:scale-110 transition-transform" />
             <span className="text-xs font-bold text-white">VK Паблик</span>
           </a>
         </div>
@@ -539,26 +564,5 @@ export default function ReleasePanel({ currentEpisode, onRefresh }: ReleasePanel
         </div>
       )}
     </div>
-  );
-}
-
-function GlobeIcon(props: any) {
-  return (
-    <svg
-      {...props}
-      xmlns="http://www.w3.org/2000/svg"
-      width="24"
-      height="24"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <circle cx="12" cy="12" r="10" />
-      <line x1="2" y1="12" x2="22" y2="12" />
-      <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
-    </svg>
   );
 }

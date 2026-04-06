@@ -1,4 +1,5 @@
 const axios = require('axios');
+const log = require('electron-log');
 
 /**
  * Сервис для перевода текста через внешние API (Main Process).
@@ -31,7 +32,7 @@ async function translateText(text, sourceLang, destLang) {
 
     throw new Error('Некорректный формат ответа от сервиса перевода');
   } catch (error) {
-    console.error("Translation API error:", error);
+    log.error("Translation API error:", error);
     throw error;
   }
 }

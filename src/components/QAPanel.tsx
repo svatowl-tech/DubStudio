@@ -1,14 +1,15 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import WaveSurfer from 'wavesurfer.js';
-import { Play, Pause, CheckCircle, XCircle, AlertCircle, MessageSquare, Volume2, Check, X, Activity, Download, User, Clock, FileAudio, Send, Video, Trash2, Mic, Sparkles, Save } from 'lucide-react';
+import RegionsPlugin from 'wavesurfer.js/dist/plugins/regions.esm.js';
+import { Play, Pause, CheckCircle, XCircle, AlertCircle, MessageSquare, Volume2, Check, X, Activity, User, Clock, FileAudio, Send, Video, Trash2, Mic, Sparkles, Save, SkipForward, Scissors, Zap } from 'lucide-react';
 import { ipcSafe } from '../lib/ipcSafe';
 import { Episode, RoleAssignment, Participant } from '../types';
 import { sanitizeFolderName } from '../lib/pathUtils';
-import { STATUS_MAP } from '../constants';
 import { TrackSidebar } from './qa/TrackSidebar';
 import { generateFixesIssuedMessage, generateStatusMessage } from '../lib/templates';
 import { getParticipants } from '../services/dbService';
 import { ExportModal } from './ExportModal';
+import { useVideoContext } from '../contexts/VideoContext';
 
 interface QAPanelProps {
   currentEpisode: Episode | null;
@@ -20,7 +21,7 @@ interface Track {
   participant: string;
   character: string;
   status: 'pending' | 'approved' | 'rejected' | 'fixes_needed';
-  files: { id: string; path: string; createdAt: string }[];
+  files: { id: string; path: string; createdAt: string; type?: 'DUBBER_FILE' | 'FIXES' }[];
   selectedFileId?: string;
   comments: Comment[];
 }
@@ -30,6 +31,7 @@ interface Comment {
   text: string;
   timestamp: number;
   author: string;
+  subId?: string; // Link to .ass line ID/index
 }
 
 export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
@@ -54,6 +56,12 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
   const [isBaking, setIsBaking] = useState(false);
   const [bakeProgress, setBakeProgress] = useState(0);
   const [bakeStatus, setBakeStatus] = useState('');
+  const [isAnalyzingSilence, setIsAnalyzingSilence] = useState(false);
+  const [silenceThreshold, setSilenceThreshold] = useState(0.01); // Default threshold
+  const regionsRef = useRef<any>(null);
+  const [currentSubId, setCurrentSubId] = useState<string | null>(null);
+
+  const { registerPlayer, unregisterPlayer } = useVideoContext();
 
   useEffect(() => {
     loadParticipants();
@@ -231,7 +239,12 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
         try {
           const res = await ipcSafe.invoke('get-raw-subtitles', currentEpisode.subPath);
           if (res && res.lines) {
-            setSubLines(res.lines);
+            const processedLines = res.lines.map((l: any) => ({
+              ...l,
+              startSec: typeof l.start === 'number' ? l.start : parseAssTime(l.start || ''),
+              endSec: typeof l.end === 'number' ? l.end : parseAssTime(l.end || '')
+            })).sort((a: any, b: any) => a.startSec - b.startSec);
+            setSubLines(processedLines);
           }
         } catch (e) {
           console.error('Failed to load subs for QA', e);
@@ -245,22 +258,20 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
   useEffect(() => {
     if (subLines.length === 0) return;
 
-    // Find the last subtitle that has started
-    const sortedSubs = [...subLines].sort((a, b) => {
-      const startA = typeof a.start === 'number' ? a.start : parseAssTime(a.start || '');
-      const startB = typeof b.start === 'number' ? b.start : parseAssTime(b.start || '');
-      return startA - startB;
-    });
-
-    const lastStartedSub = [...sortedSubs].reverse().find(l => {
-      const start = typeof l.start === 'number' ? l.start : parseAssTime(l.start || '');
-      return currentTime >= start;
-    });
+    // subLines is already sorted by startSec
+    let lastStartedSub = null;
+    for (let i = subLines.length - 1; i >= 0; i--) {
+      if (currentTime >= subLines[i].startSec) {
+        lastStartedSub = subLines[i];
+        break;
+      }
+    }
 
     if (lastStartedSub) {
       const aliases: Record<string, string> = JSON.parse(currentEpisode?.project?.characterAliases || '{}');
       const mainName = aliases[lastStartedSub.name] || lastStartedSub.name;
       setCurrentCharacter(mainName);
+      setCurrentSubId(lastStartedSub.id || lastStartedSub.index?.toString() || null);
       
       // Find dubber nickname for this character
       const assignment = currentEpisode?.assignments?.find(a => a.characterName.toLowerCase() === mainName.toLowerCase());
@@ -271,8 +282,7 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
       }
 
       // Only show text if we are within the subtitle duration
-      const end = typeof lastStartedSub.end === 'number' ? lastStartedSub.end : parseAssTime(lastStartedSub.end || '');
-      if (currentTime <= end) {
+      if (currentTime <= lastStartedSub.endSec) {
         setCurrentSubtitleText(lastStartedSub.text);
       } else {
         setCurrentSubtitleText(null);
@@ -287,7 +297,7 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
   const selectedTrack = tracks.find(t => t.id === selectedTrackId);
 
   useEffect(() => {
-    if (!containerRef.current || !selectedTrack?.fileUrl) {
+    if (!containerRef.current || !selectedTrack || selectedTrack.files.length === 0) {
       if (wavesurferRef.current) {
         wavesurferRef.current.destroy();
         wavesurferRef.current = null;
@@ -309,6 +319,9 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
       height: 100,
       normalize: true,
     });
+
+    // Initialize regions plugin
+    regionsRef.current = wavesurferRef.current.registerPlugin(RegionsPlugin.create());
 
     const selectedFile = selectedTrack.files.find(f => f.id === selectedTrack.selectedFileId) || selectedTrack.files[0];
     if (!selectedFile) return;
@@ -334,12 +347,14 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
     wavesurferRef.current.on('pause', () => setIsPlaying(false));
 
     return () => wavesurferRef.current?.destroy();
-  }, [selectedTrackId, selectedTrack?.fileUrl]);
+  }, [selectedTrackId, selectedTrack?.files]);
 
-  const togglePlay = () => {
+  const togglePlay = useCallback(() => {
     const newPlaying = !isPlaying;
     setIsPlaying(newPlaying);
     
+    const time = wavesurferRef.current?.getCurrentTime() || 0;
+
     if (wavesurferRef.current) {
       if (newPlaying) wavesurferRef.current.play();
       else wavesurferRef.current.pause();
@@ -353,45 +368,43 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
     Object.values(audioRefs.current).forEach(audio => {
       if (audio instanceof HTMLAudioElement) {
         if (newPlaying) {
-          audio.currentTime = currentTime;
+          audio.currentTime = time;
           audio.play().catch(() => {});
         } else {
           audio.pause();
         }
       }
     });
-  };
+  }, [isPlaying]);
 
-  const handlePause = () => {
-    setIsPlaying(false);
-    if (wavesurferRef.current) wavesurferRef.current.pause();
-    if (videoRef.current) videoRef.current.pause();
-    Object.values(audioRefs.current).forEach(audio => {
-      if (audio instanceof HTMLAudioElement) audio.pause();
+  const seekToNext = useCallback(() => {
+    if (subLines.length === 0) return;
+
+    const nextSub = subLines.find(l => {
+      return l.startSec > currentTime + 0.1; // Add a small buffer
     });
-  };
 
-  const handleStop = () => {
-    setIsPlaying(false);
-    setCurrentTime(0);
-    if (wavesurferRef.current) {
-      wavesurferRef.current.pause();
-      wavesurferRef.current.setTime(0);
-    }
-    if (videoRef.current) {
-      videoRef.current.pause();
-      videoRef.current.currentTime = 0;
-    }
-    Object.values(audioRefs.current).forEach(audio => {
-      if (audio instanceof HTMLAudioElement) {
-        audio.pause();
-        audio.currentTime = 0;
+    if (nextSub) {
+      const nextTime = nextSub.startSec;
+      
+      if (wavesurferRef.current) {
+        wavesurferRef.current.setTime(nextTime);
       }
-    });
-  };
+      if (videoRef.current) {
+        videoRef.current.currentTime = nextTime;
+      }
+      setCurrentTime(nextTime);
+    }
+  }, [subLines, currentTime]);
 
-  const handleAddComment = async () => {
-    if (!newComment.trim() || !currentEpisode) return;
+  useEffect(() => {
+    registerPlayer({ togglePlayPause: togglePlay, seekToNext });
+    return () => unregisterPlayer();
+  }, [registerPlayer, unregisterPlayer, togglePlay, seekToNext]);
+
+  const handleAddComment = useCallback(async (textOverride?: string) => {
+    const commentText = textOverride || newComment;
+    if (!commentText.trim() || !currentEpisode) return;
 
     // Use selected track if available, otherwise try to auto-detect
     let targetTrackId = selectedTrackId === 'all' ? null : selectedTrackId;
@@ -425,9 +438,10 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
 
     const comment: Comment = {
       id: Math.random().toString(36).substr(2, 9),
-      text: newComment,
+      text: commentText,
       timestamp: currentTime,
-      author: 'Куратор'
+      author: 'Куратор',
+      subId: currentSubId || undefined
     };
 
     // Update local state immediately for responsiveness
@@ -440,7 +454,7 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
     );
     
     setTracks(updatedTracks);
-    setNewComment('');
+    if (!textOverride) setNewComment('');
 
     // Save to DB
     try {
@@ -479,6 +493,128 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
     } catch (error) {
       console.error('Save comment error:', error);
     }
+  }, [newComment, currentEpisode, selectedTrackId, tracks, currentCharacter, currentTime, currentSubId, onRefresh]);
+
+  const detectSilence = async () => {
+    if (!wavesurferRef.current || !regionsRef.current) return;
+    
+    setIsAnalyzingSilence(true);
+    regionsRef.current.clearRegions();
+    
+    try {
+      const buffer = wavesurferRef.current.getDecodedData();
+      if (!buffer) return;
+      
+      const channelData = buffer.getChannelData(0);
+      const sampleRate = buffer.sampleRate;
+      const silenceRegions: { start: number; end: number }[] = [];
+      
+      let isSilence = false;
+      let silenceStart = 0;
+      
+      // Analyze in chunks for performance
+      const chunkSize = Math.floor(sampleRate * 0.1); // 100ms chunks
+      for (let i = 0; i < channelData.length; i += chunkSize) {
+        let maxAmp = 0;
+        for (let j = 0; j < chunkSize && i + j < channelData.length; j++) {
+          maxAmp = Math.max(maxAmp, Math.abs(channelData[i + j]));
+        }
+        
+        const time = i / sampleRate;
+        
+        if (maxAmp < silenceThreshold) {
+          if (!isSilence) {
+            isSilence = true;
+            silenceStart = time;
+          }
+        } else {
+          if (isSilence) {
+            isSilence = false;
+            // Only count as silence if it's longer than 0.5s
+            if (time - silenceStart > 0.5) {
+              silenceRegions.push({ start: silenceStart, end: time });
+            }
+          }
+        }
+      }
+      
+      // Add regions to wavesurfer
+      silenceRegions.forEach(region => {
+        regionsRef.current.addRegion({
+          start: region.start,
+          end: region.end,
+          color: 'rgba(255, 0, 0, 0.2)',
+          drag: false,
+          resize: false,
+          content: 'Silence'
+        });
+      });
+      
+    } catch (e) {
+      console.error('Silence detection error', e);
+    } finally {
+      setIsAnalyzingSilence(false);
+    }
+  };
+
+  // Hotkeys for instant edit
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Ignore if typing in an input
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+
+      if (e.key.toLowerCase() === 'f') { // 'F' for Fix
+        e.preventDefault();
+        const text = currentSubtitleText ? `Правка: ${currentSubtitleText}` : 'Правка';
+        handleAddComment(text);
+      }
+      
+      if (e.key === ' ') {
+        e.preventDefault();
+        togglePlay();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [currentTime, currentSubtitleText, currentSubId, togglePlay, handleAddComment]);
+
+  // Sync wavesurfer with video when scrubbing
+  useEffect(() => {
+    if (!wavesurferRef.current || isPlaying) return;
+    
+    const wsTime = wavesurferRef.current.getCurrentTime();
+    if (Math.abs(wsTime - currentTime) > 0.05) {
+      wavesurferRef.current.setTime(currentTime);
+    }
+  }, [currentTime, isPlaying]);
+
+  const handlePause = () => {
+    setIsPlaying(false);
+    if (wavesurferRef.current) wavesurferRef.current.pause();
+    if (videoRef.current) videoRef.current.pause();
+    Object.values(audioRefs.current).forEach(audio => {
+      if (audio instanceof HTMLAudioElement) audio.pause();
+    });
+  };
+
+  const handleStop = () => {
+    setIsPlaying(false);
+    setCurrentTime(0);
+    if (wavesurferRef.current) {
+      wavesurferRef.current.pause();
+      wavesurferRef.current.setTime(0);
+    }
+    if (videoRef.current) {
+      videoRef.current.pause();
+      videoRef.current.currentTime = 0;
+    }
+    Object.values(audioRefs.current).forEach(audio => {
+      if (audio instanceof HTMLAudioElement) {
+        audio.pause();
+        audio.currentTime = 0;
+      }
+    });
   };
 
   const handleGenerateFixesMessage = () => {
@@ -670,6 +806,7 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
       
       const newUpload = {
         id: Math.random().toString(36).substr(2, 9),
+        episodeId: currentEpisode.id,
         type,
         path: res.data.path,
         uploadedById: trackId,
@@ -776,6 +913,13 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
                         {isPlaying ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5 fill-current ml-0.5" />}
                       </button>
                       <button 
+                        onClick={seekToNext} 
+                        className="p-2 bg-white/10 hover:bg-white/20 rounded-full text-white transition-all"
+                        title="К следующей реплике (Стрелка вправо)"
+                      >
+                        <SkipForward className="w-5 h-5" />
+                      </button>
+                      <button 
                         onClick={handleStop} 
                         className="p-2 bg-white/10 hover:bg-white/20 rounded-full text-white transition-all"
                         title="Стоп"
@@ -869,7 +1013,7 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
                       className="bg-neutral-800 border border-neutral-700 text-white rounded-lg px-4 py-2 w-80 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
                     />
                     <button 
-                      onClick={handleAddComment}
+                      onClick={() => handleAddComment()}
                       className="px-6 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors font-bold"
                     >
                       Отправить
@@ -912,6 +1056,13 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
                       >
                         {isPlaying ? <Pause className="w-10 h-10" /> : <Play className="w-10 h-10 fill-current ml-1" />}
                       </button>
+                      <button 
+                        onClick={seekToNext} 
+                        className="p-3 bg-white/10 hover:bg-white/20 rounded-full backdrop-blur-md text-white transition-all"
+                        title="К следующей реплике (Стрелка вправо)"
+                      >
+                        <SkipForward className="w-6 h-6" />
+                      </button>
                     </div>
                     <div className="flex items-center gap-2 bg-black/60 px-4 py-2 rounded-full backdrop-blur-md">
                       <Clock className="w-4 h-4 text-blue-400" />
@@ -935,6 +1086,14 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
                         </div>
                       </div>
                       <div className="flex gap-2">
+                        <button 
+                          onClick={detectSilence}
+                          disabled={isAnalyzingSilence}
+                          className={`p-2 rounded-lg transition-colors ${isAnalyzingSilence ? 'bg-neutral-800 text-neutral-600' : 'bg-neutral-800 text-neutral-400 hover:text-blue-400'}`}
+                          title="Детектор тишины"
+                        >
+                          <Scissors className={`w-5 h-5 ${isAnalyzingSilence ? 'animate-pulse' : ''}`} />
+                        </button>
                         <button 
                           onClick={() => handleStatusChange(selectedTrack.id, 'approved')}
                           className={`p-2 rounded-lg transition-colors ${selectedTrack.status === 'approved' ? 'bg-green-600 text-white' : 'bg-neutral-800 text-neutral-400 hover:text-green-400'}`}
@@ -1077,7 +1236,7 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
                       className="bg-neutral-800 border border-neutral-700 text-white rounded-lg px-4 py-2 w-80 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
                     />
                     <button 
-                      onClick={handleAddComment}
+                      onClick={() => handleAddComment()}
                       className="px-6 py-2 bg-neutral-800 hover:bg-neutral-700 text-white rounded-lg transition-colors"
                     >
                       Отправить
