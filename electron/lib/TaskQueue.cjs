@@ -149,6 +149,18 @@ class TaskQueue extends EventEmitter {
   }
 
   /**
+   * Abort all running tasks
+   */
+  abortAll() {
+    log.info('TaskQueue: Aborting all tasks');
+    for (const taskId of this.activeTasks.keys()) {
+      this.abort(taskId);
+    }
+    this.queue = [];
+    this.emit('queue-updated', this.getTasksSummary());
+  }
+
+  /**
    * Get a summary of all tasks for the UI
    */
   getTasksSummary() {

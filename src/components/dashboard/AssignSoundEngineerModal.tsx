@@ -37,7 +37,7 @@ export default function AssignSoundEngineerModal({ isOpen, onClose, participants
               className="w-full bg-neutral-950 border border-neutral-800 text-white rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500/50"
             >
               <option value="">Выберите звукорежиссера</option>
-              {participants.map((p, idx) => (
+              {participants.filter(p => p.roles?.includes('SOUND_ENGINEER')).map((p, idx) => (
                 <option key={(p.id || 'p') + idx} value={p.id}>{p.nickname}</option>
               ))}
             </select>

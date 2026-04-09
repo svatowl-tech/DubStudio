@@ -1,15 +1,16 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import WaveSurfer from 'wavesurfer.js';
-import RegionsPlugin from 'wavesurfer.js/dist/plugins/regions.esm.js';
-import { Play, Pause, CheckCircle, XCircle, AlertCircle, MessageSquare, Volume2, Check, X, Activity, User, Clock, FileAudio, Send, Video, Trash2, Mic, Sparkles, Save, SkipForward, Scissors, Zap } from 'lucide-react';
+import { Play, Pause, CheckCircle, XCircle, AlertCircle, MessageSquare, Volume2, Check, X, Activity, User, Clock, FileAudio, Send, Video, Trash2, Mic, Sparkles, Save, SkipForward, Scissors, Zap, VolumeX, Volume1 } from 'lucide-react';
 import { ipcSafe } from '../lib/ipcSafe';
 import { Episode, RoleAssignment, Participant } from '../types';
 import { sanitizeFolderName } from '../lib/pathUtils';
+import { TrackWaveform } from './qa/TrackWaveform';
 import { TrackSidebar } from './qa/TrackSidebar';
 import { generateFixesIssuedMessage, generateStatusMessage } from '../lib/templates';
 import { getParticipants } from '../services/dbService';
 import { ExportModal } from './ExportModal';
 import { useVideoContext } from '../contexts/VideoContext';
+import WaveSurfer from 'wavesurfer.js';
+import RegionsPlugin from 'wavesurfer.js/dist/plugins/regions.js';
 
 interface QAPanelProps {
   currentEpisode: Episode | null;
@@ -36,7 +37,9 @@ interface Comment {
 
 export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
   const [tracks, setTracks] = useState<Track[]>([]);
-  const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
+  const [mutedTracks, setMutedTracks] = useState<Set<string>>(new Set());
+  const [soloTrack, setSoloTrack] = useState<string | null>(null);
+  const [commentModal, setCommentModal] = useState<{ isOpen: boolean, region: any } | null>(null);
   const [newComment, setNewComment] = useState('');
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -58,8 +61,8 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
   const [bakeStatus, setBakeStatus] = useState('');
   const [isAnalyzingSilence, setIsAnalyzingSilence] = useState(false);
   const [silenceThreshold, setSilenceThreshold] = useState(0.01); // Default threshold
-  const regionsRef = useRef<any>(null);
   const [currentSubId, setCurrentSubId] = useState<string | null>(null);
+  const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
 
   const { registerPlayer, unregisterPlayer } = useVideoContext();
 
@@ -84,6 +87,7 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
   };
 
   const wavesurferRef = useRef<WaveSurfer | null>(null);
+  const regionsRef = useRef<any>(null);
   const audioRefs = useRef<Record<string, HTMLAudioElement>>({});
   const [audioRefsUpdated, setAudioRefsUpdated] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -156,13 +160,13 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
       }
 
       const selectedFile = track.files.find(f => f.id === track.selectedFileId) || track.files[0];
-      if (selectedFile && !audioRefs.current[track.id]) {
+      if (selectedFile && selectedFile.path && !audioRefs.current[track.id]) {
         const audioUrl = selectedFile.path.startsWith('file://') || selectedFile.path.startsWith('http') ? selectedFile.path : `file://${selectedFile.path}`;
         const audio = new Audio(audioUrl);
         audio.volume = volumes[track.id] ?? 0.8;
         audioRefs.current[track.id] = audio;
         updated = true;
-      } else if (selectedFile && audioRefs.current[track.id]) {
+      } else if (selectedFile && selectedFile.path && audioRefs.current[track.id]) {
         const audioUrl = selectedFile.path.startsWith('file://') || selectedFile.path.startsWith('http') ? selectedFile.path : `file://${selectedFile.path}`;
         // Update source if it changed
         if (audioRefs.current[track.id].src !== audioUrl) {
@@ -226,7 +230,19 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
     });
     
     const mappedTracks = Object.values(dubberTracks);
-    setTracks(mappedTracks);
+    
+    // Add original track
+    const originalTrack: Track = {
+      id: 'original',
+      participant: 'Оригинал',
+      character: 'Оригинал',
+      status: 'approved',
+      files: [{ id: 'orig', path: currentEpisode.rawPath, createdAt: '', type: 'DUBBER_FILE' }],
+      selectedFileId: 'orig',
+      comments: []
+    };
+    
+    setTracks([originalTrack, ...mappedTracks]);
     if (mappedTracks.length > 0 && !selectedTrackId) {
       setSelectedTrackId(mappedTracks[0].id);
     }
@@ -295,59 +311,6 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
   }, [currentTime, subLines, currentEpisode?.project?.characterAliases, currentEpisode?.assignments]);
 
   const selectedTrack = tracks.find(t => t.id === selectedTrackId);
-
-  useEffect(() => {
-    if (!containerRef.current || !selectedTrack || selectedTrack.files.length === 0) {
-      if (wavesurferRef.current) {
-        wavesurferRef.current.destroy();
-        wavesurferRef.current = null;
-      }
-      return;
-    }
-
-    if (wavesurferRef.current) {
-      wavesurferRef.current.destroy();
-    }
-
-    wavesurferRef.current = WaveSurfer.create({
-      container: containerRef.current,
-      waveColor: '#3b82f6',
-      progressColor: '#1d4ed8',
-      cursorColor: '#ffffff',
-      barWidth: 2,
-      barGap: 3,
-      height: 100,
-      normalize: true,
-    });
-
-    // Initialize regions plugin
-    regionsRef.current = wavesurferRef.current.registerPlugin(RegionsPlugin.create());
-
-    const selectedFile = selectedTrack.files.find(f => f.id === selectedTrack.selectedFileId) || selectedTrack.files[0];
-    if (!selectedFile) return;
-
-    const audioUrl = selectedFile.path.startsWith('file://') || selectedFile.path.startsWith('http') ? selectedFile.path : `file://${selectedFile.path}`;
-    wavesurferRef.current.load(audioUrl);
-
-    wavesurferRef.current.on('ready', () => {
-      setDuration(wavesurferRef.current?.getDuration() || 0);
-    });
-
-    wavesurferRef.current.on('audioprocess', () => {
-      const time = wavesurferRef.current?.getCurrentTime() || 0;
-      setCurrentTime(time);
-      
-      // Throttle video sync
-      if (videoRef.current && Math.abs(videoRef.current.currentTime - time) > 0.1) {
-        videoRef.current.currentTime = time;
-      }
-    });
-
-    wavesurferRef.current.on('play', () => setIsPlaying(true));
-    wavesurferRef.current.on('pause', () => setIsPlaying(false));
-
-    return () => wavesurferRef.current?.destroy();
-  }, [selectedTrackId, selectedTrack?.files]);
 
   const togglePlay = useCallback(() => {
     const newPlaying = !isPlaying;
@@ -681,6 +644,7 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
       if (removeListener) removeListener();
     }
   };
+
 
   const handleDeleteComment = async (trackId: string, commentId: string) => {
     if (!currentEpisode) return;
@@ -1189,60 +1153,40 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
               </div>
 
               {/* Waveform Section */}
-              <div className="bg-neutral-900 border border-neutral-800 rounded-xl p-6">
-                <div ref={containerRef} className="mb-4" />
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-4">
-                    <button onClick={togglePlay} className="w-12 h-12 bg-blue-600 hover:bg-blue-500 rounded-full flex items-center justify-center text-white transition-all shadow-lg shadow-blue-500/20">
-                      {isPlaying ? <Pause className="w-6 h-6" /> : <Play className="w-6 h-6 fill-current ml-1" />}
-                    </button>
-                    <div className="flex flex-col">
-                      <div className="text-2xl font-mono text-white">
-                        {new Date(currentTime * 1000).toISOString().substr(14, 5)}
-                        <span className="text-neutral-600"> / {new Date(duration * 1000).toISOString().substr(14, 5)}</span>
+              <div className="bg-neutral-900 border border-neutral-800 rounded-xl p-6 space-y-4">
+                {tracks.map(track => (
+                  <div key={track.id} className="bg-neutral-800/50 p-4 rounded-lg border border-neutral-700/50">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="font-bold text-white">{track.participant} ({track.character})</span>
+                      <div className="flex gap-2">
+                        <button onClick={() => setMutedTracks(prev => {
+                          const next = new Set(prev);
+                          if (next.has(track.id)) next.delete(track.id);
+                          else next.add(track.id);
+                          return next;
+                        })} className={`p-1 rounded ${mutedTracks.has(track.id) ? 'text-red-500' : 'text-neutral-400'}`}>
+                          {mutedTracks.has(track.id) ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+                        </button>
+                        <button onClick={() => setSoloTrack(prev => prev === track.id ? null : track.id)} className={`p-1 rounded ${soloTrack === track.id ? 'text-blue-500' : 'text-neutral-400'}`}>
+                          <Activity className="w-4 h-4" />
+                        </button>
                       </div>
-                      {currentCharacter && (
-                        <div className="flex flex-col">
-                          <div className="text-[10px] font-bold text-blue-400 uppercase tracking-widest flex items-center gap-1">
-                            <User className="w-3 h-3" />
-                            {currentDubberNickname ? `${currentDubberNickname} (${currentCharacter})` : currentCharacter}
-                          </div>
-                          {currentSubtitleText && (
-                            <div className="text-[9px] text-neutral-500 italic line-clamp-1">
-                              "{currentSubtitleText}"
-                            </div>
-                          )}
-                        </div>
-                      )}
                     </div>
-                  </div>
-                  <div className="flex gap-2">
-                    <input 
-                      type="text" 
-                      value={newComment}
-                      onChange={(e) => {
-                        setNewComment(e.target.value);
-                        if (isPlaying && e.target.value.length > 0) {
-                          handlePause(); // Auto-pause when typing
-                        }
+                    <TrackWaveform 
+                      track={track}
+                      currentTime={currentTime}
+                      isPlaying={isPlaying}
+                      subLines={subLines}
+                      onTimeUpdate={setCurrentTime}
+                      onPlayPause={togglePlay}
+                      volume={soloTrack && soloTrack !== track.id ? 0 : (mutedTracks.has(track.id) ? 0 : (volumes[track.id] ?? 0.8))}
+                      isMuted={isMuted}
+                      onRegionClick={(region) => {
+                        setCommentModal({ isOpen: true, region });
                       }}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') handleAddComment();
-                        if (e.key === ' ') {
-                          e.stopPropagation(); // Prevent space from toggling play when typing
-                        }
-                      }}
-                      placeholder="Добавить комментарий на этой секунде..."
-                      className="bg-neutral-800 border border-neutral-700 text-white rounded-lg px-4 py-2 w-80 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
                     />
-                    <button 
-                      onClick={() => handleAddComment()}
-                      className="px-6 py-2 bg-neutral-800 hover:bg-neutral-700 text-white rounded-lg transition-colors"
-                    >
-                      Отправить
-                    </button>
                   </div>
-                </div>
+                ))}
               </div>
             </div>
           </div>
@@ -1253,6 +1197,29 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
         )}
       </div>
     </div>
+
+      {/* Comment Modal */}
+      {commentModal?.isOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50">
+          <div className="bg-neutral-900 p-6 rounded-lg border border-neutral-700 w-96">
+            <h3 className="text-white font-bold mb-4">Добавить правку</h3>
+            <input 
+              type="text" 
+              value={newComment}
+              onChange={(e) => setNewComment(e.target.value)}
+              className="bg-neutral-800 border border-neutral-700 text-white rounded-lg px-4 py-2 w-full mb-4"
+              placeholder="Введите комментарий..."
+            />
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setCommentModal(null)} className="text-neutral-400">Отмена</button>
+              <button onClick={() => {
+                handleAddComment();
+                setCommentModal(null);
+              }} className="bg-blue-600 text-white px-4 py-2 rounded">Сохранить</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Export Modal */}
       {isExportModalOpen && currentEpisode && (

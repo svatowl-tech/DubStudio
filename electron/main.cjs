@@ -6,6 +6,7 @@ const log = require('electron-log');
 const { autoUpdater } = require('electron-updater');
 const DataManager = require('./lib/DataManager.cjs');
 const TaskQueue = require('./lib/TaskQueue.cjs');
+const MediaWorker = require('./lib/MediaWorker.cjs');
 
 let dataManager;
 let taskQueue;
@@ -29,6 +30,7 @@ ipcMain.on('log-error', (event, error) => {
   log.error('Renderer Error:', error);
 });
 
+const { extractHardsub } = require('./services/ocrService.cjs');
 const { bakeSubtitles, transcodeToMp4, muxRelease, takeScreenshot, getVideoMetadata, setCustomFfmpegPath, getActiveProcesses } = require('./services/ffmpegService.cjs');
 const { getRawSubtitles, saveRawSubtitles, saveTranslatedSubtitles, splitSubsByActor, splitSubsByDubber, exportFullAssWithRoles, extractSignsAss } = require('./services/subtitleService.cjs');
 const { translateText } = require('./services/translateService.cjs');
@@ -40,6 +42,13 @@ const { registerFfmpegHandlers } = require('./handlers/ffmpegHandlers.cjs');
 
 let mainWindow = null;
 let debugWindow = null;
+
+app.on('will-quit', () => {
+  log.info('Application quitting, aborting all tasks...');
+  if (taskQueue) {
+    taskQueue.abortAll();
+  }
+});
 
 function createDebugWindow() {
   debugWindow = new BrowserWindow({
@@ -112,14 +121,14 @@ ipcMain.handle('enqueue-ffmpeg-task', async (event, { type, payload, metadata })
       case 'bake-subtitles': {
         const { videoPath, assPath, outputPath, options } = payload;
         taskFn = (id, v, a, o, opts, onProgress, onCommand) => 
-          bakeSubtitles(v, a, o, onProgress, onCommand, opts); 
+          MediaWorker.execute(bakeSubtitles, [v, a, o, opts], onProgress, onCommand); 
         args = [videoPath, assPath, outputPath, options];
         break;
       }
       case 'transcode-video': {
         const { videoPath, outputPath, options } = payload;
         taskFn = (id, v, o, opts, onProgress, onCommand) => 
-          transcodeToMp4(v, o, onProgress, onCommand, opts); 
+          MediaWorker.execute(transcodeToMp4, [v, o, opts], onProgress, onCommand); 
         args = [videoPath, outputPath, options];
         break;
       }
@@ -156,7 +165,7 @@ ipcMain.handle('enqueue-ffmpeg-task', async (event, { type, payload, metadata })
         
         taskFn = async (id, v, a, s, o, onProgress, onCommand) => {
           try {
-            const res = await muxRelease(v, a, s, o, onProgress, onCommand);
+            const res = await MediaWorker.execute(muxRelease, [v, a, s, o], onProgress, onCommand);
             if (s) await fs.unlink(s).catch(() => {});
             return res;
           } catch (err) {
@@ -436,6 +445,12 @@ ipcMain.handle('get-gpus', async () => {
 // Handlers are registered in registerFfmpegHandlers
 
 // Subtitle Handlers
+ipcMain.handle('extract-hardsub', async (event, { videoPath, outputAssPath }) => {
+  return await extractHardsub(videoPath, outputAssPath, (percent) => {
+    event.sender.send('ffmpeg-progress', percent);
+  });
+});
+
 ipcMain.handle('get-raw-subtitles', async (event, assFilePath) => {
   return await getRawSubtitles(assFilePath);
 });

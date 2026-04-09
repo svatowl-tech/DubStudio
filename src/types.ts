@@ -96,3 +96,21 @@ export interface Task {
   startedAt: string | null;
   completedAt: string | null;
 }
+
+export interface Comment {
+  id: string;
+  text: string;
+  timestamp: number;
+  author: string;
+  subId?: string;
+}
+
+export interface Track {
+  id: string;
+  participant: string;
+  character: string;
+  status: 'pending' | 'approved' | 'rejected' | 'fixes_needed';
+  files: { id: string; path: string; createdAt: string; type?: 'DUBBER_FILE' | 'FIXES' }[];
+  selectedFileId?: string;
+  comments: Comment[];
+}

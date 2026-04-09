@@ -20,6 +20,7 @@ import {
   AlertCircle,
 } from "lucide-react";
 import TranslatePanel from "./TranslatePanel";
+import AssOcrPanel from "./AssOcrPanel";
 import { Participant, Episode, RoleAssignment } from "../types";
 import { sanitizeFolderName } from "../lib/pathUtils";
 import { getParticipants } from "../services/dbService";
@@ -55,7 +56,7 @@ export default function AssEditor({
   const [status, setStatus] = useState("");
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [isSaving, setIsSaving] = useState(false);
-  const [activeTab, setActiveTab] = useState<"roles" | "raw" | "translate">("roles");
+  const [activeTab, setActiveTab] = useState<"roles" | "raw" | "translate" | "ocr">("roles");
   const [linkingCharacter, setLinkingCharacter] = useState<string | null>(null);
   const lastAnalyzedEpisodeId = React.useRef<string | null>(null);
 
@@ -141,24 +142,32 @@ export default function AssEditor({
       
       // Also update global mapping if needed
       if (currentEpisode.projectId && currentEpisode.project) {
-        const currentMapping: {characterName: string, dubberId: string}[] = currentAssignments
+        const currentMapping: {characterName: string, dubberId: string, isMain?: boolean}[] = currentAssignments
           .filter(a => a.dubberId)
-          .map(a => ({ characterName: a.characterName, dubberId: a.dubberId }));
+          .map(a => ({ 
+            characterName: a.characterName, 
+            dubberId: a.dubberId,
+            isMain: a.isMain
+          }));
         
         // Merge with existing global mapping
         const existingMappingRaw = currentEpisode.project.globalMapping || '[]';
-        const existingMapping: {characterName: string, dubberId: string}[] = Array.isArray(JSON.parse(existingMappingRaw))
+        const existingMapping: {characterName: string, dubberId: string, isMain?: boolean}[] = Array.isArray(JSON.parse(existingMappingRaw))
           ? JSON.parse(existingMappingRaw)
-          : Object.entries(JSON.parse(existingMappingRaw)).map(([k, v]) => ({ characterName: k, dubberId: v as string }));
+          : Object.entries(JSON.parse(existingMappingRaw)).map(([k, v]) => ({ characterName: k, dubberId: v as string, isMain: undefined }));
 
         const mergedMapping = [...existingMapping];
         currentMapping.forEach(m => {
-          const exists = mergedMapping.some(em => em.characterName === m.characterName && em.dubberId === m.dubberId);
-          if (!exists) {
+          const existingIdx = mergedMapping.findIndex(em => em.characterName === m.characterName && em.dubberId === m.dubberId);
+          if (existingIdx !== -1) {
+            // Update existing entry
+            mergedMapping[existingIdx].isMain = m.isMain;
+          } else {
             // Check if there's an empty entry for this character to fill
             const emptyIdx = mergedMapping.findIndex(em => em.characterName === m.characterName && !em.dubberId);
             if (emptyIdx !== -1) {
               mergedMapping[emptyIdx].dubberId = m.dubberId;
+              mergedMapping[emptyIdx].isMain = m.isMain;
             } else {
               // Add as a new entry to support multiple dubbers
               mergedMapping.push(m);
@@ -208,13 +217,13 @@ export default function AssEditor({
         setActors(mainActors);
 
         const globalMappingRaw = currentEpisode?.project?.globalMapping || '[]';
-        let globalMapping: {characterName: string, dubberId: string}[] = [];
+        let globalMapping: {characterName: string, dubberId: string, isMain?: boolean}[] = [];
         try {
           const parsed = JSON.parse(globalMappingRaw);
           if (Array.isArray(parsed)) {
             globalMapping = parsed;
           } else if (parsed && typeof parsed === 'object') {
-            globalMapping = Object.entries(parsed).map(([k, v]) => ({ characterName: k, dubberId: v as string }));
+            globalMapping = Object.entries(parsed).map(([k, v]) => ({ characterName: k, dubberId: v as string, isMain: undefined }));
           }
         } catch (e) {
           console.error("Error parsing global mapping:", e);
@@ -223,10 +232,14 @@ export default function AssEditor({
         const existingNames = new Set(currentAssignments.map(a => a.characterName));
         const toAdd = mainActors.filter((name: string) => !existingNames.has(name));
         
-        const updatedPrev = currentAssignments.map(a => ({
-          ...a,
-          lineCount: lineCounts[a.characterName] || 0
-        }));
+        const updatedPrev = currentAssignments.map(a => {
+          const mapping = globalMapping.find(m => m.characterName === a.characterName && m.dubberId === a.dubberId);
+          return {
+            ...a,
+            lineCount: lineCounts[a.characterName] || 0,
+            isMain: mapping?.isMain !== undefined ? mapping.isMain : a.isMain
+          };
+        });
 
         let finalAssignments: RoleAssignment[] = [];
         if (toAdd?.length > 0) {
@@ -234,6 +247,7 @@ export default function AssEditor({
             // Priority 1: Global mapping
             const mappingEntry = globalMapping.find(m => m.characterName === actor);
             let dubberId = mappingEntry?.dubberId || "";
+            let isMain = mappingEntry?.isMain || false;
             
             // Priority 2: Case-insensitive nickname match if no global mapping
             if (!dubberId) {
@@ -253,7 +267,8 @@ export default function AssEditor({
               dubberId: dubberId,
               dubber: dubber,
               status: "PENDING" as const,
-              lineCount: lineCounts[actor] || 0
+              lineCount: lineCounts[actor] || 0,
+              isMain: isMain
             };
           });
 
@@ -283,13 +298,13 @@ export default function AssEditor({
 
     if (Array.isArray(currentEpisode.assignments) && currentEpisode.assignments.length > 0) {
       // Sync with global mapping for unassigned characters
-      let globalMapping: {characterName: string, dubberId: string}[] = [];
+      let globalMapping: {characterName: string, dubberId: string, isMain?: boolean}[] = [];
       try {
         const raw = currentEpisode.project?.globalMapping || '[]';
         const parsed = JSON.parse(raw);
         globalMapping = Array.isArray(parsed)
           ? parsed
-          : Object.entries(parsed).map(([k, v]) => ({ characterName: k, dubberId: v as string }));
+          : Object.entries(parsed).map(([k, v]) => ({ characterName: k, dubberId: v as string, isMain: undefined }));
       } catch (e) {
         console.error("Error parsing global mapping:", e);
       }
@@ -307,16 +322,23 @@ export default function AssEditor({
       const updatedAssignments = currentEpisode.assignments.map(a => {
         let newA = { ...a };
         
+        const mappings = globalMapping.filter(m => m.characterName === newA.characterName && m.dubberId);
+        
         if (!newA.dubberId) {
-          const mappings = globalMapping.filter(m => m.characterName === newA.characterName && m.dubberId);
           const assignedSet = assignedDubbersPerCharacter[newA.characterName] || new Set();
-          
           const availableMapping = mappings.find(m => !assignedSet.has(m.dubberId));
           
           if (availableMapping) {
             newA.dubberId = availableMapping.dubberId;
+            newA.isMain = availableMapping.isMain !== undefined ? availableMapping.isMain : newA.isMain;
             assignedSet.add(availableMapping.dubberId);
             assignedDubbersPerCharacter[newA.characterName] = assignedSet;
+          }
+        } else {
+          // Even if assigned, sync isMain status from global mapping if available
+          const mapping = mappings.find(m => m.dubberId === newA.dubberId);
+          if (mapping && mapping.isMain !== undefined) {
+            newA.isMain = mapping.isMain;
           }
         }
 
@@ -484,7 +506,13 @@ export default function AssEditor({
       await ipcSafe.send('enqueue-ffmpeg-task', {
         type: taskType,
         payload: { 
-          episode: currentEpisode, 
+          episode: {
+            ...currentEpisode,
+            assignments: assignments.map(a => {
+              const { dubber, substitute, ...rest } = a;
+              return rest;
+            })
+          }, 
           targetDir, 
           skipConversion, 
           smartExport 
@@ -942,6 +970,18 @@ export default function AssEditor({
             <Languages className="w-4 h-4" />
             Перевод
           </button>
+          <button
+            onClick={() => setActiveTab("ocr")}
+            title="Переключиться на распознавание хардсаба"
+            className={`flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+              activeTab === "ocr"
+                ? "bg-neutral-800 text-white shadow-sm"
+                : "text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800/50"
+            }`}
+          >
+            <FileText className="w-4 h-4" />
+            Распознавание хардсаба
+          </button>
         </div>
       </div>
 
@@ -954,6 +994,8 @@ export default function AssEditor({
         </div>
       ) : activeTab === "translate" ? (
         <TranslatePanel currentEpisode={currentEpisode} />
+      ) : activeTab === "ocr" ? (
+        <AssOcrPanel currentEpisode={currentEpisode} onRefresh={onRefresh} />
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 flex-1 overflow-y-auto min-h-0 pb-4 pr-2">
           <div className="lg:col-span-1 space-y-6">

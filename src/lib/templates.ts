@@ -3,7 +3,7 @@ import { Episode, Participant } from '../types';
 export const formatDeadline = (dateStr?: string) => {
   if (!dateStr) return 'не указан';
   const date = new Date(dateStr);
-  const days = ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
+  const days = ['ВС', 'ПН', 'ВТ', 'СР', 'ЧТ', 'ПТ', 'СБ'];
   const day = days[date.getDay()];
   const dayOfMonth = date.getDate().toString().padStart(2, '0');
   const month = (date.getMonth() + 1).toString().padStart(2, '0');
@@ -24,7 +24,7 @@ export const generateStartEpisodeMessage = (episode: Episode, participants: Part
   const assignedDubbers = participants.filter(p => assignedDubberIds.has(p.id));
   
   const dubberMentions = assignedDubbers.map(d => {
-    const mention = d.telegram?.startsWith('@') ? d.telegram : `@${d.telegram || d.nickname}`;
+    const mention = (d.telegram && d.telegram.startsWith('@')) ? d.telegram : `@${d.telegram || d.nickname}`;
     const count = dubberLineCounts[d.id] || 0;
     return `${d.nickname} (${mention}) — ${count} реп.`;
   }).join('\n');
@@ -81,7 +81,7 @@ export const generateFixesIssuedMessage = (episode: Episode, participants: Parti
 
   const dubberSections = dubberIds.map(id => {
     const { dubber, fixes } = dubberFixes[id];
-    const mention = dubber.telegram?.startsWith('@') ? dubber.telegram : `@${dubber.telegram || dubber.nickname}`;
+    const mention = (dubber.telegram && dubber.telegram.startsWith('@')) ? dubber.telegram : `@${dubber.telegram || dubber.nickname}`;
     
     const fixesText = fixes.map(f => {
       const characterFixes = f.comments.map(c => {
@@ -126,14 +126,14 @@ export const generateStatusMessage = (episode: Episode, participants: Participan
       return hasPending && !hasUpload;
     })
     .map(p => {
-      const mention = p.telegram?.startsWith('@') ? p.telegram : `@${p.telegram || p.nickname}`;
+      const mention = (p.telegram && p.telegram.startsWith('@')) ? p.telegram : `@${p.telegram || p.nickname}`;
       return `• ${mention}`;
     }).join('\n');
 
   const fixesMentions = assignedDubbers
     .filter(p => (episode.assignments || []).some(a => a.dubberId === p.id && a.status === 'FIXES_NEEDED'))
     .map(p => {
-      const mention = p.telegram?.startsWith('@') ? p.telegram : `@${p.telegram || p.nickname}`;
+      const mention = (p.telegram && p.telegram.startsWith('@')) ? p.telegram : `@${p.telegram || p.nickname}`;
       return `• ${mention}`;
     }).join('\n');
 
@@ -178,7 +178,7 @@ export const generateTGPostMessage = (episode: Episode, participants: Participan
 
   const seId = episode.project?.soundEngineerId;
   const se = seId ? participants.find(p => p.id === seId) : null;
-  const seMention = se ? (se.telegram?.startsWith('@') ? se.telegram : `@${se.telegram || se.nickname}`) : '@Tenmag';
+  const seMention = se ? ((se.telegram && se.telegram.startsWith('@')) ? se.telegram : `@${se.telegram || se.nickname}`) : '@Tenmag';
 
   const emoji = episode.project?.emoji || '📢';
   const releaseTypeLabel = episode.project?.releaseType === 'VOICEOVER' ? 'Закадр' : episode.project?.releaseType === 'RECAST' ? 'Рекаст' : 'Редаб';

@@ -100,9 +100,11 @@ export default function CharacterManagementModal({ isOpen, onClose, selectedProj
                           className="bg-neutral-900 border border-neutral-800 text-white rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500"
                         >
                           <option value="">Не назначен</option>
-                          {participants.map((p, pIdx) => (
-                            <option key={(p.id || 'p') + pIdx} value={p.id}>{p.nickname}</option>
-                          ))}
+                          {participants
+                            .filter(p => selectedProject.assignedDubberIds?.includes(p.id))
+                            .map((p, pIdx) => (
+                              <option key={(p.id || 'p') + pIdx} value={p.id}>{p.nickname}</option>
+                            ))}
                         </select>
                       </td>
                       <td className="px-4 py-3">

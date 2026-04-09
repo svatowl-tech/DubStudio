@@ -10,10 +10,12 @@ import CreateEpisodeModal from './dashboard/CreateEpisodeModal';
 import CharacterManagementModal from './dashboard/CharacterManagementModal';
 import AssignDubbersModal from './dashboard/AssignDubbersModal';
 import AssignSoundEngineerModal from './dashboard/AssignSoundEngineerModal';
-import { generateStartEpisodeMessage, generateStatusMessage } from '../lib/templates';
-import { sanitizeFolderName } from '../lib/pathUtils';
-import GettingStartedGuide from './GettingStartedGuide';
+import { useEpisodeSync } from './dashboard/useEpisodeSync';
 import { SIGN_KEYWORDS } from '../constants';
+import GettingStartedGuide from './GettingStartedGuide';
+import { generateStartEpisodeMessage, generateStatusMessage, formatDeadline } from '../lib/templates';
+import { sanitizeFolderName } from '../lib/pathUtils';
+import { calculateDeadline } from '../lib/dateUtils';
 
 interface DashboardProps {
   onNavigate?: (tab: string) => void;
@@ -90,105 +92,13 @@ export default function Dashboard({
   const [isHardsubEnabled, setIsHardsubEnabled] = useState(false);
 
   const selectedProject = useMemo(() => projects.find(p => p.id === selectedProjectId), [projects, selectedProjectId]);
+  const { syncEpisodeWithGlobalMapping } = useEpisodeSync(currentEpisode, selectedProject, onRefresh);
 
   useEffect(() => {
     if (currentEpisode) {
       setIsHardsubEnabled(currentEpisode.isHardsub || false);
     }
   }, [currentEpisode]);
-
-  const syncEpisodeWithGlobalMapping = useCallback(async () => {
-    if (!currentEpisode || !selectedProject) return;
-    
-    let globalMapping: any[] = [];
-    try {
-      const parsed = JSON.parse(selectedProject.globalMapping || '[]');
-      if (Array.isArray(parsed)) {
-        globalMapping = parsed;
-      } else if (parsed && typeof parsed === 'object') {
-        globalMapping = Object.entries(parsed).map(([k, v]) => ({ characterName: k, dubberId: v as string }));
-      }
-    } catch (e) {
-      console.error("Error parsing global mapping:", e);
-      return;
-    }
-
-    if (globalMapping.length === 0) return;
-
-    const existingAssignments = Array.isArray(currentEpisode.assignments) ? currentEpisode.assignments : [];
-    const updatedAssignments = [...existingAssignments];
-    let hasChanges = false;
-
-    // 1. Update existing assignments if dubber changed in global mapping (only if unassigned)
-    const assignedDubbersPerCharacter: Record<string, Set<string>> = {};
-    updatedAssignments.forEach(a => {
-      if (a.dubberId) {
-        if (!assignedDubbersPerCharacter[a.characterName]) {
-          assignedDubbersPerCharacter[a.characterName] = new Set();
-        }
-        assignedDubbersPerCharacter[a.characterName].add(a.dubberId);
-      }
-    });
-
-    updatedAssignments.forEach((as, idx) => {
-      if (!as.dubberId) {
-        const mappings = globalMapping.filter(m => m.characterName === as.characterName && m.dubberId);
-        const assignedSet = assignedDubbersPerCharacter[as.characterName] || new Set();
-        
-        const availableMapping = mappings.find(m => !assignedSet.has(m.dubberId));
-        
-        if (availableMapping) {
-          console.log("Updating assignment:", as, "to dubber:", availableMapping.dubberId);
-          updatedAssignments[idx] = { ...as, dubberId: availableMapping.dubberId };
-          assignedSet.add(availableMapping.dubberId);
-          assignedDubbersPerCharacter[as.characterName] = assignedSet;
-          hasChanges = true;
-        }
-      }
-    });
-
-    // 2. Add missing characters from global mapping that have a dubber assigned
-    // This ensures they "fall into" the dashboard even before ASS analysis
-    globalMapping.forEach(m => {
-      if (m.dubberId && !SIGN_KEYWORDS.includes(m.characterName)) {
-        const alreadyAssigned = updatedAssignments.some(as => as.characterName === m.characterName && as.dubberId === m.dubberId);
-        if (!alreadyAssigned) {
-          console.log("Adding new assignment from global mapping:", m);
-          updatedAssignments.push({
-            id: Math.random().toString(36).substring(2, 11),
-            episodeId: currentEpisode.id,
-            characterName: m.characterName,
-            dubberId: m.dubberId,
-            status: 'PENDING',
-            lineCount: 0
-          });
-          
-          if (!assignedDubbersPerCharacter[m.characterName]) {
-            assignedDubbersPerCharacter[m.characterName] = new Set();
-          }
-          assignedDubbersPerCharacter[m.characterName].add(m.dubberId);
-          
-          hasChanges = true;
-        }
-      }
-    });
-
-    if (hasChanges) {
-      console.log("Auto-syncing episode assignments with global mapping...", {
-        updatedAssignments,
-        existingAssignments
-      });
-      const res = await ipcSafe.invoke('save-episode', { 
-        ...currentEpisode, 
-        assignments: updatedAssignments 
-      });
-      if (res && res.success) {
-        onRefresh();
-      } else {
-        console.error("Failed to auto-sync episode assignments:", res?.error);
-      }
-    }
-  }, [currentEpisode, selectedProject?.globalMapping, onRefresh]);
 
   useEffect(() => {
     syncEpisodeWithGlobalMapping();
@@ -413,13 +323,14 @@ export default function Dashboard({
   };
 
   const handleCreateEpisode = async (episodeNumber: number) => {
-    if (!selectedProjectId) return;
+    if (!selectedProjectId || !selectedProject) return;
     
     const newEpisode = {
       id: Date.now().toString(),
       projectId: selectedProjectId,
       number: episodeNumber,
       status: 'UPLOAD',
+      deadline: calculateDeadline(selectedProject),
       assignments: [],
       uploads: [],
       createdAt: new Date().toISOString(),
@@ -841,6 +752,10 @@ export default function Dashboard({
                     <div className="flex items-center gap-2">
                       <Users className="w-4 h-4" />
                       <span>Даберы: <span className="text-emerald-400 font-medium">{Array.isArray(selectedProject?.assignedDubberIds) && selectedProject.assignedDubberIds.length > 0 ? selectedProject.assignedDubberIds.map(id => participants.find(p => p.id === id)?.nickname).filter(Boolean).join(', ') : 'Не назначены'}</span></span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Calendar className="w-4 h-4" />
+                      <span>Дедлайн: <span className="text-red-400 font-medium">{formatDeadline(currentEpisode.deadline)}</span></span>
                     </div>
                     <div className="flex items-center gap-2">
                       <Calendar className="w-4 h-4" />

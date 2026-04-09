@@ -15,6 +15,7 @@ const isShikimoriPlaceholder = (url: string | undefined | null) => {
 export const searchAnime = async (query: string) => {
   try {
     const result = await ipcSafe.invoke('search-anime', { query });
+    if (result && result.mocked) return [];
     
     if (result.source === 'mal') {
       return result.data.map((anime: any) => ({
@@ -56,6 +57,7 @@ export const searchAnime = async (query: string) => {
 export const getAnimeDetails = async (id: number, source: string = 'shikimori') => {
   try {
     const result = await ipcSafe.invoke('get-anime-details', { id, source });
+    if (result && result.mocked) return null;
     
     if (result.source === 'mal') {
       const anime = result.data;
@@ -105,6 +107,7 @@ export const getAnimeDetails = async (id: number, source: string = 'shikimori') 
 export const getAnimeCharacters = async (id: number, source: string = 'shikimori') => {
   try {
     const result = await ipcSafe.invoke('get-anime-characters', { id, source });
+    if (result && result.mocked) return [];
     
     if (result.source === 'mal') {
       return result.data.map((item: any) => ({
@@ -136,7 +139,11 @@ export const getAnimeCharacters = async (id: number, source: string = 'shikimori
 
 export const getNextEpisodeDate = async (title: string): Promise<string | null> => {
   try {
-    return await ipcSafe.invoke('get-next-episode-date', { title });
+    const result = await ipcSafe.invoke('get-next-episode-date', { title });
+    if (result && typeof result === 'object' && result.mocked) {
+      return null;
+    }
+    return typeof result === 'string' ? result : null;
   } catch (error) {
     console.error('Error fetching next episode date via IPC:', error);
     return null;

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { Save, Edit3, Loader2, Languages, Eye, EyeOff, AlertCircle } from "lucide-react";
 import { ipcSafe } from '../lib/ipcSafe';
 import { Episode } from "../types";
@@ -43,6 +43,7 @@ export default function RawSubtitleEditor({
   const [currentTime, setCurrentTime] = useState(0);
   const [activeLineIndex, setActiveLineIndex] = useState<number | null>(null);
   const [showSigns, setShowSigns] = useState(false);
+  const [stableNames, setStableNames] = useState<string[]>([]);
 
   // For mass assignment
   const [selectedLines, setSelectedLines] = useState<Set<number>>(new Set());
@@ -99,8 +100,26 @@ export default function RawSubtitleEditor({
     }
   }, [registerPlayer, unregisterPlayer, lines]);
 
+  const isSignLine = useCallback((line: RawSubtitleLine) => {
+    const name = (line.name || "").toLowerCase();
+    const style = (line.style || "").toLowerCase();
+    
+    const signs = ["sign", "signs", "title", "op", "ed", "song", "note", "music", "logo", "staff", "credit", "credits", "надпись", "титры", "инфо", "info"];
+    
+    const isSign = signs.some(s => {
+      if (s === 'op' || s === 'ed') {
+        const regex = new RegExp(`(^|[^a-z])${s}([^a-z]|$)`, 'i');
+        return regex.test(name) || regex.test(style);
+      }
+      return name.includes(s) || style.includes(s);
+    }) || SIGN_KEYWORDS.some(k => name.includes(k.toLowerCase()) || style.includes(k.toLowerCase()));
+
+    return isSign;
+  }, []);
+
   useEffect(() => {
     const active = lines.find(line => {
+      if (!showSigns && isSignLine(line)) return false;
       return currentTime >= line.startSec && currentTime <= line.endSec;
     });
     
@@ -111,8 +130,10 @@ export default function RawSubtitleEditor({
       if (element && !videoRef.current?.paused) {
         element.scrollIntoView({ behavior: 'smooth', block: 'center' });
       }
+    } else if (!active && activeLineIndex !== null) {
+      setActiveLineIndex(null);
     }
-  }, [currentTime, lines, activeLineIndex]);
+  }, [currentTime, lines, activeLineIndex, showSigns, isSignLine]);
 
   useEffect(() => {
     if (currentEpisode?.subPath) {
@@ -303,52 +324,48 @@ export default function RawSubtitleEditor({
     }
   })();
 
-  const uniqueNames = Array.from(
-    new Set([
-      ...lines.map((l) => l.name).filter((n) => n && n.trim() !== ""),
-      ...(Object.values(updates) as string[]).filter(
-        (n) => n && n.trim() !== "",
-      ),
-      ...projectCharacters,
-    ]),
-  ).sort();
+  const uniqueNames = useMemo(() => {
+    return Array.from(
+      new Set([
+        ...lines.map((l) => l.name).filter((n) => n && n.trim() !== ""),
+        ...(Object.values(updates) as string[]).filter(
+          (n) => n && n.trim() !== "",
+        ),
+        ...projectCharacters,
+      ]),
+    ).sort();
+  }, [lines, updates, projectCharacters]);
+
+  useEffect(() => {
+    setStableNames(prev => {
+      const next = [...prev];
+      let changed = false;
+      uniqueNames.forEach(name => {
+        if (!next.includes(name)) {
+          next.push(name);
+          changed = true;
+        }
+      });
+      return changed ? next : prev;
+    });
+  }, [uniqueNames]);
 
   const handleQuickAssign = useCallback((name: string) => {
     if (selectedLines.size > 0) {
       const newUpdates = { ...updates };
       selectedLines.forEach((index) => {
-        const line = lines.find(l => l.rawLineIndex === index);
-        const currentVal = newUpdates[index] !== undefined ? newUpdates[index] : (line?.name || "");
-        
-        if (currentVal) {
-          const names = currentVal.split(/[,;]/).map(n => n.trim()).filter(Boolean);
-          if (!names.includes(name)) {
-            newUpdates[index] = [...names, name].join('; ');
-          }
-        } else {
-          newUpdates[index] = name;
-        }
+        newUpdates[index] = name;
       });
       setUpdates(newUpdates);
       setSelectedLines(new Set());
     } else if (activeLineIndex !== null) {
       const newUpdates = { ...updates };
-      const line = lines.find(l => l.rawLineIndex === activeLineIndex);
-      const currentVal = newUpdates[activeLineIndex] !== undefined ? newUpdates[activeLineIndex] : (line?.name || "");
-      
-      if (currentVal) {
-        const names = currentVal.split(/[,;]/).map(n => n.trim()).filter(Boolean);
-        if (!names.includes(name)) {
-          newUpdates[activeLineIndex] = [...names, name].join('; ');
-        }
-      } else {
-        newUpdates[activeLineIndex] = name;
-      }
+      newUpdates[activeLineIndex] = name;
       setUpdates(newUpdates);
     } else {
       setMassName(name);
     }
-  }, [selectedLines, updates, lines, activeLineIndex]);
+  }, [selectedLines, updates, activeLineIndex]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -363,15 +380,15 @@ export default function RawSubtitleEditor({
       const key = e.key.toLowerCase();
       const index = SHORTCUT_KEYS.indexOf(key);
       
-      if (index !== -1 && index < uniqueNames.length) {
+      if (index !== -1 && index < stableNames.length) {
         e.preventDefault();
-        handleQuickAssign(uniqueNames[index]);
+        handleQuickAssign(stableNames[index]);
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [uniqueNames, handleQuickAssign]);
+  }, [stableNames, handleQuickAssign]);
 
   const handleApplyAliases = () => {
     if (!currentEpisode?.project?.characterAliases) return;
@@ -522,12 +539,12 @@ export default function RawSubtitleEditor({
         </div>
       </div>
 
-      {uniqueNames.length > 0 && (
+      {stableNames.length > 0 && (
         <div className="bg-neutral-900 border-b border-neutral-800 p-3 flex flex-wrap gap-2 items-center shrink-0">
           <span className="text-xs text-neutral-500 uppercase tracking-wider mr-2">
             Быстрый выбор:
           </span>
-          {uniqueNames.map((name, index) => (
+          {stableNames.map((name, index) => (
             <button
               key={name}
               onClick={() => handleQuickAssign(name)}
@@ -576,24 +593,7 @@ export default function RawSubtitleEditor({
           {lines
             .filter(line => {
               if (showSigns) return true;
-              const name = (line.name || "").toLowerCase();
-              const style = (line.style || "").toLowerCase();
-              const text = (line.text || "").toLowerCase();
-              
-              const signs = ["sign", "signs", "title", "op", "ed", "song", "note", "music", "logo", "staff", "credit", "credits", "надпись", "титры", "инфо", "info"];
-              
-              const isSign = signs.some(s => {
-                if (s === 'op' || s === 'ed') {
-                  const regex = new RegExp(`(^|[^a-z])${s}([^a-z]|$)`, 'i');
-                  return regex.test(name) || regex.test(style);
-                }
-                return name.includes(s) || style.includes(s);
-              }) || SIGN_KEYWORDS.some(k => name.includes(k.toLowerCase()) || style.includes(k.toLowerCase()));
-
-              // Also check if it's a technical line by style if it doesn't have a name
-              if (!name && style && isSign) return false;
-              
-              return !isSign;
+              return !isSignLine(line);
             })
             .map((line) => {
             const isSelected = selectedLines.has(line.rawLineIndex);
