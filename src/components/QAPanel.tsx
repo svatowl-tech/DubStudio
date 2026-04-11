@@ -526,13 +526,13 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
       // Ignore if typing in an input
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
 
-      if (e.key.toLowerCase() === 'f') { // 'F' for Fix
+      if (e.code === 'KeyF') { // 'F' for Fix
         e.preventDefault();
         const text = currentSubtitleText ? `Правка: ${currentSubtitleText}` : 'Правка';
         handleAddComment(text);
       }
       
-      if (e.key === ' ') {
+      if (e.code === 'Space') {
         e.preventDefault();
         togglePlay();
       }

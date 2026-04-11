@@ -496,19 +496,21 @@ export default function AssEditor({
     return () => removeListener();
   }, []);
 
-  const handleExport = async (targetDir: string, skipConversion: boolean, smartExport?: boolean) => {
+  const handleExport = async (targetDir: string, skipConversion: boolean, smartExport?: boolean, currentAssignments?: RoleAssignment[]) => {
     if (!currentEpisode) return;
     
     try {
       const taskType = exportRole === 'DABBER' ? 'export-dabber-files' : 'export-sound-engineer-files';
       const roleName = exportRole === 'DABBER' ? 'Даберам' : 'Звукорежиссеру';
       
-      await ipcSafe.send('enqueue-ffmpeg-task', {
+      const assignmentsToUse = currentAssignments || assignments;
+      
+      await ipcSafe.invoke('enqueue-ffmpeg-task', {
         type: taskType,
         payload: { 
           episode: {
             ...currentEpisode,
-            assignments: assignments.map(a => {
+            assignments: assignmentsToUse.map(a => {
               const { dubber, substitute, ...rest } = a;
               return rest;
             })
@@ -523,9 +525,10 @@ export default function AssEditor({
       });
       
       setIsExportModalOpen(false);
-      // The TaskQueuePanel will show progress
+      setStatus(`Задание на экспорт (${roleName}) добавлено в очередь.`);
     } catch (error: any) {
-      alert('Ошибка при постановке в очередь: ' + error.message);
+      console.error('Enqueue task error:', error);
+      setStatus('Ошибка при постановке в очередь: ' + error.message);
     }
   };
 
@@ -1525,7 +1528,7 @@ export default function AssEditor({
           onClose={() => setIsExportModalOpen(false)}
           episode={currentEpisode}
           role={exportRole}
-          onExport={handleExport}
+          onExport={(targetDir, skipConversion, smartExport) => handleExport(targetDir, skipConversion, smartExport, assignments)}
           isExporting={isExporting}
           progress={exportProgress}
         />

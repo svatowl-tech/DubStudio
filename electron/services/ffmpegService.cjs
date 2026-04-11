@@ -314,12 +314,23 @@ function getVideoMetadata(videoPath) {
   });
 }
 
+function extractSubtitleTrack(videoPath, outputPath, streamIndex) {
+  return new Promise((resolve, reject) => {
+    ffmpeg(videoPath)
+      .outputOptions(`-map 0:${streamIndex}`)
+      .save(outputPath)
+      .on('end', () => resolve(outputPath))
+      .on('error', (err) => reject(err));
+  });
+}
+
 module.exports = {
   bakeSubtitles,
   transcodeToMp4,
   muxRelease,
   takeScreenshot,
   getVideoMetadata,
+  extractSubtitleTrack,
   setCustomFfmpegPath,
   getActiveProcesses
 };

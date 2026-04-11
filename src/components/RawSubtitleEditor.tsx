@@ -13,6 +13,13 @@ const SHORTCUT_KEYS = [
   'z', 'x', 'c', 'v', 'b', 'n', 'm'
 ];
 
+const SHORTCUT_CODES = [
+  'Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5', 'Digit6', 'Digit7', 'Digit8', 'Digit9', 'Digit0',
+  'KeyQ', 'KeyW', 'KeyE', 'KeyR', 'KeyT', 'KeyY', 'KeyU', 'KeyI', 'KeyO', 'KeyP',
+  'KeyA', 'KeyS', 'KeyD', 'KeyF', 'KeyG', 'KeyH', 'KeyJ', 'KeyK', 'KeyL',
+  'KeyZ', 'KeyX', 'KeyC', 'KeyV', 'KeyB', 'KeyN', 'KeyM'
+];
+
 interface RawSubtitleLine {
   id: number;
   start: string;
@@ -377,8 +384,8 @@ export default function RawSubtitleEditor({
         return;
       }
 
-      const key = e.key.toLowerCase();
-      const index = SHORTCUT_KEYS.indexOf(key);
+      const code = e.code;
+      const index = SHORTCUT_CODES.indexOf(code);
       
       if (index !== -1 && index < stableNames.length) {
         e.preventDefault();

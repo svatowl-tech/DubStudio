@@ -21,7 +21,7 @@ function registerFfmpegHandlers(getData, mainWindow) {
       if (mainWindow) {
         mainWindow.webContents.send('ffmpeg-progress', percent);
       }
-    }, options);
+    }, null, options);
   });
 
   ipcMain.handle('transcode-video', async (event, { videoPath, outputPath }) => {
@@ -34,7 +34,7 @@ function registerFfmpegHandlers(getData, mainWindow) {
       if (mainWindow) {
         mainWindow.webContents.send('ffmpeg-progress', percent);
       }
-    }, options);
+    }, null, options);
   });
   
   // ... остальные ffmpeg обработчики ...

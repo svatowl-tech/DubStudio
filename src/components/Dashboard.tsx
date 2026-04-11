@@ -90,6 +90,9 @@ export default function Dashboard({
   const [generatedMessage, setGeneratedMessage] = useState<string | null>(null);
   const [isMessageModalOpen, setIsMessageModalOpen] = useState(false);
   const [isHardsubEnabled, setIsHardsubEnabled] = useState(false);
+  const [subtitleTracks, setSubtitleTracks] = useState<any[]>([]);
+  const [pendingMkvUpload, setPendingMkvUpload] = useState<{filePath: string, type: 'RAW' | 'SUB'} | null>(null);
+  const [isSubtitleSelectModalOpen, setIsSubtitleSelectModalOpen] = useState(false);
 
   const selectedProject = useMemo(() => projects.find(p => p.id === selectedProjectId), [projects, selectedProjectId]);
   const { syncEpisodeWithGlobalMapping } = useEpisodeSync(currentEpisode, selectedProject, onRefresh);
@@ -142,24 +145,33 @@ export default function Dashboard({
 
 
 
-  const handleFileSelect = async (type: 'RAW' | 'SUB') => {
+  const processFileUpload = async (filePath: string, type: 'RAW' | 'SUB', selectedSubtitleStreamIndex?: number) => {
     if (!currentEpisode) return;
-
-    setIsUploading(true);
     
     try {
-      const res = await ipcSafe.invoke('select-file', {
-        filters: type === 'RAW' ? [{ name: 'Videos', extensions: ['mp4', 'webm', 'mkv'] }] : [{ name: 'Subtitles', extensions: ['ass', 'srt'] }]
-      });
-
-      if (!res.success) return;
-
-      const filePath = res.data.path;
+      let finalFilePath = filePath;
       const fileName = filePath.split(/[\\/]/).pop() || 'file';
       const ext = fileName.split('.').pop()?.toLowerCase();
       
-      let finalFilePath = filePath;
-      
+      // Extract subtitle if requested
+      if (type === 'RAW' && ext === 'mkv' && selectedSubtitleStreamIndex !== undefined) {
+        setStatus("Извлечение субтитров...");
+        const subOutputPath = filePath.replace(/\.mkv$/i, '.ass');
+        const extractRes = await ipcSafe.invoke('extract-subtitle-track', {
+          videoPath: filePath,
+          outputPath: subOutputPath,
+          streamIndex: selectedSubtitleStreamIndex
+        });
+        
+        if (extractRes.success) {
+          // Upload extracted subtitles
+          await processFileUpload(subOutputPath, 'SUB');
+        } else {
+          console.error("Failed to extract subtitles:", extractRes.error);
+          alert("Не удалось извлечь субтитры: " + extractRes.error);
+        }
+      }
+
       // Transcode MKV to MP4
       if (type === 'RAW' && ext === 'mkv') {
         setStatus("Транскодирование MKV в MP4...");
@@ -183,7 +195,7 @@ export default function Dashboard({
       const episodeFolder = sanitizeFolderName(`Episode_${currentEpisode.number}`);
       const subDir = `${projectTitle}/${episodeFolder}`;
       
-      const originalExt = finalFilePath.split('.').pop() || 'mp4';
+      const originalExt = finalFilePath.split('.').pop() || (type === 'RAW' ? 'mp4' : 'ass');
       const targetFileName = type === 'RAW' 
         ? (isHardsubEnabled ? `raw_video_hardsub.${originalExt}` : `raw_video.${originalExt}`) 
         : `subtitles.${originalExt}`;
@@ -202,6 +214,77 @@ export default function Dashboard({
           updateData.isHardsub = isHardsubEnabled;
         } else {
           updateData.subPath = copyRes.data.path;
+          
+          // Automatically extract characters and apply global mapping
+          try {
+            const result = await ipcSafe.invoke('get-raw-subtitles', updateData.subPath);
+            if (result && result.actors) {
+              const rawActors: string[] = result.actors;
+              const lines: any[] = result.lines || [];
+              
+              const aliases: Record<string, string> = JSON.parse(currentEpisode.project?.characterAliases || '{}');
+              
+              const lineCounts: Record<string, number> = {};
+              lines.forEach(line => {
+                const nameToUse = line.name || line.style || "Unknown";
+                const mainName = aliases[nameToUse] || nameToUse;
+                lineCounts[mainName] = (lineCounts[mainName] || 0) + 1;
+              });
+
+              const mainActors = Array.from(new Set(rawActors.map(name => {
+                const nameToUse = name || "Unknown";
+                return aliases[nameToUse] || nameToUse;
+              }))).filter(name => !SIGN_KEYWORDS.includes(name as string)) as string[];
+
+              const globalMappingRaw = currentEpisode.project?.globalMapping || '[]';
+              let globalMapping: {characterName: string, dubberId: string, isMain?: boolean}[] = [];
+              try {
+                const parsed = JSON.parse(globalMappingRaw);
+                if (Array.isArray(parsed)) {
+                  globalMapping = parsed;
+                } else if (parsed && typeof parsed === 'object') {
+                  globalMapping = Object.entries(parsed).map(([k, v]) => ({ characterName: k, dubberId: v as string }));
+                }
+              } catch (e) {}
+
+              // Preserve existing assignments if any
+              const existingAssignments = Array.isArray(currentEpisode.assignments) ? currentEpisode.assignments : [];
+              const existingNames = new Set(existingAssignments.map(a => a.characterName));
+              
+              const toAdd = mainActors.filter(name => !existingNames.has(name));
+              
+              const newAssignments = toAdd.map((actor: string) => {
+                const mappingEntry = globalMapping.find(m => m.characterName === actor);
+                let dubberId = mappingEntry?.dubberId || "";
+                let isMain = mappingEntry?.isMain || false;
+                
+                if (!dubberId) {
+                  const matchedParticipant = participants.find(
+                    p => p.nickname.toLowerCase() === actor.toLowerCase()
+                  );
+                  if (matchedParticipant) {
+                    dubberId = matchedParticipant.id;
+                  }
+                }
+
+                const dubber = participants.find(p => p.id === dubberId);
+                return {
+                  id: Math.random().toString(),
+                  episodeId: currentEpisode.id,
+                  characterName: actor,
+                  dubberId: dubberId,
+                  dubber: dubber,
+                  status: "PENDING",
+                  lineCount: lineCounts[actor] || 0,
+                  isMain: isMain
+                };
+              });
+
+              updateData.assignments = [...existingAssignments, ...newAssignments];
+            }
+          } catch (e) {
+            console.error("Auto-extract characters failed:", e);
+          }
         }
         
         // If both exist, move to ROLES status
@@ -212,14 +295,60 @@ export default function Dashboard({
         await ipcSafe.invoke('save-episode', { ...currentEpisode, ...updateData });
         
         onRefresh();
-        alert(`${type === 'RAW' ? 'Видео' : 'Субтитры'} успешно загружены!`);
+        if (type === 'RAW' || !pendingMkvUpload) {
+          alert(`${type === 'RAW' ? 'Видео' : 'Субтитры'} успешно загружены!`);
+        }
       } else {
         alert('Ошибка при сохранении файла: ' + copyRes.error);
       }
     } catch (error) {
       console.error('Upload error:', error);
-      alert('Ошибка при загрузке файла: ' + (error instanceof Error ? error.message : String(error)));
+      alert('Ошибка при обработке файла: ' + (error instanceof Error ? error.message : String(error)));
     } finally {
+      if (type === 'RAW' || !pendingMkvUpload) {
+        setIsUploading(false);
+        setStatus('');
+      }
+    }
+  };
+
+  const handleFileSelect = async (type: 'RAW' | 'SUB') => {
+    if (!currentEpisode) return;
+
+    setIsUploading(true);
+    
+    try {
+      const res = await ipcSafe.invoke('select-file', {
+        filters: type === 'RAW' ? [{ name: 'Videos', extensions: ['mp4', 'webm', 'mkv'] }] : [{ name: 'Subtitles', extensions: ['ass', 'srt'] }]
+      });
+
+      if (!res.success) {
+        setIsUploading(false);
+        return;
+      }
+
+      const filePath = res.data.path;
+      const fileName = filePath.split(/[\\/]/).pop() || 'file';
+      const ext = fileName.split('.').pop()?.toLowerCase();
+      
+      if (type === 'RAW' && ext === 'mkv') {
+        setStatus("Чтение метаданных MKV...");
+        const metadataRes = await ipcSafe.invoke('get-video-metadata', filePath);
+        if (metadataRes && !metadataRes.error && metadataRes.streams) {
+          const subs = metadataRes.streams.filter((s: any) => s.codec_type === 'subtitle');
+          if (subs.length > 0) {
+            setSubtitleTracks(subs);
+            setPendingMkvUpload({ filePath, type });
+            setIsSubtitleSelectModalOpen(true);
+            return; // Wait for user selection
+          }
+        }
+      }
+
+      await processFileUpload(filePath, type);
+    } catch (error) {
+      console.error('Upload error:', error);
+      alert('Ошибка при загрузке файла: ' + (error instanceof Error ? error.message : String(error)));
       setIsUploading(false);
     }
   };
@@ -1256,6 +1385,72 @@ export default function Dashboard({
                 className="flex-1 px-4 py-2.5 bg-neutral-800 hover:bg-neutral-700 text-white rounded-lg font-medium transition-colors"
               >
                 Закрыть
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isSubtitleSelectModalOpen && pendingMkvUpload && (
+        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-[9999] p-4">
+          <div className="bg-neutral-900 border border-neutral-800 rounded-2xl w-full max-w-md shadow-2xl overflow-hidden flex flex-col pointer-events-auto">
+            <div className="p-4 border-b border-neutral-800 flex items-center justify-between bg-neutral-950/50">
+              <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                <FileText className="w-5 h-5 text-blue-400" />
+                Выберите субтитры
+              </h3>
+              <button 
+                onClick={() => {
+                  setIsSubtitleSelectModalOpen(false);
+                  processFileUpload(pendingMkvUpload.filePath, pendingMkvUpload.type);
+                  setPendingMkvUpload(null);
+                  setSubtitleTracks([]);
+                }}
+                className="text-neutral-500 hover:text-white transition-colors"
+              >
+                <X className="w-6 h-6" />
+              </button>
+            </div>
+            <div className="p-6">
+              <p className="text-sm text-neutral-400 mb-4">
+                В загруженном MKV файле найдены встроенные субтитры. Выберите дорожку для извлечения или пропустите этот шаг.
+              </p>
+              <div className="space-y-2 max-h-60 overflow-y-auto">
+                {subtitleTracks.map((track, idx) => (
+                  <button
+                    key={idx}
+                    onClick={() => {
+                      setIsSubtitleSelectModalOpen(false);
+                      processFileUpload(pendingMkvUpload.filePath, pendingMkvUpload.type, track.index);
+                      setPendingMkvUpload(null);
+                      setSubtitleTracks([]);
+                    }}
+                    className="w-full text-left p-3 bg-neutral-950 border border-neutral-800 rounded-xl hover:bg-neutral-800 hover:border-blue-500/50 transition-colors flex items-center justify-between group"
+                  >
+                    <div>
+                      <div className="font-medium text-white group-hover:text-blue-400">
+                        Дорожка {track.index} {track.tags?.language ? `(${track.tags.language})` : ''}
+                      </div>
+                      <div className="text-xs text-neutral-500 mt-1">
+                        {track.tags?.title || track.codec_name || 'Без названия'}
+                      </div>
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-neutral-600 group-hover:text-blue-400" />
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="p-4 border-t border-neutral-800 bg-neutral-950/50">
+              <button
+                onClick={() => {
+                  setIsSubtitleSelectModalOpen(false);
+                  processFileUpload(pendingMkvUpload.filePath, pendingMkvUpload.type);
+                  setPendingMkvUpload(null);
+                  setSubtitleTracks([]);
+                }}
+                className="w-full px-4 py-2.5 bg-neutral-800 hover:bg-neutral-700 text-white rounded-lg font-medium transition-colors"
+              >
+                Пропустить извлечение
               </button>
             </div>
           </div>

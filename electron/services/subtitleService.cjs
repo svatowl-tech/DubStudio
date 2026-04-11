@@ -42,6 +42,64 @@ function parseDialogueLine(line, formatParts) {
   };
 }
 
+async function cleanAssFile(assFilePath) {
+  try {
+    const content = await fs.readFile(assFilePath, 'utf-8');
+    const lines = content.split('\n');
+    let currentSection = '';
+    let formatParts = [];
+    
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trimEnd();
+      const trimmedLine = line.trim();
+      
+      if (trimmedLine.startsWith('[')) {
+        currentSection = trimmedLine;
+        continue;
+      }
+      
+      if (currentSection === '[Script Info]') {
+        if (trimmedLine.startsWith('Video Zoom Percent:') || 
+            trimmedLine.startsWith('Scroll Position:') || 
+            trimmedLine.startsWith('Active Line:')) {
+          lines[i] = null; // Mark for deletion
+          continue;
+        }
+      }
+      
+      if (currentSection === '[V4+ Styles]') {
+        if (trimmedLine.startsWith('Style:')) {
+          // Replace commas between digits with dots to fix decimal separators
+          // e.g. 100,00 -> 100.00
+          lines[i] = line.replace(/(\d),(\d)/g, '$1.$2');
+        }
+      }
+      
+      if (currentSection === '[Events]') {
+        const prefixMatch = line.match(/^(Dialogue|Comment):\s*/);
+        if (prefixMatch) {
+          const prefix = prefixMatch[0];
+          const rest = line.substring(prefix.length);
+          const parts = rest.split(',');
+          if (parts.length >= 10) {
+            for (let j = 0; j < 9; j++) {
+              parts[j] = parts[j].trim();
+            }
+            lines[i] = prefix + parts.slice(0, 9).join(',') + ',' + parts.slice(9).join(',');
+          }
+        }
+      }
+    }
+    
+    const newContent = lines.filter(l => l !== null).join('\n');
+    await fs.writeFile(assFilePath, newContent, 'utf-8');
+    return { success: true };
+  } catch (error) {
+    log.error('Error cleaning ASS file:', error);
+    return { success: false, error: error.message };
+  }
+}
+
 async function getRawSubtitles(assFilePath) {
   try {
     const stats = await fs.stat(assFilePath);
@@ -167,6 +225,7 @@ async function saveRawSubtitles(assFilePath, updates) {
   }
 
   await fs.writeFile(assFilePath, lines.join('\n'), 'utf-8');
+  await cleanAssFile(assFilePath);
 }
 
 async function splitSubsByActor(assFilePath, outputDirectory, options) {
@@ -305,6 +364,7 @@ async function splitSubsByActor(assFilePath, outputDirectory, options) {
       const ext = outputFormat === 'ass' ? '.ass' : '.srt';
       const outputPath = path.join(outputDirectory, `${originalFileName} - ${actor} - (${lineCount})${ext}`);
       await fs.writeFile(outputPath, actorLines.join('\n'), 'utf-8');
+      if (ext === '.ass') await cleanAssFile(outputPath);
       generatedFiles.push(outputPath);
     }
   }
@@ -325,6 +385,7 @@ async function splitSubsByActor(assFilePath, outputDirectory, options) {
     if (signCount > 0) {
       const outputPath = path.join(outputDirectory, `${originalFileName} - Надписи.ass`);
       await fs.writeFile(outputPath, signLines.join('\n'), 'utf-8');
+      await cleanAssFile(outputPath);
       generatedFiles.push(outputPath);
     }
   }
@@ -420,6 +481,7 @@ async function splitSubsByDubber(assFilePath, outputDirectory, assignments, dubb
 
     const outputPath = path.join(outputDirectory, `${dubber.nickname} (${lineCount}).ass`);
     await fs.writeFile(outputPath, newLines.join('\n'), 'utf-8');
+    await cleanAssFile(outputPath);
     generatedFiles.push(outputPath);
   }
 
@@ -490,6 +552,7 @@ async function exportFullAssWithRoles(assFilePath, outputPath, assignments, part
 
   await fs.mkdir(path.dirname(outputPath), { recursive: true });
   await fs.writeFile(outputPath, lines.join('\n'), 'utf-8');
+  await cleanAssFile(outputPath);
   return outputPath;
 }
 
@@ -534,6 +597,7 @@ async function saveTranslatedSubtitles(assFilePath, translatedLines) {
   }
 
   await fs.writeFile(assFilePath, lines.join('\n'), 'utf-8');
+  await cleanAssFile(assFilePath);
 }
 
 async function extractSignsAss(assFilePath, outputPath) {
@@ -579,6 +643,7 @@ async function extractSignsAss(assFilePath, outputPath) {
 
   if (signCount > 0) {
     await fs.writeFile(outputPath, newLines.join('\n'), 'utf-8');
+    await cleanAssFile(outputPath);
     return true;
   }
   return false;
@@ -591,6 +656,7 @@ module.exports = {
   splitSubsByActor,
   splitSubsByDubber,
   exportFullAssWithRoles,
-  extractSignsAss
+  extractSignsAss,
+  cleanAssFile
 };
 

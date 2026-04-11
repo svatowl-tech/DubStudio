@@ -3,6 +3,7 @@ const ffmpeg = require('fluent-ffmpeg');
 const fs = require('fs/promises');
 const path = require('path');
 const log = require('electron-log');
+const { cleanAssFile } = require('./subtitleService.cjs');
 
 async function extractHardsub(videoPath, outputAssPath, onProgress) {
   const tempDir = path.join(path.dirname(videoPath), 'temp_ocr_' + Date.now());
@@ -64,6 +65,7 @@ Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text
     });
 
     await fs.writeFile(outputAssPath, assContent);
+    await cleanAssFile(outputAssPath);
     return { success: true };
   } catch (error) {
     log.error('OCR Error:', error);

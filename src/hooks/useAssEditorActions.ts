@@ -2,6 +2,10 @@ import { Episode, RoleAssignment, Participant } from '../types';
 import { ipcSafe } from '../lib/ipcSafe';
 import { SIGN_KEYWORDS } from '../constants';
 import { useAssEditorState } from './useAssEditorState';
+import { latinToCyrillic, polivanovToHepburn } from '../lib/translit';
+import { generateStartEpisodeMessage } from '../lib/templates';
+import { exportMappingToJson, importMappingFromJson } from '../lib/mappingExport';
+import { sanitizeFolderName } from '../lib/pathUtils';
 
 export const useAssEditorActions = (
   currentEpisode: Episode | null,
@@ -182,7 +186,6 @@ export const useAssEditorActions = (
   };
 
   const handleTransliterateNames = () => {
-    const { latinToCyrillic } = require('../lib/translit');
     const updated = assignments.map(a => ({
       ...a,
       characterName: latinToCyrillic(a.characterName)
@@ -193,7 +196,6 @@ export const useAssEditorActions = (
   };
 
   const handlePolivanovToHepburn = () => {
-    const { polivanovToHepburn } = require('../lib/translit');
     const updated = assignments.map(a => ({
       ...a,
       characterName: polivanovToHepburn(a.characterName)
@@ -384,7 +386,6 @@ export const useAssEditorActions = (
       currentAssignments = await handleAnalyzeExisting();
     }
     
-    const { generateStartEpisodeMessage } = require('../lib/templates');
     const msg = generateStartEpisodeMessage({ ...currentEpisode, assignments: currentAssignments }, participants);
     state.setGeneratedMessage(msg);
     state.setIsMessageModalOpen(true);
@@ -475,7 +476,6 @@ export const useAssEditorActions = (
     setStatus("Экспорт полного файла с ролями...");
 
     try {
-      const { sanitizeFolderName } = require('../lib/pathUtils');
       const projectTitle = sanitizeFolderName(currentEpisode.project?.title || "Project");
       const episodeFolder = sanitizeFolderName(`Episode_${currentEpisode.number || "0"}`);
       const subDir = `${projectTitle}/${episodeFolder}/Subtitles`;
@@ -503,7 +503,6 @@ export const useAssEditorActions = (
 
   const handleExportMapping = () => {
     const mapping: Record<string, string> = assignments.reduce((acc, a) => ({ ...acc, [a.characterName]: a.dubberId }), {});
-    const { exportMappingToJson } = require('../lib/templates');
     const json = exportMappingToJson(mapping, participants);
     const blob = new Blob([json], { type: "application/json" });
     const url = URL.createObjectURL(blob);
@@ -519,7 +518,6 @@ export const useAssEditorActions = (
     const reader = new FileReader();
     reader.onload = (event) => {
       const json = event.target?.result as string;
-      const { importMappingFromJson } = require('../lib/templates');
       const newMapping = importMappingFromJson(json, participants);
       
       const updated = assignments.map(a => ({
@@ -533,17 +531,21 @@ export const useAssEditorActions = (
     reader.readAsText(file);
   };
 
-  const handleExport = async (targetDir: string, skipConversion: boolean, smartExport?: boolean) => {
+  const handleExport = async (targetDir: string, skipConversion: boolean, smartExport?: boolean, currentAssignments?: RoleAssignment[]) => {
     if (!currentEpisode) return;
     
     try {
       const taskType = state.exportRole === 'DABBER' ? 'export-dabber-files' : 'export-sound-engineer-files';
       const roleName = state.exportRole === 'DABBER' ? 'Даберам' : 'Звукорежиссеру';
       
-      await ipcSafe.send('enqueue-ffmpeg-task', {
+      // Use provided assignments or fallback to episode.assignments
+      const assignmentsToUse = currentAssignments || currentEpisode.assignments || [];
+      const episodeWithAssignments = { ...currentEpisode, assignments: assignmentsToUse };
+      
+      await ipcSafe.invoke('enqueue-ffmpeg-task', {
         type: taskType,
         payload: { 
-          episode: currentEpisode, 
+          episode: episodeWithAssignments, 
           targetDir, 
           skipConversion, 
           smartExport 

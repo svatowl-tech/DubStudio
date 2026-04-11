@@ -8,8 +8,20 @@ export default function SettingsPanel() {
     ffmpegPath: '',
     useNvenc: false,
     gpuIndex: '0',
-    openRouterKey: ''
+    openRouterKey: '',
+    aiModel: 'google/gemini-2.0-flash:free'
   });
+
+  const aiModels = [
+    { id: 'google/gemini-2.0-flash:free', name: 'Google: Gemini 2.0 Flash (free)' },
+    { id: 'google/gemma-2-27b-it:free', name: 'Google: Gemma 2 27B (free)' },
+    { id: 'google/gemma-2-9b-it:free', name: 'Google: Gemma 2 9B (free)' },
+    { id: 'openai/gpt-4o-mini', name: 'OpenAI: GPT-4o Mini' },
+    { id: 'meta-llama/llama-3.3-70b-instruct:free', name: 'Meta: Llama 3.3 70B Instruct (free)' },
+    { id: 'meta-llama/llama-3.1-70b-instruct:free', name: 'Meta: Llama 3.1 70B Instruct (free)' },
+    { id: 'arcee-ai/arcee-trinity:free', name: 'Arcee AI: Trinity Large Preview (free)' },
+    { id: 'openrouter/auto', name: 'Free Models Router (Auto)' }
+  ];
 
   const [gpus, setGpus] = useState<{ name: string, index: string }[]>([]);
 
@@ -24,7 +36,8 @@ export default function SettingsPanel() {
           ffmpegPath: data.ffmpegPath || '',
           useNvenc: !!data.useNvenc,
           gpuIndex: data.gpuIndex || '0',
-          openRouterKey: data.openRouterKey || ''
+          openRouterKey: data.openRouterKey || '',
+          aiModel: data.aiModel || 'google/gemini-2.0-flash:free'
         }));
       }
     });
@@ -138,6 +151,19 @@ export default function SettingsPanel() {
               <p className="text-[10px] text-neutral-500 mt-2">
                 Используется для перевода через бесплатные модели OpenRouter. Если ключ не указан, будет использован стандартный Google Translate API.
               </p>
+            </div>
+
+            <div>
+              <label className="block text-sm text-neutral-400 mb-2">Модель AI для перевода</label>
+              <select 
+                value={settings.aiModel}
+                onChange={(e) => setSettings({...settings, aiModel: e.target.value})}
+                className="w-full bg-neutral-950 border border-neutral-800 rounded-lg px-4 py-3 text-white focus:border-amber-500 outline-none appearance-none cursor-pointer"
+              >
+                {aiModels.map(model => (
+                  <option key={model.id} value={model.id}>{model.name}</option>
+                ))}
+              </select>
             </div>
           </div>
         </section>

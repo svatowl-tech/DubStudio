@@ -34,12 +34,16 @@ export default function TranslatePanel({ currentEpisode }: TranslatePanelProps) 
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [editText, setEditText] = useState("");
   const [openRouterKey, setOpenRouterKey] = useState<string | null>(null);
+  const [aiModel, setAiModel] = useState<string>("google/gemini-2.0-flash:free");
   const [showSigns, setShowSigns] = useState(false);
 
   useEffect(() => {
     ipcSafe.invoke('get-config').then(config => {
       if (config?.openRouterKey) {
         setOpenRouterKey(config.openRouterKey);
+      }
+      if (config?.aiModel) {
+        setAiModel(config.aiModel);
       }
     });
   }, []);
@@ -118,7 +122,7 @@ export default function TranslatePanel({ currentEpisode }: TranslatePanelProps) 
             "X-Title": "Anime Dub Manager"
           },
           body: JSON.stringify({
-            model: "google/gemini-2.0-flash-lite-preview-02-05:free",
+            model: aiModel,
             messages: [{ role: "user", content: prompt }],
             response_format: { type: "json_object" }
           })

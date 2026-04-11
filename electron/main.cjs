@@ -31,8 +31,8 @@ ipcMain.on('log-error', (event, error) => {
 });
 
 const { extractHardsub } = require('./services/ocrService.cjs');
-const { bakeSubtitles, transcodeToMp4, muxRelease, takeScreenshot, getVideoMetadata, setCustomFfmpegPath, getActiveProcesses } = require('./services/ffmpegService.cjs');
-const { getRawSubtitles, saveRawSubtitles, saveTranslatedSubtitles, splitSubsByActor, splitSubsByDubber, exportFullAssWithRoles, extractSignsAss } = require('./services/subtitleService.cjs');
+const { bakeSubtitles, transcodeToMp4, muxRelease, takeScreenshot, getVideoMetadata, extractSubtitleTrack, setCustomFfmpegPath, getActiveProcesses } = require('./services/ffmpegService.cjs');
+const { getRawSubtitles, saveRawSubtitles, saveTranslatedSubtitles, splitSubsByActor, splitSubsByDubber, exportFullAssWithRoles, extractSignsAss, cleanAssFile } = require('./services/subtitleService.cjs');
 const { translateText } = require('./services/translateService.cjs');
 const { searchAnime, getAnimeDetails, getAnimeCharacters, getNextEpisodeDate } = require('./services/animeApiService.cjs');
 const AISubtitleProcessor = require('./services/AISubtitleProcessor.cjs');
@@ -378,6 +378,11 @@ ipcMain.handle('copy-file', async (event, { sourcePath, targetDir, fileName }) =
     const targetPath = path.join(fullTargetDir, fileName);
     
     await fs.copyFile(sourcePath, targetPath);
+    
+    if (targetPath.toLowerCase().endsWith('.ass')) {
+      await cleanAssFile(targetPath);
+    }
+    
     return { success: true, data: { path: targetPath } };
   } catch (error) {
     log.error('Copy file error:', error);
@@ -395,6 +400,11 @@ ipcMain.handle('save-file-buffer', async (event, { buffer, targetDir, fileName }
     const targetPath = path.join(fullTargetDir, fileName);
     
     await fs.writeFile(targetPath, Buffer.from(buffer));
+    
+    if (targetPath.toLowerCase().endsWith('.ass')) {
+      await cleanAssFile(targetPath);
+    }
+    
     return { success: true, data: { path: targetPath } };
   } catch (error) {
     log.error('Save file buffer error:', error);
@@ -772,6 +782,17 @@ ipcMain.handle('get-video-metadata', async (event, videoPath) => {
   }
 });
 
+ipcMain.handle('extract-subtitle-track', async (event, { videoPath, outputPath, streamIndex }) => {
+  try {
+    await extractSubtitleTrack(videoPath, outputPath, streamIndex);
+    await cleanAssFile(outputPath);
+    return { success: true, path: outputPath };
+  } catch (error) {
+    log.error('Extract subtitle track error:', error);
+    return { success: false, error: error.message };
+  }
+});
+
 ipcMain.handle('take-screenshot', async (event, { videoPath, timestamp, outputPath }) => {
   try {
     await takeScreenshot(videoPath, timestamp, outputPath);
@@ -806,12 +827,13 @@ ipcMain.handle('ai-process-subtitles', async (event, { lines, glossary }) => {
   try {
     const config = await getData('config.json');
     const apiKey = config?.openRouterKey;
+    const model = config?.aiModel || 'google/gemini-2.0-flash:free';
     
     if (!apiKey) {
       throw new Error('OpenRouter API key is not configured. Please add it in Settings.');
     }
 
-    const processor = new AISubtitleProcessor(apiKey, glossary);
+    const processor = new AISubtitleProcessor(apiKey, glossary, model);
     return await processor.processSubtitles(lines);
   } catch (error) {
     log.error('AI Subtitle Processing error:', error);

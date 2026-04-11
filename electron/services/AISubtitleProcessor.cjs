@@ -9,10 +9,12 @@ class AISubtitleProcessor {
   /**
    * @param {string} apiKey - OpenRouter API key.
    * @param {Object} glossary - Glossary of names and terms (e.g., { "Kanji": "Cyrillic" }).
+   * @param {string} model - AI model to use.
    */
-  constructor(apiKey, glossary = {}) {
+  constructor(apiKey, glossary = {}, model = 'google/gemini-2.0-flash:free') {
     this.apiKey = apiKey;
     this.glossary = glossary;
+    this.model = model;
     this.baseUrl = 'https://openrouter.ai/api/v1/chat/completions';
   }
 
@@ -92,7 +94,7 @@ Rules for translation:
 
     try {
       const response = await axios.post(this.baseUrl, {
-        model: 'openai/gpt-4o-mini', // Efficient and smart enough for subs
+        model: this.model,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt }
@@ -125,7 +127,8 @@ Rules for translation:
     } catch (error) {
       const errorData = error.response?.data || error.message;
       log.error('AISubtitleProcessor: OpenRouter API error:', errorData);
-      throw new Error(`AI Translation failed: ${JSON.stringify(errorData)}`);
+      const errorMessage = error.response?.data?.error?.message || error.message || 'Unknown API Error';
+      throw new Error(`AI Translation failed: ${errorMessage}`);
     }
   }
 
