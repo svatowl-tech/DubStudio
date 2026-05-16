@@ -12,6 +12,9 @@ interface CharacterManagementModalProps {
 }
 
 export default function CharacterManagementModal({ isOpen, onClose, selectedProject, participants, onRefresh }: CharacterManagementModalProps) {
+  const [isAdding, setIsAdding] = useState(false);
+  const [newCharName, setNewCharName] = useState('');
+
   if (!isOpen || !selectedProject) return null;
 
   let mapping: {characterName: string, dubberId: string, photoUrl?: string}[] = [];
@@ -49,14 +52,7 @@ export default function CharacterManagementModal({ isOpen, onClose, selectedProj
               <h3 className="text-lg font-medium text-white">Список персонажей</h3>
               <div className="flex items-center gap-3">
                 <button 
-                  onClick={async () => {
-                    const name = prompt('Введите имя персонажа:');
-                    if (name) {
-                      mapping.push({ characterName: name, dubberId: '' });
-                      await ipcSafe.invoke('save-project', { ...selectedProject, globalMapping: JSON.stringify(mapping) });
-                      onRefresh();
-                    }
-                  }}
+                  onClick={() => setIsAdding(true)}
                   className="flex items-center gap-2 text-sm text-blue-400 hover:text-blue-300"
                 >
                   <Plus className="w-4 h-4" /> Добавить персонажа
@@ -76,6 +72,50 @@ export default function CharacterManagementModal({ isOpen, onClose, selectedProj
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-neutral-800">
+                  {isAdding && (
+                    <tr className="bg-blue-900/10 transition-colors">
+                      <td className="px-4 py-3">
+                        <div className="w-10 h-10 rounded-full bg-neutral-800 flex items-center justify-center text-neutral-500 border border-blue-500/30">
+                          <ImageIcon className="w-5 h-5" />
+                        </div>
+                      </td>
+                      <td className="px-4 py-3">
+                        <input 
+                          autoFocus
+                          type="text"
+                          value={newCharName}
+                          onChange={(e) => setNewCharName(e.target.value)}
+                          onKeyDown={async (e) => {
+                            if (e.key === 'Enter' && newCharName.trim()) {
+                              mapping.push({ characterName: newCharName.trim(), dubberId: '' });
+                              await ipcSafe.invoke('save-project', { ...selectedProject, globalMapping: JSON.stringify(mapping) });
+                              setNewCharName('');
+                              setIsAdding(false);
+                              onRefresh();
+                            } else if (e.key === 'Escape') {
+                              setIsAdding(false);
+                              setNewCharName('');
+                            }
+                          }}
+                          className="w-full bg-neutral-900 border border-blue-500 text-white rounded px-2 py-1 text-sm outline-none"
+                          placeholder="Имя... (Enter)"
+                        />
+                      </td>
+                      <td className="px-4 py-3 text-neutral-500 italic text-xs">Нажмите Enter для сохранения</td>
+                      <td className="px-4 py-3 text-neutral-500 italic text-xs">Esc для отмены</td>
+                      <td className="px-4 py-3 text-right">
+                        <button 
+                          onClick={() => {
+                            setIsAdding(false);
+                            setNewCharName('');
+                          }}
+                          className="text-neutral-500 hover:text-red-400"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      </td>
+                    </tr>
+                  )}
                   {mapping.map((char, idx) => (
                     <tr key={char.characterName || ('char-' + idx)} className="hover:bg-neutral-900/30 transition-colors">
                       <td className="px-4 py-3">

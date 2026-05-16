@@ -8,7 +8,7 @@ interface AssEditorModalsProps {
   setIsExportModalOpen: (val: boolean) => void;
   currentEpisode: Episode | null;
   exportRole: 'DABBER' | 'SOUND_ENGINEER';
-  handleExport: (targetDir: string, skipConversion: boolean, smartExport?: boolean) => void;
+  handleExport: (targetDir: string, skipConversion: boolean, smartExport?: boolean, uploadToYandex?: boolean, additionalProcessing?: boolean) => void;
   isExporting: boolean;
   exportProgress: number;
   isMessageModalOpen: boolean;

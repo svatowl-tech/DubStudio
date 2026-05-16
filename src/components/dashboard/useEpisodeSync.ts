@@ -73,14 +73,14 @@ export const useEpisodeSync = (
     // We only want to sync dubbers for characters that are actually in this episode.
 
     if (hasChanges) {
-      const res = await ipcSafe.invoke('save-episode', { 
-        ...currentEpisode, 
-        assignments: updatedAssignments 
-      });
-      if (res && res.success) {
+      try {
+        await ipcSafe.invoke('save-episode', { 
+          ...currentEpisode, 
+          assignments: updatedAssignments 
+        });
         onRefresh();
-      } else {
-        console.error("Failed to auto-sync episode assignments:", res?.error);
+      } catch (error) {
+        console.error("Failed to auto-sync episode assignments:", error);
       }
     }
   }, [currentEpisode, selectedProject?.globalMapping, onRefresh]);

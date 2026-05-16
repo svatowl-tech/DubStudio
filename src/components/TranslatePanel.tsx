@@ -34,7 +34,10 @@ export default function TranslatePanel({ currentEpisode }: TranslatePanelProps) 
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [editText, setEditText] = useState("");
   const [openRouterKey, setOpenRouterKey] = useState<string | null>(null);
-  const [aiModel, setAiModel] = useState<string>("google/gemini-2.0-flash:free");
+  const [aiModel, setAiModel] = useState<string>("google/gemini-2.0-flash-lite-preview-02-05:free");
+  const [aiProvider, setAiProvider] = useState<string>("openrouter");
+  const [ollamaUrl, setOllamaUrl] = useState<string>("http://localhost:11434");
+  const [ollamaModel, setOllamaModel] = useState<string>("llama3");
   const [showSigns, setShowSigns] = useState(false);
 
   useEffect(() => {
@@ -44,6 +47,15 @@ export default function TranslatePanel({ currentEpisode }: TranslatePanelProps) 
       }
       if (config?.aiModel) {
         setAiModel(config.aiModel);
+      }
+      if (config?.aiProvider) {
+        setAiProvider(config.aiProvider);
+      }
+      if (config?.ollamaUrl) {
+        setOllamaUrl(config.ollamaUrl);
+      }
+      if (config?.ollamaModel) {
+        setOllamaModel(config.ollamaModel);
       }
     });
   }, []);
@@ -86,13 +98,18 @@ export default function TranslatePanel({ currentEpisode }: TranslatePanelProps) 
     const line = translatedLines[index];
     if (!line.originalText || !line.originalText.trim()) return;
 
+    const controller = new AbortController();
+    const signal = controller.signal;
+
     // Set a local loading state for this line if possible, or just use global
     setStatus(`Перевод реплики ${index + 1}...`);
     
     try {
       let translatedText = line.text;
 
-      if (openRouterKey) {
+      const useAi = (aiProvider === 'openrouter' && openRouterKey) || aiProvider === 'ollama';
+
+      if (useAi) {
         const genreInfo = GENRES.find(g => g.id === selectedGenre);
         const sourceLangName = LANGUAGES.find(l => l.code === sourceLang)?.name || sourceLang;
         const destLangName = LANGUAGES.find(l => l.code === destLang)?.name || destLang;
@@ -113,33 +130,55 @@ export default function TranslatePanel({ currentEpisode }: TranslatePanelProps) 
           ${line.originalText}
         `;
 
-        const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-          method: "POST",
-          headers: {
-            "Authorization": `Bearer ${openRouterKey}`,
-            "Content-Type": "application/json",
-            "HTTP-Referer": window.location.origin,
-            "X-Title": "Anime Dub Manager"
-          },
-          body: JSON.stringify({
-            model: aiModel,
-            messages: [{ role: "user", content: prompt }],
-            response_format: { type: "json_object" }
-          })
-        });
-
-        if (!response.ok) {
-          throw new Error(`Ошибка API: ${response.status}`);
-        }
-
-        const resultData = await response.json();
-        const content = resultData.choices[0].message.content;
-        
         try {
-          const parsed = JSON.parse(content);
-          translatedText = parsed.translation || Object.values(parsed)[0] as string;
-        } catch (e) {
-          translatedText = content.trim();
+          const url = aiProvider === 'openrouter' 
+            ? "https://openrouter.ai/api/v1/chat/completions"
+            : `${ollamaUrl}/v1/chat/completions`;
+
+          const headers: any = {
+            "Content-Type": "application/json",
+          };
+
+          if (aiProvider === 'openrouter') {
+            headers["Authorization"] = `Bearer ${openRouterKey}`;
+            headers["HTTP-Referer"] = window.location.origin;
+            headers["X-Title"] = "Anime Dub Manager";
+          }
+
+          const response = await fetch(url, {
+            method: "POST",
+            headers: headers,
+            body: JSON.stringify({
+              model: aiProvider === 'openrouter' ? aiModel : ollamaModel,
+              messages: [{ role: "user", content: prompt }],
+              response_format: { type: "json_object" },
+              max_tokens: 1000
+            }),
+            signal
+          });
+
+          if (!response.ok) {
+            throw new Error(`Ошибка API: ${response.status}`);
+          }
+
+          const resultData = await response.json();
+          const content = resultData.choices[0].message.content;
+          
+          try {
+            const parsed = JSON.parse(content);
+            translatedText = parsed.translation || Object.values(parsed)[0] as string;
+          } catch (e) {
+            translatedText = content.trim();
+          }
+        } catch (aiError: any) {
+          if (aiError.name === 'AbortError') return;
+          console.warn("AI translation failed, falling back to Google:", aiError);
+          const result = await ipcSafe.invoke('translate-text', {
+            text: line.originalText,
+            sourceLang,
+            destLang
+          });
+          translatedText = result['destination-text'];
         }
       } else {
         // Fallback to Google Translate
@@ -156,6 +195,7 @@ export default function TranslatePanel({ currentEpisode }: TranslatePanelProps) 
       setTranslatedLines(newLines);
       setStatus("Готово!");
     } catch (error: any) {
+      if (error.name === 'AbortError') return;
       console.error("Single line translation error:", error);
       setStatus(`Ошибка: ${error.message}`);
     }

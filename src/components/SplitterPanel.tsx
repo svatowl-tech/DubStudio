@@ -27,12 +27,14 @@ export default function SplitterPanel({ currentEpisode }: SplitterPanelProps) {
         title: 'Выберите файл субтитров',
         filters: [{ name: 'Subtitles', extensions: ['ass'] }]
       });
-      if (result && result.data && result.data.path) {
-        setCustomFilePath(result.data.path);
-        setStatus(`Выбран файл: ${result.data.path.split('/').pop() || result.data.path.split('\\').pop()}`);
+      if (result && result.path) {
+        setCustomFilePath(result.path);
+        setStatus(`Выбран файл: ${result.path.split(/[\\/]/).pop()}`);
       }
-    } catch (error) {
-      console.error("File selection error:", error);
+    } catch (error: any) {
+      if (error && error.message !== 'Selection canceled') {
+        console.error("File selection error:", error);
+      }
     }
   };
 

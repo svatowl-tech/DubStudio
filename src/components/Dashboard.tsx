@@ -1,10 +1,12 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Plus, X, CheckCircle2, Clock, AlertCircle, Mic, FileAudio, UserPlus, Link as LinkIcon, MessageSquare, ExternalLink, Calendar, FileText, Image as ImageIcon, Database, FolderPlus, ChevronRight, Save, Loader2, FileVideo, Activity, Users, Settings2, Hash, Globe, User } from 'lucide-react';
+import { toast } from 'sonner';
 import { getParticipants } from '../services/dbService';
-import { Participant, Project, Episode, EpisodeStatus, ReleaseType } from '../types';
+import { Participant, Project, Episode, EpisodeStatus, ReleaseType, RoleAssignment } from '../types';
 import { ipcSafe } from '../lib/ipcSafe';
 import { getNextEpisodeDate } from '../services/animeService';
 import { ExportModal } from './ExportModal';
+import { ConfirmModal } from './ui/ConfirmModal';
 import CreateProjectModal from './dashboard/CreateProjectModal';
 import CreateEpisodeModal from './dashboard/CreateEpisodeModal';
 import CharacterManagementModal from './dashboard/CharacterManagementModal';
@@ -13,7 +15,7 @@ import AssignSoundEngineerModal from './dashboard/AssignSoundEngineerModal';
 import { useEpisodeSync } from './dashboard/useEpisodeSync';
 import { SIGN_KEYWORDS } from '../constants';
 import GettingStartedGuide from './GettingStartedGuide';
-import { generateStartEpisodeMessage, generateStatusMessage, formatDeadline } from '../lib/templates';
+import { generateStartEpisodeMessage, generateStatusMessage, formatDeadline, generateSoundEngineerMessage } from '../lib/templates';
 import { sanitizeFolderName } from '../lib/pathUtils';
 import { calculateDeadline } from '../lib/dateUtils';
 
@@ -91,8 +93,24 @@ export default function Dashboard({
   const [isMessageModalOpen, setIsMessageModalOpen] = useState(false);
   const [isHardsubEnabled, setIsHardsubEnabled] = useState(false);
   const [subtitleTracks, setSubtitleTracks] = useState<any[]>([]);
+  const [audioTracks, setAudioTracks] = useState<any[]>([]);
   const [pendingMkvUpload, setPendingMkvUpload] = useState<{filePath: string, type: 'RAW' | 'SUB'} | null>(null);
   const [isSubtitleSelectModalOpen, setIsSubtitleSelectModalOpen] = useState(false);
+  const [selectedSubtitleIndex, setSelectedSubtitleIndex] = useState<number | undefined>();
+  const [selectedAudioIndex, setSelectedAudioIndex] = useState<number | undefined>();
+
+  const [confirmState, setConfirmState] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    onConfirm: () => void;
+    variant?: 'danger' | 'warning' | 'info';
+  }>({
+    isOpen: false,
+    title: '',
+    message: '',
+    onConfirm: () => {},
+  });
 
   const selectedProject = useMemo(() => projects.find(p => p.id === selectedProjectId), [projects, selectedProjectId]);
   const { syncEpisodeWithGlobalMapping } = useEpisodeSync(currentEpisode, selectedProject, onRefresh);
@@ -107,32 +125,39 @@ export default function Dashboard({
     syncEpisodeWithGlobalMapping();
   }, [currentEpisode?.id, selectedProject?.globalMapping, syncEpisodeWithGlobalMapping]);
 
-  const handleExport = async (targetDir: string, skipConversion: boolean, smartExport?: boolean) => {
+  const handleExport = async (targetDir: string, skipConversion: boolean, smartExport?: boolean, uploadToYandex?: boolean) => {
     if (!currentEpisode) return;
     setIsUploading(true);
     setTranscodingProgress(0);
     
-    let res;
-    if (exportRole === 'DABBER') {
-      res = await ipcSafe.invoke('export-dabber-files', { episode: currentEpisode, targetDir, skipConversion });
-      
-      // Generate Start Episode message after export to dubbers
-      if (res.success) {
-        const msg = generateStartEpisodeMessage(currentEpisode, participants);
+    try {
+      if (exportRole === 'DABBER') {
+        const result = await ipcSafe.invoke('export-dabber-files', { episode: currentEpisode, targetDir, skipConversion, uploadToYandex });
+        
+        // Generate Start Episode message after export to dubbers
+        const msg = generateStartEpisodeMessage(currentEpisode, participants, result?.yandexUrl);
         setGeneratedMessage(msg);
         setIsMessageModalOpen(true);
+      } else {
+        const result = await ipcSafe.invoke('export-sound-engineer-files', { episode: currentEpisode, targetDir, skipConversion, smartExport, uploadToYandex });
+        
+        if (result?.yandexUrl) {
+           const msg = generateSoundEngineerMessage(currentEpisode, result.yandexUrl);
+           setGeneratedMessage(msg);
+           setIsMessageModalOpen(true);
+        }
       }
-    } else {
-      res = await ipcSafe.invoke('export-sound-engineer-files', { episode: currentEpisode, targetDir, skipConversion, smartExport });
-    }
 
-    setIsUploading(false);
-    setTranscodingProgress(null);
-    setIsExportModalOpen(false);
-    if (res.success) {
-      alert('Экспорт успешно завершен!');
-    } else {
-      alert('Ошибка экспорта: ' + res.error);
+      setIsExportModalOpen(false);
+      toast.success('Экспорт успешно завершен!');
+    } catch (error: any) {
+      if (error.name !== 'AbortError') {
+        console.error('Export error:', error);
+        toast.error('Ошибка экспорта: ' + (error.message || String(error)));
+      }
+    } finally {
+      setIsUploading(false);
+      setTranscodingProgress(null);
     }
   };
 
@@ -145,7 +170,7 @@ export default function Dashboard({
 
 
 
-  const processFileUpload = async (filePath: string, type: 'RAW' | 'SUB', selectedSubtitleStreamIndex?: number) => {
+  const processFileUpload = async (filePath: string, type: 'RAW' | 'SUB', selectedSubtitleStreamIndex?: number, selectedAudioStreamIndex?: number) => {
     if (!currentEpisode) return;
     
     try {
@@ -168,7 +193,7 @@ export default function Dashboard({
           await processFileUpload(subOutputPath, 'SUB');
         } else {
           console.error("Failed to extract subtitles:", extractRes.error);
-          alert("Не удалось извлечь субтитры: " + extractRes.error);
+          toast.error("Не удалось извлечь субтитры: " + extractRes.error);
         }
       }
 
@@ -178,15 +203,17 @@ export default function Dashboard({
         const outputPath = filePath.replace(/\.mkv$/i, '.mp4');
         const transcodeRes = await ipcSafe.invoke('transcode-video', {
           videoPath: filePath,
-          outputPath
+          outputPath,
+          audioStreamIndex: selectedAudioStreamIndex
         });
         
-        if (!transcodeRes.success) {
-          alert('Ошибка транскодирования: ' + transcodeRes.error);
+        // transcode-video returns the outputPath string on success
+        if (!transcodeRes) {
+          toast.error('Ошибка транскодирования: не удалось получить путь к файлу.');
           setIsUploading(false);
           return;
         }
-        finalFilePath = outputPath;
+        finalFilePath = transcodeRes as string;
         setTranscodingProgress(null);
       }
       
@@ -206,14 +233,14 @@ export default function Dashboard({
         fileName: targetFileName
       });
 
-      if (copyRes.success) {
+      if (copyRes && copyRes.path) {
         // Update episode in DB
         const updateData: any = {};
         if (type === 'RAW') {
-          updateData.rawPath = copyRes.data.path;
+          updateData.rawPath = copyRes.path;
           updateData.isHardsub = isHardsubEnabled;
         } else {
-          updateData.subPath = copyRes.data.path;
+          updateData.subPath = copyRes.path;
           
           // Automatically extract characters and apply global mapping
           try {
@@ -296,19 +323,22 @@ export default function Dashboard({
         
         onRefresh();
         if (type === 'RAW' || !pendingMkvUpload) {
-          alert(`${type === 'RAW' ? 'Видео' : 'Субтитры'} успешно загружены!`);
+          toast.success(`${type === 'RAW' ? 'Видео' : 'Субтитры'} успешно загружены!`);
         }
       } else {
-        alert('Ошибка при сохранении файла: ' + copyRes.error);
+        toast.error('Ошибка при сохранении файла: Не удалось получить путь к файлу.');
       }
-    } catch (error) {
-      console.error('Upload error:', error);
-      alert('Ошибка при обработке файла: ' + (error instanceof Error ? error.message : String(error)));
+    } catch (error: any) {
+      if (error.name !== 'AbortError') {
+        console.error('Upload error:', error);
+        toast.error('Ошибка при обработке файла: ' + (error.message || String(error)));
+      }
     } finally {
       if (type === 'RAW' || !pendingMkvUpload) {
         setIsUploading(false);
         setStatus('');
       }
+      setTranscodingProgress(null);
     }
   };
 
@@ -319,15 +349,17 @@ export default function Dashboard({
     
     try {
       const res = await ipcSafe.invoke('select-file', {
-        filters: type === 'RAW' ? [{ name: 'Videos', extensions: ['mp4', 'webm', 'mkv'] }] : [{ name: 'Subtitles', extensions: ['ass', 'srt'] }]
+        filters: type === 'RAW' 
+          ? [{ name: 'Videos', extensions: ['mp4', 'webm', 'mkv', 'avi', 'mov', 'ts', 'flv'] }] 
+          : [{ name: 'Subtitles', extensions: ['ass', 'srt', 'vtt', 'ssa'] }]
       });
 
-      if (!res.success) {
+      if (!res || !res.path) {
         setIsUploading(false);
         return;
       }
 
-      const filePath = res.data.path;
+      const filePath = res.path;
       const fileName = filePath.split(/[\\/]/).pop() || 'file';
       const ext = fileName.split('.').pop()?.toLowerCase();
       
@@ -336,8 +368,12 @@ export default function Dashboard({
         const metadataRes = await ipcSafe.invoke('get-video-metadata', filePath);
         if (metadataRes && !metadataRes.error && metadataRes.streams) {
           const subs = metadataRes.streams.filter((s: any) => s.codec_type === 'subtitle');
-          if (subs.length > 0) {
+          const audios = metadataRes.streams.filter((s: any) => s.codec_type === 'audio');
+          if (subs.length > 0 || audios.length > 1) { // Show modal if there are subs or multiple audios
             setSubtitleTracks(subs);
+            setAudioTracks(audios);
+            if (audios.length > 0) setSelectedAudioIndex(audios[0].index);
+            setSelectedSubtitleIndex(undefined); // No subtitle selected by default
             setPendingMkvUpload({ filePath, type });
             setIsSubtitleSelectModalOpen(true);
             return; // Wait for user selection
@@ -346,9 +382,13 @@ export default function Dashboard({
       }
 
       await processFileUpload(filePath, type);
-    } catch (error) {
+    } catch (error: any) {
+      if (error && error.message === 'Selection canceled') {
+        setIsUploading(false);
+        return;
+      }
       console.error('Upload error:', error);
-      alert('Ошибка при загрузке файла: ' + (error instanceof Error ? error.message : String(error)));
+      toast.error('Ошибка при загрузке файла: ' + (error instanceof Error ? error.message : String(error)));
       setIsUploading(false);
     }
   };
@@ -434,21 +474,70 @@ export default function Dashboard({
 
   const handleDeleteProject = async () => {
     if (!selectedProjectId) return;
-    if (!confirm('Вы уверены, что хотите удалить этот проект и все его серии?')) return;
-    
-    await ipcSafe.invoke('delete-project', selectedProjectId);
-    onProjectSelect('');
-    onRefresh();
-    setIsDeleteProjectModalOpen(false);
+    setConfirmState({
+      isOpen: true,
+      title: 'Удаление проекта',
+      message: 'Вы уверены, что хотите удалить этот проект и все его серии? Это действие необратимо.',
+      variant: 'danger',
+      onConfirm: async () => {
+        try {
+          await ipcSafe.invoke('delete-project', selectedProjectId);
+          onProjectSelect('');
+          onRefresh();
+          setIsDeleteProjectModalOpen(false);
+          toast.success('Проект удален');
+        } catch (error) {
+          console.error("Failed to delete project:", error);
+          toast.error('Ошибка при удалении проекта');
+        }
+      }
+    });
   };
 
   const handleDeleteEpisode = async () => {
     if (!currentEpisode) return;
-    if (!confirm(`Вы уверены, что хотите удалить серию ${currentEpisode.number}?`)) return;
+    setConfirmState({
+      isOpen: true,
+      title: 'Удаление серии',
+      message: `Вы уверены, что хотите удалить серию ${currentEpisode.number}?`,
+      variant: 'danger',
+      onConfirm: async () => {
+        try {
+          await ipcSafe.invoke('delete-episode', currentEpisode.id);
+          onRefresh();
+          setIsDeleteEpisodeModalOpen(false);
+          toast.success('Серия удалена');
+        } catch (error) {
+          console.error("Failed to delete episode:", error);
+          toast.error('Ошибка при удалении серии');
+        }
+      }
+    });
+  };
+
+  const handleFinishEpisode = async () => {
+    if (!currentEpisode) return;
     
-    await ipcSafe.invoke('delete-episode', currentEpisode.id);
-    onRefresh();
-    setIsDeleteEpisodeModalOpen(false);
+    setConfirmState({
+      isOpen: true,
+      title: 'Завершение серии',
+      message: `Вы уверены, что хотите отметить серию ${currentEpisode.number} как завершенную?`,
+      variant: 'info',
+      onConfirm: async () => {
+        try {
+          const updatedEpisode = {
+            ...currentEpisode,
+            status: 'FINISHED' as EpisodeStatus
+          };
+          await ipcSafe.invoke('save-episode', updatedEpisode);
+          onRefresh();
+          toast.success('Серия завершена!');
+        } catch (error) {
+          console.error("Failed to finish episode:", error);
+          toast.error('Ошибка при завершении серии');
+        }
+      }
+    });
   };
 
   const handleCreateEpisode = async (episodeNumber: number) => {
@@ -519,14 +608,37 @@ export default function Dashboard({
     const existing = Array.isArray(currentEpisode.assignments) ? currentEpisode.assignments.find(a => a.characterName === mainName) : undefined;
     if (existing) {
       if (existing.dubberId === selectedUserId) {
-        alert('Этот дабер уже назначен на этого персонажа в этой серии.');
+        toast.error('Этот дабер уже назначен на этого персонажа в этой серии.');
         return;
       }
-      if (!confirm(`Персонаж "${mainName}" уже назначен на ${participants.find(p => p.id === existing.dubberId)?.nickname}. Переназначить на ${participants.find(p => p.id === selectedUserId)?.nickname}?`)) {
-        return;
-      }
-      // Remove existing assignment for this character
-      currentEpisode.assignments = Array.isArray(currentEpisode.assignments) ? currentEpisode.assignments.filter(a => a.characterName !== mainName) : [];
+      
+      setConfirmState({
+        isOpen: true,
+        title: 'Переназначение роли',
+        message: `Персонаж "${mainName}" уже назначен на ${participants.find(p => p.id === existing.dubberId)?.nickname}. Переназначить на ${participants.find(p => p.id === selectedUserId)?.nickname}?`,
+        onConfirm: async () => {
+          // Remove existing assignment for this character
+          const currentAssignments = Array.isArray(currentEpisode.assignments) ? currentEpisode.assignments.filter(a => a.characterName !== mainName) : [];
+          
+          const newAssignment = {
+            id: Date.now().toString(),
+            episodeId: currentEpisode.id,
+            characterName: mainName,
+            dubberId: selectedUserId,
+            status: 'PENDING'
+          };
+          
+          const updatedEpisode = {
+            ...currentEpisode,
+            assignments: [...currentAssignments, newAssignment]
+          };
+          
+          await ipcSafe.invoke('save-episode', updatedEpisode);
+          onRefresh();
+          toast.success('Роль переназначена');
+        }
+      });
+      return;
     }
 
     const newAssignment = {
@@ -865,8 +977,16 @@ export default function Dashboard({
                       <X className="w-4 h-4" />
                     </button>
                     <div className="flex gap-2">
-                      <button onClick={() => { setExportRole('DABBER'); setIsExportModalOpen(true); }} className="px-2 py-1 bg-green-600 text-white rounded text-xs">Экспорт Даберам</button>
-                      <button onClick={() => { setExportRole('SOUND_ENGINEER'); setIsExportModalOpen(true); }} className="px-2 py-1 bg-purple-600 text-white rounded text-xs">Экспорт Звукарю</button>
+                      <button onClick={() => { setExportRole('DABBER'); setIsExportModalOpen(true); }} className="px-2 py-1 bg-green-600 hover:bg-green-500 text-white rounded text-xs transition-colors">Экспорт Даберам</button>
+                      <button onClick={() => { setExportRole('SOUND_ENGINEER'); setIsExportModalOpen(true); }} className="px-2 py-1 bg-purple-600 hover:bg-purple-500 text-white rounded text-xs transition-colors">Экспорт Звукарю</button>
+                      <button 
+                        onClick={handleFinishEpisode}
+                        disabled={currentEpisode.status === 'FINISHED'}
+                        className="flex items-center gap-1.5 px-3 py-1 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:hover:bg-indigo-600 text-white rounded text-xs font-bold transition-colors"
+                      >
+                        <CheckCircle2 className="w-3.5 h-3.5" />
+                        Завершить серию
+                      </button>
                     </div>
                   </div>
                   <div className="flex items-center gap-4 text-neutral-400 text-sm">
@@ -1039,10 +1159,10 @@ export default function Dashboard({
                       {(() => {
                         const grouped: Record<string, any> = {};
                         currentEpisode?.assignments?.forEach(as => {
-                          const dubberId = as.dubberId;
+                          const dubberId = as.substituteId || as.dubberId;
                           if (!grouped[dubberId]) {
                             grouped[dubberId] = {
-                              dubber: as.dubber,
+                              dubber: as.substitute || as.dubber,
                               characters: [as.characterName],
                               statuses: [as.status],
                               lineCount: as.lineCount || 0
@@ -1374,7 +1494,7 @@ export default function Dashboard({
               <button
                 onClick={() => {
                   navigator.clipboard.writeText(generatedMessage);
-                  alert("Сообщение скопировано в буфер обмена!");
+                  toast.success("Сообщение скопировано в буфер обмена!");
                 }}
                 className="flex-1 px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-medium transition-colors flex items-center justify-center gap-2"
               >
@@ -1393,69 +1513,119 @@ export default function Dashboard({
 
       {isSubtitleSelectModalOpen && pendingMkvUpload && (
         <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-[9999] p-4">
-          <div className="bg-neutral-900 border border-neutral-800 rounded-2xl w-full max-w-md shadow-2xl overflow-hidden flex flex-col pointer-events-auto">
+          <div className="bg-neutral-900 border border-neutral-800 rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden flex flex-col pointer-events-auto">
             <div className="p-4 border-b border-neutral-800 flex items-center justify-between bg-neutral-950/50">
               <h3 className="text-lg font-bold text-white flex items-center gap-2">
                 <FileText className="w-5 h-5 text-blue-400" />
-                Выберите субтитры
+                Параметры импорта MKV
               </h3>
               <button 
                 onClick={() => {
                   setIsSubtitleSelectModalOpen(false);
-                  processFileUpload(pendingMkvUpload.filePath, pendingMkvUpload.type);
                   setPendingMkvUpload(null);
                   setSubtitleTracks([]);
+                  setAudioTracks([]);
+                  setIsUploading(false);
                 }}
                 className="text-neutral-500 hover:text-white transition-colors"
               >
                 <X className="w-6 h-6" />
               </button>
             </div>
-            <div className="p-6">
-              <p className="text-sm text-neutral-400 mb-4">
-                В загруженном MKV файле найдены встроенные субтитры. Выберите дорожку для извлечения или пропустите этот шаг.
-              </p>
-              <div className="space-y-2 max-h-60 overflow-y-auto">
-                {subtitleTracks.map((track, idx) => (
-                  <button
-                    key={idx}
-                    onClick={() => {
-                      setIsSubtitleSelectModalOpen(false);
-                      processFileUpload(pendingMkvUpload.filePath, pendingMkvUpload.type, track.index);
-                      setPendingMkvUpload(null);
-                      setSubtitleTracks([]);
-                    }}
-                    className="w-full text-left p-3 bg-neutral-950 border border-neutral-800 rounded-xl hover:bg-neutral-800 hover:border-blue-500/50 transition-colors flex items-center justify-between group"
-                  >
-                    <div>
-                      <div className="font-medium text-white group-hover:text-blue-400">
-                        Дорожка {track.index} {track.tags?.language ? `(${track.tags.language})` : ''}
-                      </div>
-                      <div className="text-xs text-neutral-500 mt-1">
-                        {track.tags?.title || track.codec_name || 'Без названия'}
-                      </div>
-                    </div>
-                    <ChevronRight className="w-4 h-4 text-neutral-600 group-hover:text-blue-400" />
-                  </button>
-                ))}
-              </div>
+            
+            <div className="p-6 overflow-y-auto max-h-[60vh] space-y-6">
+              {audioTracks.length > 1 && (
+                <div>
+                  <h4 className="text-sm font-semibold text-neutral-300 mb-3">Выберите аудиодорожку:</h4>
+                  <div className="space-y-2">
+                    {audioTracks.map((track, idx) => (
+                      <button
+                        key={idx}
+                        onClick={() => setSelectedAudioIndex(track.index)}
+                        className={`w-full text-left p-3 border rounded-xl transition-colors flex items-center justify-between ${
+                          selectedAudioIndex === track.index
+                            ? 'bg-blue-500/10 border-blue-500/50'
+                            : 'bg-neutral-950 border-neutral-800 hover:bg-neutral-800'
+                        }`}
+                      >
+                        <div>
+                          <div className="font-medium text-white">
+                            Аудио {track.index} {track.tags?.language ? `(${track.tags.language})` : ''}
+                          </div>
+                          <div className="text-xs text-neutral-500 mt-1">
+                            {track.tags?.title || track.codec_name || 'Без названия'}
+                          </div>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              
+              {subtitleTracks.length > 0 && (
+                <div>
+                  <div className="flex items-center justify-between mb-3">
+                    <h4 className="text-sm font-semibold text-neutral-300">Субтитры для извлечения (опционально):</h4>
+                    {selectedSubtitleIndex !== undefined && (
+                      <button
+                        onClick={() => setSelectedSubtitleIndex(undefined)}
+                        className="text-xs text-red-400 hover:text-red-300 transition-colors"
+                      >
+                        Сбросить
+                      </button>
+                    )}
+                  </div>
+                  <div className="space-y-2">
+                    {subtitleTracks.map((track, idx) => (
+                      <button
+                        key={idx}
+                        onClick={() => setSelectedSubtitleIndex(track.index)}
+                        className={`w-full text-left p-3 border rounded-xl transition-colors flex items-center justify-between ${
+                          selectedSubtitleIndex === track.index
+                            ? 'bg-indigo-500/10 border-indigo-500/50'
+                            : 'bg-neutral-950 border-neutral-800 hover:bg-neutral-800'
+                        }`}
+                      >
+                        <div>
+                          <div className="font-medium text-white">
+                            Субтитры {track.index} {track.tags?.language ? `(${track.tags.language})` : ''}
+                          </div>
+                          <div className="text-xs text-neutral-500 mt-1">
+                            {track.tags?.title || track.codec_name || 'Без названия'}
+                          </div>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
-            <div className="p-4 border-t border-neutral-800 bg-neutral-950/50">
+            
+            <div className="p-4 border-t border-neutral-800 bg-neutral-950/50 flex gap-3">
               <button
                 onClick={() => {
                   setIsSubtitleSelectModalOpen(false);
-                  processFileUpload(pendingMkvUpload.filePath, pendingMkvUpload.type);
+                  processFileUpload(pendingMkvUpload.filePath, pendingMkvUpload.type, selectedSubtitleIndex, selectedAudioIndex);
                   setPendingMkvUpload(null);
                   setSubtitleTracks([]);
+                  setAudioTracks([]);
                 }}
-                className="w-full px-4 py-2.5 bg-neutral-800 hover:bg-neutral-700 text-white rounded-lg font-medium transition-colors"
+                className="flex-1 px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-medium transition-colors"
               >
-                Пропустить извлечение
+                Продолжить импорт
               </button>
             </div>
           </div>
         </div>
       )}
+      <ConfirmModal 
+        isOpen={confirmState.isOpen}
+        title={confirmState.title}
+        message={confirmState.message}
+        variant={confirmState.variant}
+        onConfirm={confirmState.onConfirm}
+        onCancel={() => setConfirmState(prev => ({ ...prev, isOpen: false }))}
+      />
     </div>
   );
 }

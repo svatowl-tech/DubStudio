@@ -30,7 +30,9 @@ import { ipcSafe } from "../lib/ipcSafe";
 import { latinToCyrillic, polivanovToHepburn } from "../lib/translit";
 import { generateStartEpisodeMessage } from "../lib/templates";
 import { ExportModal } from './ExportModal';
+import { ConfirmModal } from './ui/ConfirmModal';
 import { SIGN_KEYWORDS, GROUP_KEYWORDS } from "../constants";
+import { toast } from 'sonner';
 
 interface AssLine {
   id: string;
@@ -67,6 +69,19 @@ export default function AssEditor({
   const [outputFormat, setOutputFormat] = useState<"ass" | "srt">("ass");
   const [isSplitting, setIsSplitting] = useState(false);
   const [isMessageModalOpen, setIsMessageModalOpen] = useState(false);
+  
+  const [confirmState, setConfirmState] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    onConfirm: () => void;
+    variant?: 'danger' | 'warning' | 'info';
+  }>({
+    isOpen: false,
+    title: '',
+    message: '',
+    onConfirm: () => {},
+  });
   const [generatedMessage, setGeneratedMessage] = useState("");
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
@@ -277,12 +292,14 @@ export default function AssEditor({
           finalAssignments = updatedPrev;
         }
 
-        setAssignments(finalAssignments);
-        saveToDatabase(finalAssignments);
+        const finalAssignmentsCleaned = finalAssignments.filter(a => (a.lineCount || 0) > 0);
+
+        setAssignments(finalAssignmentsCleaned);
+        saveToDatabase(finalAssignmentsCleaned);
 
         lastAnalyzedEpisodeId.current = currentEpisode.id;
-        setStatus(`Анализ завершен. Найдено ${mainActors?.length || 0} персонажей.`);
-        return finalAssignments;
+        setStatus(`Анализ завершен. Найдено ${mainActors?.length || 0} персонажей. Удалено пустых ролей: ${finalAssignments.length - finalAssignmentsCleaned.length}`);
+        return finalAssignmentsCleaned;
       }
       return assignments;
     } catch (error) {
@@ -496,7 +513,7 @@ export default function AssEditor({
     return () => removeListener();
   }, []);
 
-  const handleExport = async (targetDir: string, skipConversion: boolean, smartExport?: boolean, currentAssignments?: RoleAssignment[]) => {
+  const handleExport = async (targetDir: string, skipConversion: boolean, smartExport?: boolean, uploadToYandex?: boolean, additionalProcessing?: boolean, currentAssignments?: RoleAssignment[]) => {
     if (!currentEpisode) return;
     
     try {
@@ -517,7 +534,9 @@ export default function AssEditor({
           }, 
           targetDir, 
           skipConversion, 
-          smartExport 
+          smartExport,
+          uploadToYandex,
+          additionalProcessing
         },
         metadata: {
           title: `Экспорт ${roleName}: ${currentEpisode.project?.title} - Серия ${currentEpisode.number}`
@@ -535,12 +554,17 @@ export default function AssEditor({
   const handleRemoveAssignment = async (assignmentId: string, characterName: string) => {
     const charAssignments = assignments.filter(a => a.characterName === characterName);
     let newAssignments;
-    if (charAssignments.length === 1) {
-      newAssignments = assignments.map(a => a.id === assignmentId ? { ...a, dubberId: "", dubber: undefined, substituteId: undefined, substitute: undefined } : a);
+    // Always remove if there are multiple dubbers for same character
+    // Or if it's the only one, we can also remove it if it has 0 lines or if forced
+    if (charAssignments.length > 1) {
+      newAssignments = assignments.filter(a => a.id !== assignmentId);
     } else {
+      // If it's the last one, we might want to just clear it instead of removing?
+      // User says "deletion doesn't work", so let's allow total removal.
       newAssignments = assignments.filter(a => a.id !== assignmentId);
     }
     setAssignments(newAssignments);
+    setActors(newAssignments.map(a => a.characterName));
     
     if (currentEpisode) {
       await saveToDatabase(newAssignments);
@@ -592,7 +616,6 @@ export default function AssEditor({
       
       if (warnings.length > 0) {
         setStatus(`Внимание: ${warnings.length} случаев подряд озвучки одним дабером!`);
-        console.warn("Consecutive dubber lines:", warnings);
       } else {
         setStatus("Распределение ролей корректно.");
       }
@@ -613,106 +636,117 @@ export default function AssEditor({
     if (!currentEpisode || !currentEpisode.project) return;
     if (aliasName === mainName) return;
 
-    const confirmed = window.confirm(`Связать "${aliasName}" как алиас для "${mainName}"? Все реплики "${aliasName}" будут переназначены на "${mainName}".`);
-    if (!confirmed) return;
+    setConfirmState({
+      isOpen: true,
+      title: 'Связывание алиаса',
+      message: `Связать "${aliasName}" как алиас для "${mainName}"? Все реплики "${aliasName}" будут переназначены на "${mainName}".`,
+      onConfirm: async () => {
+        try {
+          // 1. Update project aliases
+          const currentAliases: Record<string, string> = JSON.parse(currentEpisode.project!.characterAliases || '{}');
+          currentAliases[aliasName] = mainName;
+          
+          // 2. Find dubber from global mapping for the main character
+          let globalMapping: {characterName: string, dubberId: string}[] = [];
+          try {
+            const raw = currentEpisode.project?.globalMapping || '[]';
+            const parsed = JSON.parse(raw);
+            globalMapping = Array.isArray(parsed)
+              ? parsed
+              : Object.entries(parsed).map(([k, v]) => ({ characterName: k, dubberId: v as string }));
+          } catch (e) {
+            console.error("Error parsing global mapping:", e);
+          }
+          
+          const mappingEntries = globalMapping.filter(m => m.characterName === mainName && m.dubberId);
 
-    try {
-      // 1. Update project aliases
-      const currentAliases: Record<string, string> = JSON.parse(currentEpisode.project.characterAliases || '{}');
-      currentAliases[aliasName] = mainName;
-      
-      // 2. Find dubber from global mapping for the main character
-      let globalMapping: {characterName: string, dubberId: string}[] = [];
-      try {
-        const raw = currentEpisode.project?.globalMapping || '[]';
-        const parsed = JSON.parse(raw);
-        globalMapping = Array.isArray(parsed)
-          ? parsed
-          : Object.entries(parsed).map(([k, v]) => ({ characterName: k, dubberId: v as string }));
-      } catch (e) {
-        console.error("Error parsing global mapping:", e);
-      }
-      
-      const mappingEntries = globalMapping.filter(m => m.characterName === mainName && m.dubberId);
+          const updatedProject = {
+            ...currentEpisode.project!,
+            characterAliases: JSON.stringify(currentAliases)
+          };
+          await ipcSafe.invoke('save-project', updatedProject);
 
-      const updatedProject = {
-        ...currentEpisode.project,
-        characterAliases: JSON.stringify(currentAliases)
-      };
-      await ipcSafe.invoke('save-project', updatedProject);
-
-      // 3. Merge assignments in current episode
-      const aliasAssignments = assignments.filter(a => a.characterName === aliasName);
-      let updatedAssignments = assignments.filter(a => a.characterName !== aliasName);
-      
-      // Transfer dubber assignments from alias to main if they exist
-      aliasAssignments.forEach(aa => {
-        const dubberIdToUse = aa.dubberId;
-        const dubberToUse = aa.dubber;
-        
-        const alreadyHasThisDubber = updatedAssignments.some(a => a.characterName === mainName && a.dubberId === dubberIdToUse);
-        
-        if (!alreadyHasThisDubber && dubberIdToUse) {
-           updatedAssignments.push({
-             ...aa,
-             characterName: mainName,
-             dubberId: dubberIdToUse,
-             dubber: dubberToUse,
-             id: Math.random().toString(36).substring(2, 11)
-           });
-        }
-      });
-
-      // Also ensure all dubbers from global mapping for the main character are present
-      mappingEntries.forEach(me => {
-        const alreadyHasThisDubber = updatedAssignments.some(a => a.characterName === mainName && a.dubberId === me.dubberId);
-        if (!alreadyHasThisDubber) {
-          updatedAssignments.push({
-            id: Math.random().toString(36).substring(2, 11),
-            episodeId: currentEpisode.id,
-            characterName: mainName,
-            dubberId: me.dubberId,
-            dubber: participants.find(p => p.id === me.dubberId),
-            status: 'PENDING',
-            lineCount: 0
+          // 3. Merge assignments in current episode
+          const aliasAssignments = assignments.filter(a => a.characterName === aliasName);
+          let updatedAssignments = assignments.filter(a => a.characterName !== aliasName);
+          
+          // Transfer dubber assignments from alias to main if they exist
+          aliasAssignments.forEach(aa => {
+            const dubberIdToUse = aa.dubberId;
+            const dubberToUse = aa.dubber;
+            
+            const alreadyHasThisDubber = updatedAssignments.some(a => a.characterName === mainName && a.dubberId === dubberIdToUse);
+            
+            if (!alreadyHasThisDubber && dubberIdToUse) {
+               updatedAssignments.push({
+                 ...aa,
+                 characterName: mainName,
+                 dubberId: dubberIdToUse,
+                 dubber: dubberToUse,
+                 id: Math.random().toString(36).substring(2, 11)
+               });
+            }
           });
+
+          // Also ensure all dubbers from global mapping for the main character are present
+          mappingEntries.forEach(me => {
+            const alreadyHasThisDubber = updatedAssignments.some(a => a.characterName === mainName && a.dubberId === me.dubberId);
+            if (!alreadyHasThisDubber) {
+              updatedAssignments.push({
+                id: Math.random().toString(36).substring(2, 11),
+                episodeId: currentEpisode.id,
+                characterName: mainName,
+                dubberId: me.dubberId,
+                dubber: participants.find(p => p.id === me.dubberId),
+                status: 'PENDING',
+                lineCount: 0
+              });
+            }
+          });
+
+          // If main character still has no assignments, create one empty
+          if (updatedAssignments.filter(a => a.characterName === mainName).length === 0) {
+            updatedAssignments.push({
+              id: Math.random().toString(36).substring(2, 11),
+              episodeId: currentEpisode.id,
+              characterName: mainName,
+              dubberId: "",
+              status: "PENDING"
+            });
+          }
+
+          setAssignments(updatedAssignments);
+          await saveToDatabase(updatedAssignments);
+          
+          // 4. Update actors list
+          setActors(prev => prev.filter(a => a !== aliasName));
+          
+          setLinkingCharacter(null);
+          toast.success(`Персонаж "${aliasName}" успешно связан с "${mainName}".`);
+          onRefresh();
+        } catch (error) {
+          console.error("Link alias error:", error);
+          toast.error("Ошибка при связывании алиаса.");
         }
-      });
-
-      // If main character still has no assignments, create one empty
-      if (updatedAssignments.filter(a => a.characterName === mainName).length === 0) {
-        updatedAssignments.push({
-          id: Math.random().toString(36).substring(2, 11),
-          episodeId: currentEpisode.id,
-          characterName: mainName,
-          dubberId: "",
-          status: "PENDING"
-        });
       }
-
-      setAssignments(updatedAssignments);
-      await saveToDatabase(updatedAssignments);
-      
-      // 4. Update actors list
-      setActors(prev => prev.filter(a => a !== aliasName));
-      
-      setLinkingCharacter(null);
-      setStatus(`Персонаж "${aliasName}" успешно связан с "${mainName}".`);
-      onRefresh();
-    } catch (error) {
-      console.error("Link alias error:", error);
-      setStatus("Ошибка при связывании алиаса.");
-    }
+    });
   };
 
   const handleClearAssignments = async () => {
-    if (!window.confirm("Вы уверены, что хотите очистить ВСЕ распределения ролей для этого эпизода?")) return;
-    setAssignments([]);
-    setActors([]);
-    if (currentEpisode) {
-      await saveToDatabase([]);
-    }
-    setStatus("Все распределения ролей очищены.");
+    setConfirmState({
+      isOpen: true,
+      title: 'Очистка распределений',
+      message: 'Вы уверены, что хотите очистить ВСЕ распределения ролей для этого эпизода?',
+      variant: 'danger',
+      onConfirm: async () => {
+        setAssignments([]);
+        setActors([]);
+        if (currentEpisode) {
+          await saveToDatabase([]);
+        }
+        toast.success("Все распределения ролей очищены.");
+      }
+    });
   };
 
   const handleStartRecording = async () => {
@@ -765,16 +799,16 @@ export default function AssEditor({
         options
       });
 
-      if (data && data.success) {
+      if (data && data.generatedFiles) {
         setStatus(
           `Файлы успешно разделены и сохранены в папке output_dubbers! Сгенерировано файлов: ${data.generatedFiles.length}`,
         );
       } else {
-        setStatus("Ошибка при разделении файлов: " + (data?.error || 'Неизвестная ошибка'));
+        setStatus("Ошибка при разделении файлов: Не удалось получить список сгенерированных файлов.");
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error("Split error:", error);
-      setStatus("Ошибка при разделении файлов.");
+      setStatus("Ошибка при разделении файлов: " + (error.message || String(error)));
     } finally {
       setIsSplitting(false);
     }
@@ -899,14 +933,14 @@ export default function AssEditor({
         assignments
       });
 
-      if (result) {
-        setStatus(`Полный файл успешно экспортирован: ${outputPath}`);
+      if (result && result.path) {
+        setStatus(`Полный файл успешно экспортирован: ${result.path}`);
       } else {
-        setStatus("Ошибка при экспорте полного файла.");
+        setStatus("Ошибка при экспорте полного файла: Не удалось получить путь.");
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error("Export error:", error);
-      setStatus("Ошибка при экспорте полного файла.");
+      setStatus("Ошибка при экспорте полного файла: " + (error.message || String(error)));
     }
   };
 
@@ -1528,7 +1562,7 @@ export default function AssEditor({
           onClose={() => setIsExportModalOpen(false)}
           episode={currentEpisode}
           role={exportRole}
-          onExport={(targetDir, skipConversion, smartExport) => handleExport(targetDir, skipConversion, smartExport, assignments)}
+          onExport={(targetDir, skipConversion, smartExport, uploadToYandex, additionalProcessing) => handleExport(targetDir, skipConversion, smartExport, uploadToYandex, additionalProcessing, assignments)}
           isExporting={isExporting}
           progress={exportProgress}
         />
@@ -1576,6 +1610,14 @@ export default function AssEditor({
           </div>
         </div>
       )}
+      <ConfirmModal 
+        isOpen={confirmState.isOpen}
+        title={confirmState.title}
+        message={confirmState.message}
+        variant={confirmState.variant}
+        onConfirm={confirmState.onConfirm}
+        onCancel={() => setConfirmState(prev => ({ ...prev, isOpen: false }))}
+      />
     </div>
   );
 }

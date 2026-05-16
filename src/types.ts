@@ -54,10 +54,11 @@ export interface UploadedFile {
   id: string;
   episodeId: string;
   assignmentId?: string;
-  type: "DUBBER_FILE" | "FIXES";
+  type: "DUBBER_FILE" | "FIXES" | "SOUND_ENGINEER_FILE";
   path: string;
   uploadedById: string;
   uploadedBy?: Participant;
+  role?: string; // e.g. "SOUND_ENGINEER"
   createdAt: string;
 }
 
@@ -105,12 +106,29 @@ export interface Comment {
   subId?: string;
 }
 
+export interface SubtitleLine {
+  id: number;
+  start: string;
+  end: string;
+  startSec: number;
+  endSec: number;
+  style: string;
+  name: string;
+  text: string;
+  rawLineIndex: number;
+}
+
+export interface SubtitleData {
+  lines: SubtitleLine[];
+  actors: string[];
+}
+
 export interface Track {
   id: string;
   participant: string;
   character: string;
   status: 'pending' | 'approved' | 'rejected' | 'fixes_needed';
-  files: { id: string; path: string; createdAt: string; type?: 'DUBBER_FILE' | 'FIXES' }[];
+  files: { id: string; path: string; createdAt: string; type?: 'DUBBER_FILE' | 'FIXES' | 'SOUND_ENGINEER_FILE' }[];
   selectedFileId?: string;
   comments: Comment[];
 }

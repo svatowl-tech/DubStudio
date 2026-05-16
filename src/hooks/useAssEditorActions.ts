@@ -363,14 +363,14 @@ export const useAssEditorActions = (
         characterAliases
       });
 
-      if (result.success) {
+      if (result && result.outputDir) {
         setStatus(`Успешно! Файлы сохранены в: ${result.outputDir}`);
       } else {
-        setStatus(`Ошибка: ${result.error}`);
+        setStatus(`Ошибка: Не получен путь сохранения файлов.`);
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error("Split error:", error);
-      setStatus("Ошибка при разделении файла.");
+      setStatus("Ошибка при разделении файла: " + (error.message || String(error)));
     } finally {
       setIsSplitting(false);
     }
@@ -490,19 +490,19 @@ export const useAssEditorActions = (
         assignments
       });
 
-      if (result) {
-        setStatus(`Полный файл успешно экспортирован: ${outputPath}`);
+      if (result && result.path) {
+        setStatus(`Полный файл успешно экспортирован: ${result.path}`);
       } else {
-        setStatus("Ошибка при экспорте полного файла.");
+        setStatus("Ошибка при экспорте полного файла: Не удалось получить путь.");
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error("Export error:", error);
-      setStatus("Ошибка при экспорте полного файла.");
+      setStatus("Ошибка при экспорте полного файла: " + (error.message || String(error)));
     }
   };
 
   const handleExportMapping = () => {
-    const mapping: Record<string, string> = assignments.reduce((acc, a) => ({ ...acc, [a.characterName]: a.dubberId }), {});
+    const mapping: Record<string, string> = assignments.reduce((acc, a) => ({ ...acc, [a.characterName]: (a.substituteId || a.dubberId) }), {});
     const json = exportMappingToJson(mapping, participants);
     const blob = new Blob([json], { type: "application/json" });
     const url = URL.createObjectURL(blob);
@@ -580,8 +580,12 @@ export const useAssEditorActions = (
         const assignment1 = currentAssignments.find(a => a.characterName === line1.name);
         const assignment2 = currentAssignments.find(a => a.characterName === line2.name);
         
-        if (assignment1 && assignment2 && assignment1.dubberId && assignment2.dubberId && assignment1.dubberId === assignment2.dubberId) {
-          warnings.push(`Дабер ${assignment1.dubber?.nickname || assignment1.dubberId} озвучивает подряд персонажей ${line1.name} и ${line2.name} (строки ${line1.rawLineIndex} и ${line2.rawLineIndex})`);
+        const dubberId1 = assignment1?.substituteId || assignment1?.dubberId;
+        const dubberId2 = assignment2?.substituteId || assignment2?.dubberId;
+        
+        if (assignment1 && assignment2 && dubberId1 && dubberId2 && dubberId1 === dubberId2) {
+          const dubberName = assignment1.substitute?.nickname || assignment1.dubber?.nickname || dubberId1;
+          warnings.push(`Дабер ${dubberName} озвучивает подряд персонажей ${line1.name} и ${line2.name} (строки ${line1.rawLineIndex} и ${line2.rawLineIndex})`);
         }
       }
       

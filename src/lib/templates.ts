@@ -10,17 +10,18 @@ export const formatDeadline = (dateStr?: string) => {
   return `${day} ${dayOfMonth}.${month}`;
 };
 
-export const generateStartEpisodeMessage = (episode: Episode, participants: Participant[]) => {
+export const generateStartEpisodeMessage = (episode: Episode, participants: Participant[], yandexUrl?: string) => {
   const dubberLineCounts: Record<string, number> = {};
   
   // Calculate line counts per dubber from assignments
   episode.assignments?.forEach(as => {
-    if (as.dubberId && typeof as.lineCount === 'number') {
-      dubberLineCounts[as.dubberId] = (dubberLineCounts[as.dubberId] || 0) + as.lineCount;
+    const assignedId = as.substituteId || as.dubberId;
+    if (assignedId && typeof as.lineCount === 'number') {
+      dubberLineCounts[assignedId] = (dubberLineCounts[assignedId] || 0) + as.lineCount;
     }
   });
 
-  const assignedDubberIds = new Set(episode.assignments?.map(a => a.dubberId).filter(Boolean) || []);
+  const assignedDubberIds = new Set(episode.assignments?.map(a => a.substituteId || a.dubberId).filter(Boolean) || []);
   const assignedDubbers = participants.filter(p => assignedDubberIds.has(p.id));
   
   const dubberMentions = assignedDubbers.map(d => {
@@ -30,15 +31,30 @@ export const generateStartEpisodeMessage = (episode: Episode, participants: Part
   }).join('\n');
 
   const emoji = episode.project?.emoji || '📢';
+  
+  let yandexSection = '';
+  if (yandexUrl) {
+    yandexSection = `\n📁 Исходники серии: ${yandexUrl}\n`;
+  }
 
   return `${emoji} ${episode.project?.title}
 👾Серия: #${episode.number}
 📅 ДЕДЛАЙН: ${formatDeadline(episode.deadline)}
-━━━━━━ ◦ ❖ ◦ ━━━━━━
+━━━━━━ ◦ ❖ ◦ ━━━━━━${yandexSection}
 Если вы по каким то причинам не успеваете в дедлайн и знаете об этом, напишите об этом сразу, чтобы я мог найти вам замену или распределить сабы.
 
 В серии участвуют:
 ${dubberMentions || '• Даберы не назначены'}`;
+};
+
+export const generateSoundEngineerMessage = (episode: Episode, yandexUrl: string) => {
+  const emoji = episode.project?.emoji || '🎧';
+
+  return `${emoji} Экспорт для звукорежиссера завершен
+📌 ${episode.project?.title} — Серия: #${episode.number}
+━━━━━━ ◦ ❖ ◦ ━━━━━━
+📁 Файлы доступны по ссылке:
+${yandexUrl}`;
 };
 
 export const generateFixesIssuedMessage = (episode: Episode, participants: Participant[]) => {
@@ -48,13 +64,13 @@ export const generateFixesIssuedMessage = (episode: Episode, participants: Parti
   const dubberFixes: Record<string, { dubber: Participant, fixes: { character: string, comments: any[] }[] }> = {};
   
   assignments.forEach(as => {
-    const dubberId = as.dubberId;
-    if (!dubberId) return;
+    const assignedId = as.substituteId || as.dubberId;
+    if (!assignedId) return;
     
     // Only include assignments that actually need fixes
     if (as.status !== 'FIXES_NEEDED') return;
     
-    const dubber = participants.find(p => p.id === dubberId);
+    const dubber = participants.find(p => p.id === assignedId);
     if (!dubber) return;
     
     let comments = [];
@@ -66,11 +82,11 @@ export const generateFixesIssuedMessage = (episode: Episode, participants: Parti
     
     if (!Array.isArray(comments) || comments.length === 0) return;
 
-    if (!dubberFixes[dubberId]) {
-      dubberFixes[dubberId] = { dubber, fixes: [] };
+    if (!dubberFixes[assignedId]) {
+      dubberFixes[assignedId] = { dubber, fixes: [] };
     }
     
-    dubberFixes[dubberId].fixes.push({
+    dubberFixes[assignedId].fixes.push({
       character: as.characterName,
       comments
     });
@@ -114,12 +130,12 @@ ${dubberSections}
 };
 
 export const generateStatusMessage = (episode: Episode, participants: Participant[]) => {
-  const assignedDubberIds = new Set(episode.assignments?.map(a => a.dubberId) || []);
+  const assignedDubberIds = new Set(episode.assignments?.map(a => a.substituteId || a.dubberId) || []);
   const assignedDubbers = participants.filter(p => assignedDubberIds.has(p.id));
 
   const roadsMentions = assignedDubbers
     .filter(p => {
-      const pAssignments = (episode.assignments || []).filter(a => a.dubberId === p.id);
+      const pAssignments = (episode.assignments || []).filter(a => (a.substituteId || a.dubberId) === p.id);
       const hasPending = pAssignments.some(a => a.status === 'PENDING');
       // If track uploaded to QA, it's submitted
       const hasUpload = (episode.uploads || []).some(u => u.type === 'DUBBER_FILE' && u.uploadedById === p.id);
@@ -131,7 +147,7 @@ export const generateStatusMessage = (episode: Episode, participants: Participan
     }).join('\n');
 
   const fixesMentions = assignedDubbers
-    .filter(p => (episode.assignments || []).some(a => a.dubberId === p.id && a.status === 'FIXES_NEEDED'))
+    .filter(p => (episode.assignments || []).some(a => (a.substituteId || a.dubberId) === p.id && a.status === 'FIXES_NEEDED'))
     .map(p => {
       const mention = (p.telegram && p.telegram.startsWith('@')) ? p.telegram : `@${p.telegram || p.nickname}`;
       return `• ${mention}`;
@@ -158,11 +174,11 @@ export const generateTGPostMessage = (episode: Episode, participants: Participan
   const isRecastOrRedub = episode.project?.releaseType === 'RECAST' || episode.project?.releaseType === 'REDUB';
   
   const mainRoles = assignments.filter(a => a.isMain);
-  const secondaryDubberIds = new Set(assignments.filter(a => !a.isMain).map(a => a.dubberId).filter(Boolean));
+  const secondaryDubberIds = new Set(assignments.filter(a => !a.isMain).map(a => a.substituteId || a.dubberId).filter(Boolean));
   const secondaryDubbers = participants.filter(p => secondaryDubberIds.has(p.id));
 
   const mainRolesText = mainRoles.map(a => {
-    const dubber = participants.find(p => p.id === a.dubberId);
+    const dubber = participants.find(p => p.id === (a.substituteId || a.dubberId));
     if (!dubber) return null;
     const url = dubber.tgChannel || `https://t.me/${(dubber.telegram || dubber.nickname).replace('@', '')}`;
     return `➤ ${a.characterName} - [${dubber.nickname}](${url})`;
@@ -206,7 +222,7 @@ ${seMention}
 
   // Original VOICEOVER format
   const dubbers = assignments
-    .map(a => participants.find(p => p.id === a.dubberId))
+    .map(a => participants.find(p => p.id === (a.substituteId || a.dubberId)))
     .filter(Boolean) as Participant[];
   
   const uniqueDubbers = Array.from(new Set(dubbers.map(d => d.id)))
@@ -236,11 +252,11 @@ export const generateVKPostMessage = (episode: Episode, participants: Participan
   const isRecastOrRedub = episode.project?.releaseType === 'RECAST' || episode.project?.releaseType === 'REDUB';
   
   const mainRoles = assignments.filter(a => a.isMain);
-  const secondaryDubberIds = new Set(assignments.filter(a => !a.isMain).map(a => a.dubberId).filter(Boolean));
+  const secondaryDubberIds = new Set(assignments.filter(a => !a.isMain).map(a => a.substituteId || a.dubberId).filter(Boolean));
   const secondaryDubbers = participants.filter(p => secondaryDubberIds.has(p.id));
 
   const mainRolesInfo = mainRoles.map(a => {
-    const dubber = participants.find(p => p.id === a.dubberId);
+    const dubber = participants.find(p => p.id === (a.substituteId || a.dubberId));
     if (!dubber) return null;
     const vk = dubber.vkLink ? `@${dubber.vkLink.split('/').pop()}` : dubber.telegram;
     return `${a.characterName} - ${vk} (${dubber.nickname})`;
@@ -280,7 +296,7 @@ ${progress}
 
   // Original VOICEOVER format
   const dubbers = assignments
-    .map(a => participants.find(p => p.id === a.dubberId))
+    .map(a => participants.find(p => p.id === (a.substituteId || a.dubberId)))
     .filter(Boolean) as Participant[];
   
   const uniqueDubbers = Array.from(new Set(dubbers.map(d => d.id)))

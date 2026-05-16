@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import WaveSurfer from 'wavesurfer.js';
 import RegionsPlugin from 'wavesurfer.js/dist/plugins/regions.esm.js';
-import { Track } from '../../types';
+import { Track, SubtitleLine } from '../../types';
 
 interface TrackWaveformProps {
   track: Track;
   currentTime: number;
   isPlaying: boolean;
-  subLines: any[];
+  subLines: SubtitleLine[];
   onTimeUpdate: (time: number) => void;
   onPlayPause: () => void;
   volume: number;
@@ -36,6 +36,11 @@ export const TrackWaveform = ({ track, currentTime, isPlaying, subLines, onTimeU
 
     regionsRef.current = wavesurferRef.current.registerPlugin(RegionsPlugin.create());
 
+    wavesurferRef.current.on('error', (err: any) => {
+      if (err.name === 'AbortError' || err.message?.includes('aborted')) return;
+      console.error('WaveSurfer error:', err);
+    });
+
     // Region click handler
     regionsRef.current.on('region-click', (region: any, e: MouseEvent) => {
       e.stopPropagation();
@@ -45,7 +50,10 @@ export const TrackWaveform = ({ track, currentTime, isPlaying, subLines, onTimeU
     const selectedFile = track.files.find(f => f.id === track.selectedFileId) || track.files[0];
     if (selectedFile && selectedFile.path) {
       const audioUrl = selectedFile.path.startsWith('file://') || selectedFile.path.startsWith('http') ? selectedFile.path : `file://${selectedFile.path}`;
-      wavesurferRef.current.load(audioUrl);
+      wavesurferRef.current.load(audioUrl).catch(err => {
+        if (err.name === 'AbortError' || err.message?.includes('aborted')) return;
+        console.error('WaveSurfer load error:', err);
+      });
     }
 
     wavesurferRef.current.on('audioprocess', () => {
@@ -60,21 +68,33 @@ export const TrackWaveform = ({ track, currentTime, isPlaying, subLines, onTimeU
       if (isPlaying) onPlayPause();
     });
 
+    let isUnmounted = false;
+
     // Add regions
     wavesurferRef.current.on('ready', () => {
+      if (isUnmounted) return;
       subLines.forEach(line => {
-        regionsRef.current.addRegion({
-          start: line.startSec,
-          end: line.endSec,
-          color: 'rgba(59, 130, 246, 0.1)',
-          drag: false,
-          resize: false,
-          content: line.text
-        });
+        try {
+          regionsRef.current.addRegion({
+            start: line.startSec,
+            end: line.endSec,
+            color: 'rgba(59, 130, 246, 0.1)',
+            drag: false,
+            resize: false,
+            content: line.text
+          });
+        } catch (e: any) {
+          if (e.message !== 'WaveSurfer is not initialized') {
+            console.error('Failed to add region:', e);
+          }
+        }
       });
     });
 
-    return () => wavesurferRef.current?.destroy();
+    return () => {
+      isUnmounted = true;
+      wavesurferRef.current?.destroy();
+    };
   }, [track.id]);
 
   useEffect(() => {

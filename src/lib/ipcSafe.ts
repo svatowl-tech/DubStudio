@@ -3,11 +3,20 @@ import { ipcRenderer } from './ipc';
 export const ipcSafe = {
   invoke: async (channel: string, ...args: any[]) => {
     try {
-      return await ipcRenderer.invoke(channel, ...args);
+      const response = await ipcRenderer.invoke(channel, ...args);
+      
+      // If the response is the new standardized format
+      if (response && typeof response === 'object' && 'success' in response) {
+        if (!response.success) {
+          throw new Error(response.error || 'Unknown IPC Error');
+        }
+        return response.data;
+      }
+      
+      // Fallback for handlers that haven't been wrapped yet
+      return response;
     } catch (error) {
       console.error(`IPC Error on channel "${channel}":`, error);
-      // In a real app, we'd use a toast library here.
-      // For now, we'll just throw the error to be handled by the caller.
       throw error;
     }
   },

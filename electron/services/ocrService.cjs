@@ -4,43 +4,82 @@ const fs = require('fs/promises');
 const path = require('path');
 const log = require('electron-log');
 const { cleanAssFile } = require('./subtitleService.cjs');
+const { addProcess, removeProcess } = require('./ffmpegService.cjs');
 
-async function extractHardsub(videoPath, outputAssPath, onProgress) {
+async function extractHardsub(videoPath, outputAssPath, onProgress, options = {}) {
+  const { 
+    language = 'rus+eng', 
+    preprocess = false,
+    fps = 0.5 
+  } = options;
+
   const tempDir = path.join(path.dirname(videoPath), 'temp_ocr_' + Date.now());
   await fs.mkdir(tempDir, { recursive: true });
 
   try {
     // 1. Extract frames
     log.info('Extracting frames for OCR...');
+    
+    // Choose filter chain based on preprocess flag
+    // For subtitles, we want high contrast and sharpness
+    // format=gray: converts to grayscale
+    // curves=strong_contrast: increases contrast
+    // threshold: binarizes the image (black and white only) - helpful for clear text
+    const vf = [
+      `fps=${fps}`,
+      preprocess ? 'format=gray,curves=strong_contrast,unsharp=5:5:1.0:5:5:0.0' : null
+    ].filter(Boolean).join(',');
+
     await new Promise((resolve, reject) => {
-      ffmpeg(videoPath)
-        .outputOptions('-vf', 'fps=0.5') // 1 frame every 2 seconds
+      let processId = null;
+      const command = ffmpeg(videoPath)
+        .outputOptions('-vf', vf)
         .output(path.join(tempDir, 'frame_%04d.png'))
-        .on('end', resolve)
-        .on('error', reject)
-        .run();
+        .on('start', (commandLine) => {
+          processId = addProcess(commandLine, command);
+        })
+        .on('end', () => {
+          if (processId) removeProcess(processId);
+          resolve();
+        })
+        .on('error', (err) => {
+          log.error('FFmpeg extraction error:', err);
+          if (processId) removeProcess(processId);
+          reject(err);
+        });
+      command.run();
     });
 
     // 2. Perform OCR
-    log.info('Performing OCR...');
-    const worker = await createWorker('rus+eng');
-    const files = (await fs.readdir(tempDir)).sort();
+    log.info(`Performing OCR with language: ${language}...`);
+    const files = (await fs.readdir(tempDir)).filter(f => f.endsWith('.png')).sort();
+    log.info(`Extracted ${files.length} frames for processing.`);
+    const worker = await createWorker(language);
     const subtitles = [];
 
+    if (files.length === 0) {
+      log.error('OCR Error: No frames extracted from video');
+      throw new Error('No frames extracted from video');
+    }
+
+    const interval = 1 / fps;
+
     for (let i = 0; i < files.length; i++) {
+      if (i % 10 === 0) log.info(`OCR progress: ${i}/${files.length} frames processed.`);
       const framePath = path.join(tempDir, files[i]);
       const { data: { text } } = await worker.recognize(framePath);
       
       if (text.trim()) {
         subtitles.push({
-          start: i * 2, // 2 seconds interval
-          end: (i + 1) * 2,
+          start: i * interval,
+          end: (i + 1) * interval,
           text: text.trim()
         });
       }
       if (onProgress) onProgress(Math.round(((i + 1) / files.length) * 100));
     }
     await worker.terminate();
+    log.info(`OCR complete. Found ${subtitles.length} lines.`);
 
     // 3. Save to ASS
     log.info('Saving subtitles...');
@@ -58,9 +97,17 @@ Style: Default,Arial,20,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,
 Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text
 `;
 
+    function formatAssTime(seconds) {
+      const h = Math.floor(seconds / 3600);
+      const m = Math.floor((seconds % 3600) / 60);
+      const s = Math.floor(seconds % 60);
+      const cs = Math.floor((seconds % 1) * 100);
+      return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}.${cs.toString().padStart(2, '0')}`;
+    }
+
     subtitles.forEach(sub => {
-      const start = new Date(sub.start * 1000).toISOString().substr(11, 8);
-      const end = new Date(sub.end * 1000).toISOString().substr(11, 8);
+      const start = formatAssTime(sub.start);
+      const end = formatAssTime(sub.end);
       assContent += `Dialogue: 0,${start},${end},Default,,0,0,0,,${sub.text.replace(/\n/g, '\\N')}\n`;
     });
 

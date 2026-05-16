@@ -6,183 +6,49 @@ export const ipcRenderer: {
 } = {
   invoke: async (channel: string, ...args: any[]) => {
     if (window.electronAPI && window.electronAPI.invoke) {
-      return await window.electronAPI.invoke(channel, ...args);
-    }
-    
-    // Browser fallback for AI Studio preview
-    console.warn(`IPC channel "${channel}" called in browser environment. Using fallback.`);
-    
-    const getLocalData = (key: string) => {
-      const data = localStorage.getItem(key);
-      return data ? JSON.parse(data) : [];
-    };
-    
-    const saveLocalData = (key: string, data: any) => {
-      localStorage.setItem(key, JSON.stringify(data));
-    };
-
-    if (channel === 'get-config') {
-      const config = localStorage.getItem('config');
-      return config ? JSON.parse(config) : { baseDir: '' };
-    }
-    if (channel === 'save-config') {
-      localStorage.setItem('config', JSON.stringify(args[0]));
-      return { success: true };
-    }
-    
-    const entityMatch = channel.match(/^(get|save|delete)-(project|episode|participant)s?$/);
-    if (entityMatch) {
-      const action = entityMatch[1];
-      const entity = entityMatch[2];
-      const key = `${entity}s`;
-      
-      if (action === 'get') {
-        if (entity === 'project') {
-          // Join logic for projects
-          const projects = getLocalData('projects');
-          const episodes = getLocalData('episodes');
-          const participants = getLocalData('participants');
-          
-          return projects.map((project: any) => {
-            const projectEpisodes = episodes.filter((ep: any) => ep.projectId === project.id).map((ep: any) => {
-              const assignments = (ep.assignments || []).map((assignment: any) => {
-                const dubber = participants.find((p: any) => p.id === assignment.dubberId);
-                return { ...assignment, dubber };
-              });
-              const uploads = (ep.uploads || []).map((upload: any) => {
-                const uploadedBy = participants.find((p: any) => p.id === upload.uploadedById);
-                return { ...upload, uploadedBy };
-              });
-              return { ...ep, assignments, uploads };
-            });
-            return { ...project, episodes: projectEpisodes };
-          });
-        }
-        return getLocalData(key);
-      }
-      
-      if (action === 'save') {
-        const items = getLocalData(key);
-        const item = args[0];
-        const index = items.findIndex((i: any) => i.id === item.id);
-        
-        let dataToSave = { ...item };
-        if (entity === 'episode') {
-          delete dataToSave.project;
-          if (dataToSave.assignments) {
-            dataToSave.assignments = dataToSave.assignments.map((a: any) => {
-              const { dubber, substitute, ...rest } = a;
-              return rest;
-            });
-          }
-          if (dataToSave.uploads) {
-            dataToSave.uploads = dataToSave.uploads.map((u: any) => {
-              const { uploadedBy, ...rest } = u;
-              return rest;
-            });
-          }
-        } else if (entity === 'project') {
-          delete dataToSave.episodes;
-        }
-
-        if (index !== -1) {
-          items[index] = dataToSave;
-        } else {
-          items.push(dataToSave);
-        }
-        saveLocalData(key, items);
-        return { success: true };
-      }
-      
-      if (action === 'delete') {
-        const items = getLocalData(key);
-        const id = args[0];
-        const filtered = items.filter((i: any) => i.id !== id);
-        saveLocalData(key, filtered);
-        return { success: true };
+      try {
+        return await window.electronAPI.invoke(channel, ...args);
+      } catch (error) {
+        console.warn(`Local Electron invoke failed for "${channel}", falling back to server:`, error);
       }
     }
-
-    if (channel === 'get-gpus') {
-      return [{ name: 'Mock GPU 0', index: '0' }];
-    }
-
-    if (channel === 'import-participants') {
-      saveLocalData('participants', args[0]);
-      return { success: true };
-    }
-
-    if (channel === 'select-directory') {
-      return { canceled: false, filePaths: ['/mock/release/directory'] };
-    }
-
-    if (channel === 'select-folder') {
-      return { success: true, data: { path: '/mock/path' } };
-    }
     
-    if (channel === 'select-file') {
-      return { success: true, data: { path: '/mock/selected/file.mp4' } };
+    // Browser fallback for AI Studio preview - Try calling the server API
+    // console.info(`IPC channel "${channel}" called. Attempting server call.`);
+    try {
+      const origin = typeof window !== 'undefined' ? window.location.origin : '';
+      const url = origin && !origin.startsWith('file') ? `${origin}/api/ipc/${channel}` : `/api/ipc/${channel}`;
+      
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ args })
+      });
+      
+      if (response.ok) {
+        const result = await response.json();
+        if (result.success) return result.data;
+        throw new Error(result.error);
+      } else {
+        const errorData = await response.json().catch(() => ({ error: response.statusText }));
+        throw new Error(errorData.error || `Server status ${response.status}`);
+      }
+    } catch (e: any) {
+      console.warn(`Server IPC fallback failed for "${channel}":`, e);
+      
+      // If we are on the web and the server call failed, check if we have a mock in this file
+      // This allows some things to work even if the server is down or the channel is unknown
+      const mockedResult = handleIpcMock(channel, args);
+      if (mockedResult !== undefined) return mockedResult;
+      
+      throw e;
     }
-    
-    if (channel === 'get-raw-subtitles') {
-      return {
-        lines: [
-          { rawLineIndex: 1, start: '0:00:00.00', end: '0:00:05.00', style: 'Default', name: 'Actor1', text: 'Hello world' },
-          { rawLineIndex: 2, start: '0:00:05.00', end: '0:00:10.00', style: 'Default', name: 'Actor2', text: 'Hi there' },
-          { rawLineIndex: 3, start: '0:00:10.00', end: '0:00:15.00', style: 'Default', name: 'Actor3', text: 'Testing' },
-          { rawLineIndex: 4, start: '0:00:15.00', end: '0:00:20.00', style: 'Default', name: 'Actor4', text: 'More lines' },
-          { rawLineIndex: 5, start: '0:00:20.00', end: '0:00:25.00', style: 'Default', name: 'Actor1', text: 'Another one' }
-        ],
-        actors: ['Actor1', 'Actor2', 'Actor3', 'Actor4'],
-        styles: []
-      };
-    }
-
-    if (channel === 'split-subs-by-dubber') {
-      return { success: true, generatedFiles: ['actor1.ass', 'actor2.ass'] };
-    }
-
-    if (channel === 'split-subs-by-actor') {
-      return { success: true, generatedFiles: ['actor1.ass', 'actor2.ass'] };
-    }
-
-    if (channel === 'export-full-ass-with-roles') {
-      return { success: true, path: args[0].outputPath };
-    }
-
-    if (channel === 'copy-file') {
-      const { fileName, targetDir } = args[0];
-      return { success: true, data: { path: `${targetDir}/${fileName}` } };
-    }
-
-    if (channel === 'save-file-buffer') {
-      const { fileName, targetDir } = args[0];
-      return { success: true, data: { path: `${targetDir}/${fileName}` } };
-    }
-
-    if (channel === 'get-debug-stats') {
-      return { cpu: 0, ram: 0, ffmpeg: [] };
-    }
-
-    if (channel === 'get-tasks') {
-      return [];
-    }
-
-    if (channel === 'abort-task') {
-      return true;
-    }
-
-    if (channel === 'clear-task-history') {
-      return true;
-    }
-
-    return { success: true, mocked: true };
   },
   send: (channel: string, ...args: any[]) => {
     if (window.electronAPI && window.electronAPI.send) {
       window.electronAPI.send(channel, ...args);
     } else {
-      console.warn(`IPC channel "${channel}" send called in browser environment. Using fallback.`);
+      // console.warn(`IPC channel "${channel}" send called in browser environment. Using fallback.`);
     }
   },
   on: (channel: string, callback: (...args: any[]) => void) => {
@@ -199,7 +65,7 @@ export const ipcRenderer: {
     };
 
     window.addEventListener(channel, handler);
-    console.warn(`IPC channel "${channel}" listener registered in browser environment. Using fallback.`);
+    // console.warn(`IPC channel "${channel}" listener registered in browser environment. Using fallback.`);
     return () => window.removeEventListener(channel, handler);
   },
   removeListener: (channel: string, callback: (...args: any[]) => void) => {
@@ -213,3 +79,188 @@ export const ipcRenderer: {
     window.removeEventListener(channel, handler);
   }
 };
+
+/**
+ * Fallback mock logic for when running in browser without server
+ */
+function handleIpcMock(channel: string, args: any[]): any {
+  // console.warn(`IPC channel "${channel}" falling back to LocalStorage mock.`);
+  
+  const getLocalData = (key: string) => {
+    const data = localStorage.getItem(key);
+    return data ? JSON.parse(data) : [];
+  };
+  
+  const saveLocalData = (key: string, data: any) => {
+    localStorage.setItem(key, JSON.stringify(data));
+  };
+
+  if (channel === 'get-config') {
+    const config = localStorage.getItem('config');
+    return config ? JSON.parse(config) : { baseDir: '' };
+  }
+  if (channel === 'save-config') {
+    localStorage.setItem('config', JSON.stringify(args[0]));
+    return { success: true };
+  }
+  
+  if (channel === 'cloud-sync-status') {
+    return { connected: false, enabled: false };
+  }
+
+  if (channel === 'yandex-get-auth-url') {
+    return 'https://oauth.yandex.ru/authorize?response_type=code&client_id=mock';
+  }
+
+  if (channel === 'cloud-push' || channel === 'cloud-pull') {
+    return { success: true, results: [] };
+  }
+  
+  const entityMatch = channel.match(/^(get|save|delete)-(project|episode|participant)s?$/);
+  if (entityMatch) {
+    const action = entityMatch[1];
+    const entity = entityMatch[2];
+    const key = `${entity}s`;
+    
+    if (action === 'get') {
+      if (entity === 'project') {
+        // Join logic for projects
+        const projects = getLocalData('projects');
+        const episodes = getLocalData('episodes');
+        const participants = getLocalData('participants');
+        
+        return projects.map((project: any) => {
+          const projectEpisodes = episodes.filter((ep: any) => ep.projectId === project.id).map((ep: any) => {
+            const assignments = (ep.assignments || []).map((assignment: any) => {
+              const dubber = participants.find((p: any) => p.id === assignment.dubberId);
+              return { ...assignment, dubber };
+            });
+            const uploads = (ep.uploads || []).map((upload: any) => {
+              const uploadedBy = participants.find((p: any) => p.id === upload.uploadedById);
+              return { ...upload, uploadedBy };
+            });
+            return { ...ep, assignments, uploads };
+          });
+          return { ...project, episodes: projectEpisodes };
+        });
+      }
+      return getLocalData(key);
+    }
+    
+    if (action === 'save') {
+      const items = getLocalData(key);
+      const item = args[0];
+      const index = items.findIndex((i: any) => i.id === item.id);
+      
+      let dataToSave = { ...item };
+      if (entity === 'episode') {
+        delete dataToSave.project;
+        if (dataToSave.assignments) {
+          dataToSave.assignments = dataToSave.assignments.map((a: any) => {
+            const { dubber, substitute, ...rest } = a;
+            return rest;
+          });
+        }
+        if (dataToSave.uploads) {
+          dataToSave.uploads = dataToSave.uploads.map((u: any) => {
+            const { uploadedBy, ...rest } = u;
+            return rest;
+          });
+        }
+      } else if (entity === 'project') {
+        delete dataToSave.episodes;
+      }
+
+      if (index !== -1) {
+        items[index] = dataToSave;
+      } else {
+        items.push(dataToSave);
+      }
+      saveLocalData(key, items);
+      return { success: true };
+    }
+    
+    if (action === 'delete') {
+      const items = getLocalData(key);
+      const id = args[0];
+      const filtered = items.filter((i: any) => i.id !== id);
+      saveLocalData(key, filtered);
+      return { success: true };
+    }
+  }
+
+  if (channel === 'get-gpus') {
+    return [{ name: 'Mock GPU 0', index: '0' }];
+  }
+
+  if (channel === 'import-participants') {
+    saveLocalData('participants', args[0]);
+    return { success: true };
+  }
+
+  if (channel === 'select-directory') {
+    return { canceled: false, filePaths: ['/mock/release/directory'] };
+  }
+
+  if (channel === 'select-folder') {
+    return { success: true, data: { path: '/mock/path' } };
+  }
+  
+  if (channel === 'select-file') {
+    return { success: true, data: { path: '/mock/selected/file.mp4' } };
+  }
+  
+  if (channel === 'get-raw-subtitles') {
+    return {
+      lines: [
+        { rawLineIndex: 1, start: '0:00:00.00', end: '0:00:05.00', style: 'Default', name: 'Actor1', text: 'Hello world' },
+        { rawLineIndex: 2, start: '0:00:05.00', end: '0:00:10.00', style: 'Default', name: 'Actor2', text: 'Hi there' },
+        { rawLineIndex: 3, start: '0:00:10.00', end: '0:00:15.00', style: 'Default', name: 'Actor3', text: 'Testing' },
+        { rawLineIndex: 4, start: '0:00:15.00', end: '0:00:20.00', style: 'Default', name: 'Actor4', text: 'More lines' },
+        { rawLineIndex: 5, start: '0:00:20.00', end: '0:00:25.00', style: 'Default', name: 'Actor1', text: 'Another one' }
+      ],
+      actors: ['Actor1', 'Actor2', 'Actor3', 'Actor4'],
+      styles: []
+    };
+  }
+
+  if (channel === 'split-subs-by-dubber') {
+    return { success: true, generatedFiles: ['actor1.ass', 'actor2.ass'] };
+  }
+
+  if (channel === 'split-subs-by-actor') {
+    return { success: true, generatedFiles: ['actor1.ass', 'actor2.ass'] };
+  }
+
+  if (channel === 'export-full-ass-with-roles') {
+    return { success: true, path: args[0].outputPath };
+  }
+
+  if (channel === 'copy-file') {
+    const { fileName, targetDir } = args[0];
+    return { success: true, data: { path: `${targetDir}/${fileName}` } };
+  }
+
+  if (channel === 'save-file-buffer') {
+    const { fileName, targetDir } = args[0];
+    return { success: true, data: { path: `${targetDir}/${fileName}` } };
+  }
+
+  if (channel === 'get-debug-stats') {
+    return { cpu: 0, ram: 0, ffmpeg: [] };
+  }
+
+  if (channel === 'get-tasks') {
+    return [];
+  }
+
+  if (channel === 'abort-task') {
+    return true;
+  }
+
+  if (channel === 'clear-task-history') {
+    return true;
+  }
+
+  return { success: true, mocked: true };
+}

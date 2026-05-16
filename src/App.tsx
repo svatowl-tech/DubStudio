@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { LayoutDashboard, Scissors, Settings, Mic2, Activity, PlaySquare, Database } from 'lucide-react';
+import { Toaster } from 'sonner';
 import Dashboard from './components/Dashboard';
 import QAPanel from './components/QAPanel';
 import ReleasePanel from './components/ReleasePanel';
@@ -196,6 +197,7 @@ function AppContent() {
         {activeTab === 'qa' && <QAPanel currentEpisode={currentEpisode} onRefresh={loadProjects} />}
         <TaskQueuePanel />
       </main>
+      <Toaster position="top-right" richColors theme="dark" />
     </div>
   );
 }

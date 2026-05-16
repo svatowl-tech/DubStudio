@@ -29,9 +29,10 @@ const UploadedFileSchema = z.object({
   id: z.string(),
   episodeId: z.string().optional().nullable(),
   assignmentId: z.string().optional().nullable(),
-  type: z.enum(["DUBBER_FILE", "FIXES"]),
+  type: z.enum(["DUBBER_FILE", "FIXES", "SOUND_ENGINEER_FILE"]),
   path: z.string(),
   uploadedById: z.string(),
+  role: z.string().optional().nullable(),
   createdAt: z.string(),
 });
 
@@ -78,6 +79,8 @@ const ConfigSchema = z.object({
   useNvenc: z.boolean().optional().nullable(),
   gpuIndex: z.string().optional().nullable(),
   openRouterKey: z.string().optional().nullable(),
+  yandexToken: z.string().optional().nullable(),
+  syncEnabled: z.boolean().optional().nullable(),
 });
 
 const Schemas = {
@@ -91,6 +94,7 @@ class DataManager {
   constructor(userDataPath) {
     this.userDataPath = userDataPath;
     this.backupPath = path.join(userDataPath, 'backups');
+    this.saveQueues = new Map();
   }
 
   /**
@@ -123,6 +127,17 @@ class DataManager {
    * Save data to JSON file using Atomic Write pattern
    */
   async saveData(filename, data) {
+    if (!this.saveQueues.has(filename)) {
+      this.saveQueues.set(filename, Promise.resolve());
+    }
+
+    const queue = this.saveQueues.get(filename);
+    const newQueue = queue.then(() => this._performSave(filename, data)).catch(() => this._performSave(filename, data));
+    this.saveQueues.set(filename, newQueue);
+    return newQueue;
+  }
+
+  async _performSave(filename, data) {
     const filePath = path.join(this.userDataPath, filename);
     const tempPath = `${filePath}.tmp`;
 
@@ -141,7 +156,22 @@ class DataManager {
       await fs.writeFile(tempPath, json, 'utf-8');
 
       // 4. Atomic Write: Rename temp file to original file (OS-level atomic operation)
-      await fs.rename(tempPath, filePath);
+      // Retry logic for EPERM on Windows (often caused by Antivirus locks or short-lived open handles)
+      let renameSuccess = false;
+      let retries = 5;
+      while (!renameSuccess && retries > 0) {
+        try {
+          await fs.rename(tempPath, filePath);
+          renameSuccess = true;
+        } catch (renameErr) {
+          if (renameErr.code === 'EPERM' && retries > 1) {
+            retries--;
+            await new Promise(resolve => setTimeout(resolve, 50));
+          } else {
+            throw renameErr;
+          }
+        }
+      }
       
       log.info(`DataManager: Successfully saved ${filename} atomically.`);
     } catch (e) {

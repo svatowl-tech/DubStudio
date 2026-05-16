@@ -24,6 +24,10 @@ export default function AssOcrPanel({ currentEpisode, onRefresh }: AssOcrPanelPr
   const [editingId, setEditingId] = useState<number | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   
+  // OCR Options
+  const [ocrLanguage, setOcrLanguage] = useState('rus+eng');
+  const [preprocess, setPreprocess] = useState(false);
+  
   const videoRef = useRef<HTMLVideoElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -58,19 +62,21 @@ export default function AssOcrPanel({ currentEpisode, onRefresh }: AssOcrPanelPr
     setProgress(0);
     setStatus('Подготовка к распознаванию...');
     
+    let removeListener: (() => void) | undefined;
+    
     try {
-      // Listen for progress
-      const removeListener = window.electronAPI.on('ffmpeg-progress', (p: number) => {
+      // Listen for progress using the safer way
+      removeListener = ipcSafe.on('ffmpeg-progress', (p: number) => {
         setProgress(p);
         setStatus(`Распознавание хардсаба: ${Math.round(p)}%`);
       });
 
       await ipcSafe.invoke('extract-hardsub', {
         videoPath: currentEpisode.rawPath,
-        outputAssPath: subPath
+        outputAssPath: subPath,
+        language: ocrLanguage,
+        preprocess: preprocess
       });
-      
-      removeListener();
       
       // Update episode with new subPath if it was empty
       if (!currentEpisode.subPath) {
@@ -86,9 +92,12 @@ export default function AssOcrPanel({ currentEpisode, onRefresh }: AssOcrPanelPr
       onRefresh();
       await loadSubtitles();
     } catch (err: any) {
-      setStatus(`Ошибка: ${err.message}`);
+      if (err.name !== 'AbortError') {
+        setStatus(`Ошибка: ${err.message}`);
+      }
     } finally {
       setIsProcessing(false);
+      if (removeListener) removeListener();
     }
   };
 
@@ -265,20 +274,45 @@ export default function AssOcrPanel({ currentEpisode, onRefresh }: AssOcrPanelPr
       </div>
       
       <div key="info-grid" className="grid grid-cols-1 md:grid-cols-2 gap-4 w-full max-w-2xl">
-        <div className="p-4 bg-neutral-900/50 border border-neutral-800 rounded-xl text-left space-y-2">
+        <div className="p-4 bg-neutral-900/50 border border-neutral-800 rounded-xl text-left space-y-4">
           <div className="flex items-center gap-2 text-emerald-400 font-bold text-sm">
             <Video className="w-4 h-4" />
-            Видео-анализ
+            Настройки распознавания
           </div>
-          <p className="text-xs text-neutral-500">
-            Система анализирует каждый кадр и находит области с текстом, учитывая тайминги появления.
-          </p>
+          <div className="space-y-3">
+            <div>
+              <label className="text-[10px] text-neutral-500 uppercase font-bold mb-1 block">Язык</label>
+              <select 
+                value={ocrLanguage}
+                onChange={(e) => setOcrLanguage(e.target.value)}
+                className="w-full bg-neutral-950 border border-neutral-800 rounded-lg text-sm text-white px-3 py-2 outline-none focus:border-emerald-500/50 transition-colors"
+              >
+                <option value="rus+eng">Русский + Английский</option>
+                <option value="rus">Русский</option>
+                <option value="eng">Английский</option>
+                <option value="jpn+eng">Японский + Английский</option>
+                <option value="jpn">Японский</option>
+              </select>
+            </div>
+            <label className="flex items-center gap-2 cursor-pointer group">
+              <input 
+                type="checkbox" 
+                checked={preprocess}
+                onChange={(e) => setPreprocess(e.target.checked)}
+                className="rounded border-neutral-800 bg-neutral-950 text-emerald-500 focus:ring-emerald-500/20"
+              />
+              <span className="text-xs text-neutral-400 group-hover:text-neutral-300 transition-colors">Предподготовка (Улучшает точность в сложных сабах)</span>
+            </label>
+          </div>
         </div>
         <div className="p-4 bg-neutral-900/50 border border-neutral-800 rounded-xl text-left space-y-2">
           <div className="flex items-center gap-2 text-emerald-400 font-bold text-sm">
             <Edit3 className="w-4 h-4" />
-            Ручная коррекция
+            Советы
           </div>
+          <p className="text-xs text-neutral-500">
+            Для сложных субтитров (с обводкой или на пестром фоне) включите <b>Предподготовку</b>. Это увеличит время обработки, но снизит количество ошибок.
+          </p>
           <p className="text-xs text-neutral-500">
             После распознавания вы сможете вручную подправить текст, сверяясь с видеоплеером.
           </p>

@@ -1,16 +1,7 @@
 import React from 'react';
 import { Activity, CheckCircle, Check, MessageSquare, Clock, Mic } from 'lucide-react';
 import { STATUS_MAP } from '../../constants';
-
-interface Track {
-  id: string;
-  participant: string;
-  character: string;
-  status: 'pending' | 'approved' | 'rejected' | 'fixes_needed';
-  files: { id: string; path: string; createdAt: string; type?: 'DUBBER_FILE' | 'FIXES' }[];
-  selectedFileId?: string;
-  comments: any[];
-}
+import { Track } from '../../types';
 
 interface TrackSidebarProps {
   tracks: Track[];

@@ -3,10 +3,25 @@ import { Plus, Trash2, Edit2, Save, UserPlus, Download, Upload } from 'lucide-re
 import { Participant } from '../types';
 import { ROLES } from '../constants';
 import { getParticipants, saveParticipant, deleteParticipant, exportParticipants, importParticipants } from '../services/dbService';
+import { toast } from 'sonner';
+import { ConfirmModal } from './ui/ConfirmModal';
 
 export default function DatabasePanel() {
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [editing, setEditing] = useState<Participant | null>(null);
+
+  const [confirmState, setConfirmState] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    onConfirm: () => void;
+    variant?: 'danger' | 'warning' | 'info';
+  }>({
+    isOpen: false,
+    title: '',
+    message: '',
+    onConfirm: () => {},
+  });
 
   useEffect(() => {
     getParticipants().then(setParticipants);
@@ -32,10 +47,10 @@ export default function DatabasePanel() {
           await importParticipants(json);
           const updated = await getParticipants();
           setParticipants(updated);
-          alert('База импортирована!');
+          toast.success('База импортирована!');
         } catch (error) {
           console.error('Import error:', error);
-          alert('Ошибка при импорте базы: ' + (error instanceof Error ? error.message : 'Неизвестная ошибка'));
+          toast.error('Ошибка при импорте базы: ' + (error instanceof Error ? error.message : 'Неизвестная ошибка'));
         }
       };
       reader.readAsText(file);
@@ -50,10 +65,23 @@ export default function DatabasePanel() {
   };
 
   const handleDelete = async (id: string) => {
-    if (!window.confirm('Вы уверены, что хотите удалить этого участника?')) return;
-    await deleteParticipant(id);
-    const updated = await getParticipants();
-    setParticipants(updated);
+    setConfirmState({
+      isOpen: true,
+      title: 'Удаление участника',
+      message: 'Вы уверены, что хотите удалить этого участника?',
+      variant: 'danger',
+      onConfirm: async () => {
+        try {
+          await deleteParticipant(id);
+          const updated = await getParticipants();
+          setParticipants(updated);
+          toast.success('Участник удален');
+        } catch (error) {
+          console.error('Delete participant error:', error);
+          toast.error('Ошибка при удалении участника');
+        }
+      }
+    });
   };
 
   return (
@@ -138,6 +166,15 @@ export default function DatabasePanel() {
           ))}
         </tbody>
       </table>
+
+      <ConfirmModal 
+        isOpen={confirmState.isOpen}
+        title={confirmState.title}
+        message={confirmState.message}
+        variant={confirmState.variant}
+        onConfirm={confirmState.onConfirm}
+        onCancel={() => setConfirmState(prev => ({ ...prev, isOpen: false }))}
+      />
     </div>
   );
 }

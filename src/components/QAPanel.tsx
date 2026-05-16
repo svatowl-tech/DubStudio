@@ -1,38 +1,23 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { Play, Pause, CheckCircle, XCircle, AlertCircle, MessageSquare, Volume2, Check, X, Activity, User, Clock, FileAudio, Send, Video, Trash2, Mic, Sparkles, Save, SkipForward, Scissors, Zap, VolumeX, Volume1 } from 'lucide-react';
+import { toast } from 'sonner';
 import { ipcSafe } from '../lib/ipcSafe';
-import { Episode, RoleAssignment, Participant } from '../types';
+import { Episode, RoleAssignment, Participant, Track, SubtitleLine, Comment } from '../types';
 import { sanitizeFolderName } from '../lib/pathUtils';
 import { TrackWaveform } from './qa/TrackWaveform';
 import { TrackSidebar } from './qa/TrackSidebar';
 import { generateFixesIssuedMessage, generateStatusMessage } from '../lib/templates';
 import { getParticipants } from '../services/dbService';
 import { ExportModal } from './ExportModal';
+import { ConfirmModal } from './ui/ConfirmModal';
 import { useVideoContext } from '../contexts/VideoContext';
+import { SIGN_KEYWORDS } from '../constants';
 import WaveSurfer from 'wavesurfer.js';
 import RegionsPlugin from 'wavesurfer.js/dist/plugins/regions.js';
 
 interface QAPanelProps {
   currentEpisode: Episode | null;
   onRefresh: () => void;
-}
-
-interface Track {
-  id: string;
-  participant: string;
-  character: string;
-  status: 'pending' | 'approved' | 'rejected' | 'fixes_needed';
-  files: { id: string; path: string; createdAt: string; type?: 'DUBBER_FILE' | 'FIXES' }[];
-  selectedFileId?: string;
-  comments: Comment[];
-}
-
-interface Comment {
-  id: string;
-  text: string;
-  timestamp: number;
-  author: string;
-  subId?: string; // Link to .ass line ID/index
 }
 
 export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
@@ -46,7 +31,7 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
   const [volumes, setVolumes] = useState<Record<string, number>>({});
   const [originalVolume, setOriginalVolume] = useState(0.5);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [subLines, setSubLines] = useState<any[]>([]);
+  const [subLines, setSubLines] = useState<SubtitleLine[]>([]);
   const [currentCharacter, setCurrentCharacter] = useState<string | null>(null);
   const [currentDubberNickname, setCurrentDubberNickname] = useState<string | null>(null);
   const [currentSubtitleText, setCurrentSubtitleText] = useState<string | null>(null);
@@ -63,6 +48,19 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
   const [silenceThreshold, setSilenceThreshold] = useState(0.01); // Default threshold
   const [currentSubId, setCurrentSubId] = useState<string | null>(null);
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
+
+  const [confirmState, setConfirmState] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    onConfirm: () => void;
+    variant?: 'danger' | 'warning' | 'info';
+  }>({
+    isOpen: false,
+    title: '',
+    message: '',
+    onConfirm: () => {},
+  });
 
   const { registerPlayer, unregisterPlayer } = useVideoContext();
 
@@ -112,17 +110,14 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
 
   // Update audio volumes
   useEffect(() => {
-    console.log('Updating audio volumes', { volumes, isMuted, selectedTrackId, audioRefs: Object.keys(audioRefs.current) });
     Object.entries(audioRefs.current).forEach(([id, audio]) => {
       if (audio instanceof HTMLAudioElement) {
         const volume = isMuted ? 0 : (volumes[id] ?? 0.8);
-        console.log(`Setting volume for ${id} to ${volume}`);
         audio.volume = volume;
       }
     });
     if (wavesurferRef.current && selectedTrackId) {
       const volume = isMuted ? 0 : (volumes[selectedTrackId] ?? 0.8);
-      console.log(`Setting wavesurfer volume to ${volume}`);
       wavesurferRef.current.setVolume(volume);
     }
   }, [volumes, isMuted, selectedTrackId, audioRefsUpdated]);
@@ -149,7 +144,8 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
     tracks.forEach(track => {
       // If we are viewing a specific track, we ONLY want to hear that track (via wavesurfer)
       // So we should not create/play audio elements for other tracks unless we are in 'all' mode
-      if (selectedTrackId !== 'all' || track.id === selectedTrackId) {
+      // Also, we NEVER want an audio element for the 'original' track because the video handles it
+      if (selectedTrackId !== 'all' || track.id === selectedTrackId || track.id === 'original') {
         // If it was previously in audioRefs, remove it
         if (audioRefs.current[track.id]) {
           audioRefs.current[track.id].pause();
@@ -185,13 +181,13 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
     const dubberTracks: Record<string, Track> = {};
     
     currentEpisode.assignments?.forEach(as => {
-      const dubberId = as.dubberId;
-      const dubberName = as.dubber?.nickname || 'Неизвестно';
+      const dubberId = as.substituteId || as.dubberId;
+      const dubberName = as.substitute?.nickname || as.dubber?.nickname || 'Неизвестно';
       
     // Find ALL DUBBER_FILEs and FIXES for this dubber in this episode
     const dubberFiles = currentEpisode.uploads?.filter(u => 
       (u.type === 'DUBBER_FILE' || u.type === 'FIXES') && 
-      (u.assignmentId === as.id || currentEpisode.assignments?.find(a => a.id === u.assignmentId)?.dubberId === dubberId)
+      (u.assignmentId === as.id || currentEpisode.assignments?.find(a => a.id === u.assignmentId)?.dubberId === dubberId || currentEpisode.assignments?.find(a => a.id === u.assignmentId)?.substituteId === dubberId)
     ).map(u => ({ id: u.id, path: u.path, createdAt: u.createdAt, type: u.type })) || [];
       
       let comments: Comment[] = [];
@@ -226,6 +222,25 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
         });
         // Merge comments
         dubberTracks[dubberId].comments = [...dubberTracks[dubberId].comments, ...comments];
+        
+        // Upgrade track status if a more critical status is found
+        const currentStatus = dubberTracks[dubberId].status;
+        const newStatus = as.status?.toLowerCase() as Track['status'];
+        
+        // Priority: rejected > fixes_needed > pending > approved
+        const priorities: Record<string, number> = {
+          'rejected': 4,
+          'fixes_needed': 3,
+          'pending': 2,
+          'approved': 1
+        };
+        
+        const currentPriority = priorities[currentStatus] || 0;
+        const newPriority = priorities[newStatus] || 0;
+        
+        if (newPriority > currentPriority) {
+          dubberTracks[dubberId].status = newStatus;
+        }
       }
     });
     
@@ -255,11 +270,17 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
         try {
           const res = await ipcSafe.invoke('get-raw-subtitles', currentEpisode.subPath);
           if (res && res.lines) {
-            const processedLines = res.lines.map((l: any) => ({
-              ...l,
-              startSec: typeof l.start === 'number' ? l.start : parseAssTime(l.start || ''),
-              endSec: typeof l.end === 'number' ? l.end : parseAssTime(l.end || '')
-            })).sort((a: any, b: any) => a.startSec - b.startSec);
+            const processedLines = (res.lines as SubtitleLine[])
+              .filter((l: SubtitleLine) => {
+                const name = (l.name || '').toLowerCase();
+                const style = (l.style || '').toLowerCase();
+                return !SIGN_KEYWORDS.some(k => name.includes(k.toLowerCase()) || style.includes(k.toLowerCase()));
+              })
+              .map((l: SubtitleLine) => ({
+                ...l,
+                startSec: typeof l.start === 'number' ? l.start : parseAssTime(l.start || ''),
+                endSec: typeof l.end === 'number' ? l.end : parseAssTime(l.end || '')
+              })).sort((a: SubtitleLine, b: SubtitleLine) => a.startSec - b.startSec);
             setSubLines(processedLines);
           }
         } catch (e) {
@@ -284,6 +305,18 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
     }
 
     if (lastStartedSub) {
+      const name = (lastStartedSub.name || '').toLowerCase();
+      const style = (lastStartedSub.style || '').toLowerCase();
+      const isSign = SIGN_KEYWORDS.some(k => name.includes(k.toLowerCase()) || style.includes(k.toLowerCase()));
+
+      if (isSign) {
+        setCurrentCharacter(null);
+        setCurrentSubId(null);
+        setCurrentDubberNickname(null);
+        setCurrentSubtitleText(null);
+        return;
+      }
+
       const aliases: Record<string, string> = JSON.parse(currentEpisode?.project?.characterAliases || '{}');
       const mainName = aliases[lastStartedSub.name] || lastStartedSub.name;
       setCurrentCharacter(mainName);
@@ -309,6 +342,42 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
       setCurrentSubtitleText(null);
     }
   }, [currentTime, subLines, currentEpisode?.project?.characterAliases, currentEpisode?.assignments]);
+
+  const handleReassignCharacter = async (newCharacterName: string) => {
+    if (!currentEpisode || !currentSubId || !currentEpisode.subPath) return;
+
+    try {
+      const lineIndex = parseInt(currentSubId);
+      if (isNaN(lineIndex)) return;
+
+      const updates = [{
+        rawLineIndex: lineIndex,
+        name: newCharacterName
+      }];
+
+      await ipcSafe.invoke('save-raw-subtitles', currentEpisode.subPath, updates);
+      
+      // Update local state
+      setSubLines(prev => prev.map(l => 
+        l.rawLineIndex === lineIndex ? { ...l, name: newCharacterName } : l
+      ));
+      
+      // Update current character immediately
+      setCurrentCharacter(newCharacterName);
+      
+      const assignment = currentEpisode?.assignments?.find(a => a.characterName.toLowerCase() === newCharacterName.toLowerCase());
+      if (assignment) {
+        setCurrentDubberNickname(assignment.dubber?.nickname || null);
+      } else {
+        setCurrentDubberNickname(null);
+      }
+
+      toast.success(`Реплика переназначена на ${newCharacterName}`);
+    } catch (error) {
+      console.error('Reassign character error:', error);
+      toast.error('Ошибка при переназначении персонажа');
+    }
+  };
 
   const selectedTrack = tracks.find(t => t.id === selectedTrackId);
 
@@ -374,7 +443,7 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
     
     // If we have a detected character, we can use it to find the specific assignment
     // but we should stay on the selected track if it's one of the dubber's roles
-    const dubberAssignments = targetTrackId ? (currentEpisode.assignments?.filter(a => a.dubberId === targetTrackId) || []) : [];
+    const dubberAssignments = targetTrackId ? (currentEpisode.assignments?.filter(a => (a.substituteId || a.dubberId) === targetTrackId) || []) : [];
     const matchingAssignment = dubberAssignments.find(
       a => currentCharacter && a.characterName.toLowerCase() === currentCharacter.toLowerCase()
     );
@@ -385,7 +454,7 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
         a => a.characterName.toLowerCase() === currentCharacter.toLowerCase()
       );
       if (autoAssignment) {
-        targetTrackId = autoAssignment.dubberId;
+        targetTrackId = autoAssignment.substituteId || autoAssignment.dubberId;
       }
     }
 
@@ -394,7 +463,7 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
       if (tracks.length > 0) {
         targetTrackId = tracks[0].id;
       } else {
-        alert("Не удалось определить дабера для фикса. Выберите дорожку вручную.");
+        toast.error("Не удалось определить дабера для фикса. Выберите дорожку вручную.");
         return;
       }
     }
@@ -424,7 +493,7 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
       // Determine which assignment to attach the comment to
       // If the dubber has multiple roles, we try to match the current character,
       // otherwise we use the first assignment of that dubber.
-      const targetDubberAssignments = currentEpisode.assignments?.filter(a => a.dubberId === targetTrackId) || [];
+      const targetDubberAssignments = currentEpisode.assignments?.filter(a => (a.substituteId || a.dubberId) === targetTrackId) || [];
       const bestAssignmentMatch = targetDubberAssignments.find(
         a => currentCharacter && a.characterName.toLowerCase() === currentCharacter.toLowerCase()
       ) || targetDubberAssignments[0];
@@ -602,13 +671,16 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
   const handleExportSoundEngineer = async (targetDir: string, skipConversion: boolean, smartExport?: boolean) => {
     if (!currentEpisode) return;
     setIsUploading(true);
-    const res = await ipcSafe.invoke('export-sound-engineer-files', { episode: currentEpisode, targetDir, skipConversion, smartExport });
-    setIsUploading(false);
-    setIsExportModalOpen(false);
-    if (res.success) {
-      alert('Экспорт для звукорежиссера успешно завершен!');
-    } else {
-      alert('Ошибка экспорта: ' + res.error);
+    try {
+      await ipcSafe.invoke('export-sound-engineer-files', { episode: currentEpisode, targetDir, skipConversion, smartExport });
+      setIsExportModalOpen(false);
+      toast.success('Экспорт для звукорежиссера успешно завершен!');
+    } catch (error: any) {
+      if (error.name !== 'AbortError') {
+        toast.error('Ошибка экспорта: ' + (error.message || String(error)));
+      }
+    } finally {
+      setIsUploading(false);
     }
   };
 
@@ -658,7 +730,8 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
     try {
       // Remove comment from all assignments of this dubber (since we don't know which one it was on exactly)
       const updatedAssignments = currentEpisode.assignments?.map(a => {
-        if (a.dubberId === trackId) {
+        const assignedId = a.substituteId || a.dubberId;
+        if (assignedId === trackId) {
           let existingComments: Comment[] = [];
           try {
             existingComments = JSON.parse(a.comments || '[]');
@@ -680,24 +753,33 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
   };
 
   const handleApproveAll = async () => {
-    if (!currentEpisode || !window.confirm('Одобрить ВСЕ дорожки в этом эпизоде?')) return;
+    if (!currentEpisode) return;
 
-    try {
-      const updatedAssignments = currentEpisode.assignments?.map(a => ({
-        ...a,
-        status: 'APPROVED'
-      })) || [];
+    setConfirmState({
+      isOpen: true,
+      title: 'Одобрить все дорожки',
+      message: 'Одобрить ВСЕ дорожки в этом эпизоде?',
+      onConfirm: async () => {
+        try {
+          const updatedAssignments = currentEpisode.assignments?.map(a => ({
+            ...a,
+            status: 'APPROVED'
+          })) || [];
 
-      await ipcSafe.invoke('save-episode', { 
-        ...currentEpisode, 
-        assignments: updatedAssignments,
-        status: 'SOUND_ENGINEERING'
-      });
+          await ipcSafe.invoke('save-episode', { 
+            ...currentEpisode, 
+            assignments: updatedAssignments,
+            status: 'SOUND_ENGINEERING'
+          });
 
-      onRefresh();
-    } catch (error) {
-      console.error('Approve all error:', error);
-    }
+          onRefresh();
+          toast.success('Все дорожки одобрены');
+        } catch (error) {
+          console.error('Approve all error:', error);
+          toast.error('Ошибка при одобрении дорожек');
+        }
+      }
+    });
   };
 
   const handleStatusChange = async (id: string, status: Track['status']) => {
@@ -707,9 +789,10 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
     const dbStatus = status.toUpperCase();
     
     try {
-      const updatedAssignments = currentEpisode.assignments?.map(a => 
-        a.dubberId === id ? { ...a, status: dbStatus } : a
-      ) || [];
+      const updatedAssignments = currentEpisode.assignments?.map(a => {
+        const assignedId = a.substituteId || a.dubberId;
+        return assignedId === id ? { ...a, status: dbStatus } : a
+      }) || [];
 
       // Check if all assignments are approved
       const allApproved = updatedAssignments.every(a => a.status === 'APPROVED');
@@ -739,7 +822,7 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
     if (!file || !currentEpisode) return;
 
     // Find one of the assignments for this dubber to link the upload to
-    const assignment = currentEpisode.assignments?.find(a => a.dubberId === trackId);
+    const assignment = currentEpisode.assignments?.find(a => (a.substituteId || a.dubberId) === trackId);
     if (!assignment) return;
 
     const projectTitle = sanitizeFolderName(currentEpisode.project?.title || 'Project');
@@ -766,13 +849,13 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
         });
       }
       
-      if (!res.success) throw new Error(res.error);
+      if (!res || !res.path) throw new Error("Не удалось получить путь сохранения файла");
       
       const newUpload = {
         id: Math.random().toString(36).substr(2, 9),
         episodeId: currentEpisode.id,
         type,
-        path: res.data.path,
+        path: res.path,
         uploadedById: trackId,
         assignmentId: assignment.id,
         createdAt: new Date().toISOString()
@@ -802,8 +885,11 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
       });
       
       onRefresh();
-    } catch (error) {
-      console.error('Upload error:', error);
+    } catch (error: any) {
+      if (error.name !== 'AbortError') {
+        console.error('Upload error:', error);
+        toast.error('Ошибка загрузки: ' + (error.message || String(error)));
+      }
     }
   };
 
@@ -942,17 +1028,39 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
 
               <div className="mt-6 pt-6 border-t border-neutral-800 shrink-0">
                 <div className="flex items-center justify-between">
-                  <div className="flex flex-col">
-                    <div className={`text-sm font-bold uppercase tracking-widest flex items-center gap-2 ${currentCharacter ? 'text-blue-400' : 'text-neutral-500'}`}>
-                      <User className="w-4 h-4" />
-                      {currentCharacter ? (
-                        <span>
-                          {currentDubberNickname ? `${currentDubberNickname} (${currentCharacter})` : currentCharacter}
-                        </span>
-                      ) : 'Никто не говорит'}
+                  <div className="flex flex-col gap-2">
+                    <div className="flex items-center justify-between">
+                      <div className={`text-sm font-bold uppercase tracking-widest flex items-center gap-2 ${currentCharacter ? 'text-blue-400' : 'text-neutral-500'}`}>
+                        <User className="w-4 h-4" />
+                        {currentCharacter ? (
+                          <span>
+                            {currentDubberNickname ? `${currentDubberNickname} (${currentCharacter})` : currentCharacter}
+                          </span>
+                        ) : 'Никто не говорит'}
+                      </div>
+                      
+                      {currentCharacter && currentEpisode && (
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px] text-neutral-500">Переназначить:</span>
+                          <select 
+                            className="bg-neutral-800 border border-neutral-700 text-white text-[10px] rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                            value={currentCharacter}
+                            onChange={(e) => handleReassignCharacter(e.target.value)}
+                          >
+                            <option value={currentCharacter}>{currentCharacter}</option>
+                            {currentEpisode.assignments?.map(a => a.characterName)
+                              .filter(name => name !== currentCharacter)
+                              .filter((v, i, a) => a.indexOf(v) === i) // Unique
+                              .map(name => (
+                                <option key={name} value={name}>{name}</option>
+                              ))
+                            }
+                          </select>
+                        </div>
+                      )}
                     </div>
                     {currentSubtitleText && (
-                      <div className="text-xs text-neutral-400 italic mt-1 line-clamp-1">
+                      <div className="text-xs text-neutral-400 italic line-clamp-1">
                         "{currentSubtitleText}"
                       </div>
                     )}
@@ -1082,6 +1190,45 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
                       </div>
                     </div>
 
+                    {/* Current Phrase Info & Reassignment */}
+                    <div className="mb-4 pb-4 border-b border-neutral-800 space-y-2">
+                       <div className="flex items-center justify-between">
+                        <div className={`text-[10px] font-bold uppercase tracking-widest flex items-center gap-2 ${currentCharacter ? 'text-blue-400' : 'text-neutral-500'}`}>
+                          <User className="w-3.5 h-3.5" />
+                          {currentCharacter ? (
+                            <span>
+                              {currentDubberNickname ? `${currentDubberNickname} (${currentCharacter})` : currentCharacter}
+                            </span>
+                          ) : 'Никто не говорит'}
+                        </div>
+                        
+                        {currentCharacter && currentEpisode && (
+                          <div className="flex items-center gap-2">
+                            <span className="text-[9px] text-neutral-500">Переназначить:</span>
+                            <select 
+                              className="bg-neutral-800 border border-neutral-700 text-white text-[10px] rounded px-2 py-0.5 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                              value={currentCharacter}
+                              onChange={(e) => handleReassignCharacter(e.target.value)}
+                            >
+                              <option value={currentCharacter}>{currentCharacter}</option>
+                              {currentEpisode.assignments?.map(a => a.characterName)
+                                .filter(name => name !== currentCharacter)
+                                .filter((v, i, a) => a.indexOf(v) === i)
+                                .map(name => (
+                                  <option key={name} value={name}>{name}</option>
+                                ))
+                              }
+                            </select>
+                          </div>
+                        )}
+                      </div>
+                      {currentSubtitleText && (
+                        <div className="text-[11px] text-neutral-400 italic line-clamp-1">
+                          "{currentSubtitleText}"
+                        </div>
+                      )}
+                    </div>
+
                     <div className="space-y-4">
                       <div className="flex items-center gap-4">
                         <Volume2 className="w-4 h-4 text-neutral-500" />
@@ -1179,7 +1326,7 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
                       subLines={subLines}
                       onTimeUpdate={setCurrentTime}
                       onPlayPause={togglePlay}
-                      volume={soloTrack && soloTrack !== track.id ? 0 : (mutedTracks.has(track.id) ? 0 : (volumes[track.id] ?? 0.8))}
+                      volume={track.id === 'original' ? 0 : (soloTrack && soloTrack !== track.id ? 0 : (mutedTracks.has(track.id) ? 0 : (volumes[track.id] ?? 0.8)))}
                       isMuted={isMuted}
                       onRegionClick={(region) => {
                         setCommentModal({ isOpen: true, region });
@@ -1256,7 +1403,7 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
                 <button 
                   onClick={() => {
                     navigator.clipboard.writeText(generatedMessage);
-                    alert('Скопировано в буфер обмена!');
+                    toast.success('Скопировано в буфер обмена!');
                   }}
                   className="flex-1 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-bold transition-all flex items-center justify-center gap-2 shadow-lg shadow-blue-500/20"
                 >

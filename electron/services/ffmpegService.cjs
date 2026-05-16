@@ -7,9 +7,9 @@ const log = require('electron-log');
 let activeProcesses = [];
 let processIdCounter = 0;
 
-function addProcess(commandLine) {
+function addProcess(commandLine, commandInstance = null) {
   const id = ++processIdCounter;
-  activeProcesses.push({ id, commandLine });
+  activeProcesses.push({ id, commandLine, command: commandInstance });
   return id;
 }
 
@@ -21,13 +21,28 @@ function getActiveProcesses() {
   return activeProcesses;
 }
 
+function killAllProcesses() {
+  log.info(`Killing all ${activeProcesses.length} active FFmpeg processes...`);
+  for (const process of activeProcesses) {
+    if (process.command && typeof process.command.kill === 'function') {
+      try {
+        log.info(`Killing FFmpeg process: ${process.commandLine}`);
+        process.command.kill('SIGKILL');
+      } catch (err) {
+        log.error('Failed to kill ffmpeg process', err);
+      }
+    }
+  }
+  activeProcesses = [];
+}
+
 // Настройка пути к FFmpeg для работы в составе Electron
 // Если путь находится внутри app.asar, заменяем его на app.asar.unpacked
 if (ffmpegPath) {
   ffmpegPath = ffmpegPath.replace('app.asar', 'app.asar.unpacked');
   
   if (fs.existsSync(ffmpegPath)) {
-    console.log('FFmpeg found at:', ffmpegPath);
+    log.info('FFmpeg found at:', ffmpegPath);
     ffmpeg.setFfmpegPath(ffmpegPath);
   } else {
     log.error('FFmpeg NOT found at:', ffmpegPath, '- attempting to use system ffmpeg');
@@ -36,7 +51,7 @@ if (ffmpegPath) {
       const { execSync } = require('child_process');
       const systemFfmpeg = execSync('which ffmpeg').toString().trim();
       if (systemFfmpeg && fs.existsSync(systemFfmpeg)) {
-        console.log('Using system FFmpeg at:', systemFfmpeg);
+        log.info('Using system FFmpeg at:', systemFfmpeg);
         ffmpeg.setFfmpegPath(systemFfmpeg);
       }
     } catch (e) {
@@ -91,16 +106,22 @@ function bakeSubtitles(videoPath, finalAssPath, outputPath, onProgress, onComman
       .replace(/:/g, '\\:')
       .replace(/'/g, "'\\''");
 
+    const filters = [];
+    if (options.additionalProcessing) {
+      filters.push('hflip,scale=1.02*iw:-2,crop=1920:1080');
+    }
+    filters.push(`ass=filename='${escapedAssPath}'`);
+
     command
-      .videoFilters(`ass=filename='${escapedAssPath}'`)
+      .videoFilters(filters.join(','))
       .output(oPath)
       .format('mp4')
       .outputOptions('-pix_fmt yuv420p')
       .outputOptions('-strict -2') // For compatibility with some AAC encoders
       .on('start', (commandLine) => {
-        console.log('FFmpeg started with command: ' + commandLine);
+        log.info('FFmpeg started with command: ' + commandLine);
         currentCommandLine = commandLine;
-        processId = addProcess(commandLine);
+        processId = addProcess(commandLine, command);
         onProgress(0);
       })
       .on('progress', (progress) => {
@@ -109,7 +130,7 @@ function bakeSubtitles(videoPath, finalAssPath, outputPath, onProgress, onComman
         }
       })
       .on('end', () => {
-        console.log('FFmpeg processing finished successfully');
+        log.info('FFmpeg processing finished successfully');
         if (processId) removeProcess(processId);
         onProgress(100);
         resolve(oPath);
@@ -157,6 +178,16 @@ function transcodeToMp4(videoPath, outputPath, onProgress, onCommand, options = 
         .outputOptions('-preset medium');
     }
 
+    if (options.additionalProcessing) {
+      command.videoFilters('hflip,scale=1.02*iw:-2,crop=1920:1080');
+    }
+
+    if (options.audioStreamIndex !== undefined) {
+      command
+        .outputOptions('-map 0:v:0')
+        .outputOptions(`-map 0:${options.audioStreamIndex}`);
+    }
+
     command
       .output(oPath)
       .format('mp4')
@@ -164,9 +195,9 @@ function transcodeToMp4(videoPath, outputPath, onProgress, onCommand, options = 
       .outputOptions('-pix_fmt yuv420p')
       .outputOptions('-strict -2')
       .on('start', (commandLine) => {
-        console.log('FFmpeg transcode started: ' + commandLine);
+        log.info('FFmpeg transcode started: ' + commandLine);
         currentCommandLine = commandLine;
-        processId = addProcess(commandLine);
+        processId = addProcess(commandLine, command);
         onProgress(0);
       })
       .on('progress', (progress) => {
@@ -175,7 +206,7 @@ function transcodeToMp4(videoPath, outputPath, onProgress, onCommand, options = 
         }
       })
       .on('end', () => {
-        console.log('FFmpeg transcode finished');
+        log.info('FFmpeg transcode finished');
         if (processId) removeProcess(processId);
         onProgress(100);
         resolve(oPath);
@@ -245,9 +276,9 @@ function muxRelease(videoPath, audioPath, signsAssPath, outputPath, onProgress, 
       .outputOptions('-map 0:v:0') // Видео из первого входа
       .outputOptions('-map 1:a:0') // Аудио из второго входа
       .on('start', (commandLine) => {
-        console.log('Muxing started: ' + commandLine);
+        log.info('Muxing started: ' + commandLine);
         currentCommandLine = commandLine;
-        processId = addProcess(commandLine);
+        processId = addProcess(commandLine, command);
         onProgress(0);
       })
       .on('progress', (progress) => {
@@ -256,7 +287,7 @@ function muxRelease(videoPath, audioPath, signsAssPath, outputPath, onProgress, 
         }
       })
       .on('end', () => {
-        console.log('Muxing finished');
+        log.info('Muxing finished');
         if (processId) removeProcess(processId);
         onProgress(100);
         resolve(oPath);
@@ -286,12 +317,12 @@ function takeScreenshot(videoPath, timestamp, outputPath) {
 
     let processId = null;
 
-    ffmpeg(vPath)
+    const command = ffmpeg(vPath)
       .seekInput(timestamp)
       .frames(1)
       .output(oPath)
       .on('start', (commandLine) => {
-        processId = addProcess(commandLine);
+        processId = addProcess(commandLine, command);
       })
       .on('end', () => {
         if (processId) removeProcess(processId);
@@ -300,8 +331,9 @@ function takeScreenshot(videoPath, timestamp, outputPath) {
       .on('error', (err) => {
         if (processId) removeProcess(processId);
         reject(err);
-      })
-      .run();
+      });
+      
+    command.run();
   });
 }
 
@@ -316,11 +348,22 @@ function getVideoMetadata(videoPath) {
 
 function extractSubtitleTrack(videoPath, outputPath, streamIndex) {
   return new Promise((resolve, reject) => {
-    ffmpeg(videoPath)
+    let processId = null;
+    const command = ffmpeg(videoPath)
       .outputOptions(`-map 0:${streamIndex}`)
-      .save(outputPath)
-      .on('end', () => resolve(outputPath))
-      .on('error', (err) => reject(err));
+      .on('start', (commandLine) => {
+        processId = addProcess(commandLine, command);
+      })
+      .on('end', () => {
+        if (processId) removeProcess(processId);
+        resolve(outputPath);
+      })
+      .on('error', (err) => {
+        if (processId) removeProcess(processId);
+        reject(err);
+      });
+      
+    command.save(outputPath);
   });
 }
 
@@ -332,5 +375,8 @@ module.exports = {
   getVideoMetadata,
   extractSubtitleTrack,
   setCustomFfmpegPath,
-  getActiveProcesses
+  getActiveProcesses,
+  killAllProcesses,
+  addProcess,
+  removeProcess
 };

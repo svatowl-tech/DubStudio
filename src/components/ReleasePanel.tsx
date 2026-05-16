@@ -88,7 +88,7 @@ export default function ReleasePanel({ currentEpisode, onRefresh }: ReleasePanel
         timestamp: screenshotTime,
         outputPath
       });
-      if (res.success) {
+      if (res && res.path) {
         setScreenshotPath(res.path);
       }
     } catch (e) {
@@ -117,7 +117,7 @@ export default function ReleasePanel({ currentEpisode, onRefresh }: ReleasePanel
     
     try {
       const result = await ipcSafe.invoke('select-directory');
-      if (result.canceled || !result.filePaths || result.filePaths.length === 0) return;
+      if (!result || !result.filePaths || result.filePaths.length === 0) return;
       
       const targetDir = result.filePaths[0];
       
@@ -137,7 +137,9 @@ export default function ReleasePanel({ currentEpisode, onRefresh }: ReleasePanel
       
       // We don't wait for result here, the TaskQueuePanel will show progress
     } catch (error: any) {
-      alert(`Ошибка при постановке в очередь: ${error.message}`);
+      if (error && error.message !== 'Selection canceled') {
+        alert(`Ошибка при постановке в очередь: ${error.message}`);
+      }
     }
   };
 
@@ -183,6 +185,17 @@ export default function ReleasePanel({ currentEpisode, onRefresh }: ReleasePanel
       setTimeout(() => setIsCopied(false), 2000);
     } catch (err) {
       console.error('Failed to copy text: ', err);
+    }
+  };
+
+  const handleOpenExternal = async (url: string, e: React.MouseEvent) => {
+    e.preventDefault();
+    try {
+      await ipcSafe.invoke('open-external', url);
+    } catch (err) {
+      console.error('Failed to open external link', err);
+      // Fallback for browser environment
+      window.open(url, '_blank');
     }
   };
 
@@ -245,10 +258,14 @@ export default function ReleasePanel({ currentEpisode, onRefresh }: ReleasePanel
                 />
                 <button
                   onClick={async () => {
-                    const res = await ipcSafe.invoke('select-file', { 
-                      filters: [{ name: 'Audio', extensions: ['wav', 'mp3', 'm4a', 'flac'] }] 
-                    });
-                    if (res.success) setCustomAudioPath(res.data.path);
+                    try {
+                      const res = await ipcSafe.invoke('select-file', { 
+                        filters: [{ name: 'Audio', extensions: ['wav', 'mp3', 'm4a', 'flac'] }] 
+                      });
+                      if (res && res.path) setCustomAudioPath(res.path);
+                    } catch (e: any) {
+                      if (e && e.message !== 'Selection canceled') console.error(e);
+                    }
                   }}
                   className="px-4 py-2 bg-neutral-800 hover:bg-neutral-700 text-white rounded-xl text-xs font-bold transition-all"
                 >
@@ -270,10 +287,14 @@ export default function ReleasePanel({ currentEpisode, onRefresh }: ReleasePanel
                   />
                   <button
                     onClick={async () => {
-                      const res = await ipcSafe.invoke('select-file', { 
-                        filters: [{ name: 'Video', extensions: ['mp4', 'mkv', 'avi', 'mov'] }] 
-                      });
-                      if (res.success) setCustomRawPath(res.data.path);
+                      try {
+                        const res = await ipcSafe.invoke('select-file', { 
+                          filters: [{ name: 'Video', extensions: ['mp4', 'mkv', 'avi', 'mov'] }] 
+                        });
+                        if (res && res.path) setCustomRawPath(res.path);
+                      } catch (e: any) {
+                        if (e && e.message !== 'Selection canceled') console.error(e);
+                      }
                     }}
                     className="px-4 py-2 bg-neutral-800 hover:bg-neutral-700 text-white rounded-xl text-xs font-bold transition-all"
                   >
@@ -398,8 +419,7 @@ export default function ReleasePanel({ currentEpisode, onRefresh }: ReleasePanel
         <div className="p-6 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
           <a 
             href="https://t.me/akaneproject" 
-            target="_blank" 
-            rel="noopener noreferrer"
+            onClick={(e) => handleOpenExternal("https://t.me/akaneproject", e)}
             className="flex flex-col items-center gap-2 p-4 bg-black/30 border border-neutral-800 rounded-xl hover:bg-blue-600/10 hover:border-blue-500/50 transition-all group"
           >
             <Send className="w-6 h-6 text-blue-400 group-hover:scale-110 transition-transform" />
@@ -407,8 +427,7 @@ export default function ReleasePanel({ currentEpisode, onRefresh }: ReleasePanel
           </a>
           <a 
             href="https://converter.kodikres.com/" 
-            target="_blank" 
-            rel="noopener noreferrer"
+            onClick={(e) => handleOpenExternal("https://converter.kodikres.com/", e)}
             className="flex flex-col items-center gap-2 p-4 bg-black/30 border border-neutral-800 rounded-xl hover:bg-purple-600/10 hover:border-purple-500/50 transition-all group"
           >
             <Package className="w-6 h-6 text-purple-400 group-hover:scale-110 transition-transform" />
@@ -416,8 +435,7 @@ export default function ReleasePanel({ currentEpisode, onRefresh }: ReleasePanel
           </a>
           <a 
             href="https://cabinet.vkvideo.ru/dashboard/@club216521493?filterPreset=published&section=video_my_content&subsection=video_my_content_videos" 
-            target="_blank" 
-            rel="noopener noreferrer"
+            onClick={(e) => handleOpenExternal("https://cabinet.vkvideo.ru/dashboard/@club216521493?filterPreset=published&section=video_my_content&subsection=video_my_content_videos", e)}
             className="flex flex-col items-center gap-2 p-4 bg-black/30 border border-neutral-800 rounded-xl hover:bg-indigo-600/10 hover:border-indigo-500/50 transition-all group"
           >
             <Globe className="w-6 h-6 text-indigo-400 group-hover:scale-110 transition-transform" />
@@ -425,8 +443,7 @@ export default function ReleasePanel({ currentEpisode, onRefresh }: ReleasePanel
           </a>
           <a 
             href="https://smotret-anime.com/translations/create" 
-            target="_blank" 
-            rel="noopener noreferrer"
+            onClick={(e) => handleOpenExternal("https://smotret-anime.com/translations/create", e)}
             className="flex flex-col items-center gap-2 p-4 bg-black/30 border border-neutral-800 rounded-xl hover:bg-orange-600/10 hover:border-orange-500/50 transition-all group"
           >
             <Link2 className="w-6 h-6 text-orange-400 group-hover:scale-110 transition-transform" />
@@ -434,8 +451,7 @@ export default function ReleasePanel({ currentEpisode, onRefresh }: ReleasePanel
           </a>
           <a 
             href="https://vk.com/okaneproject" 
-            target="_blank" 
-            rel="noopener noreferrer"
+            onClick={(e) => handleOpenExternal("https://vk.com/okaneproject", e)}
             className="flex flex-col items-center gap-2 p-4 bg-black/30 border border-neutral-800 rounded-xl hover:bg-blue-500/10 hover:border-blue-500/50 transition-all group"
           >
             <Globe className="w-6 h-6 text-blue-500 group-hover:scale-110 transition-transform" />

@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { X, FolderOpen } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { X, FolderOpen, Cloud } from 'lucide-react';
 import { Episode } from '../types';
 import { ipcSafe } from '../lib/ipcSafe';
 
@@ -8,7 +8,7 @@ interface ExportModalProps {
   onClose: () => void;
   episode: Episode;
   role: 'DABBER' | 'SOUND_ENGINEER';
-  onExport: (targetDir: string, skipConversion: boolean, smartExport?: boolean) => void;
+  onExport: (targetDir: string, skipConversion: boolean, smartExport?: boolean, uploadToYandex?: boolean, additionalProcessing?: boolean) => void;
   isExporting?: boolean;
   progress?: number;
 }
@@ -25,13 +25,28 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   const [targetDir, setTargetDir] = useState('');
   const [skipConversion, setSkipConversion] = useState(false);
   const [smartExport, setSmartExport] = useState(true);
+  const [uploadToYandex, setUploadToYandex] = useState(false);
+  const [additionalProcessing, setAdditionalProcessing] = useState(false);
+  const [isYandexConnected, setIsYandexConnected] = useState(false);
+
+  useEffect(() => {
+    if (isOpen) {
+      ipcSafe.invoke('cloud-sync-status').then((status: any) => {
+        setIsYandexConnected(status?.connected || false);
+      });
+    }
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
   const handleSelectFolder = async () => {
-    const res = await ipcSafe.invoke('select-folder');
-    if (res.success) {
-      setTargetDir(res.data.path);
+    try {
+      const res = await ipcSafe.invoke('select-folder');
+      if (res && res.path) {
+        setTargetDir(res.path);
+      }
+    } catch (e: any) {
+      if (e && e.message !== 'Selection canceled') console.error(e);
     }
   };
 
@@ -104,36 +119,101 @@ export const ExportModal: React.FC<ExportModalProps> = ({
         </div>
 
         {role === 'SOUND_ENGINEER' && (
-          <div className="mb-6">
-            <label className="flex items-center gap-3 cursor-pointer group">
-              <div className="relative flex items-center">
-                <input
-                  type="checkbox"
-                  checked={smartExport}
-                  onChange={(e) => setSmartExport(e.target.checked)}
-                  disabled={isExporting}
-                  className="peer sr-only"
-                />
-                <div className="w-5 h-5 border-2 border-neutral-700 rounded bg-neutral-950 peer-checked:bg-purple-600 peer-checked:border-purple-600 transition-all duration-200 group-hover:border-neutral-500" />
-                <svg
-                  className="absolute w-3.5 h-3.5 text-white opacity-0 peer-checked:opacity-100 transition-opacity duration-200 left-0.5 pointer-events-none"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                  strokeWidth="3"
-                >
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                </svg>
-              </div>
-              <span className="text-sm text-neutral-300 group-hover:text-white transition-colors">
-                Умная сортировка дорожек (Фиксы)
-              </span>
-            </label>
-            <p className="text-[10px] text-neutral-500 mt-1 ml-8">
-              Если фикс меньше оригинала — экспортируются оба. Если фикс больше или равен — только фикс.
-            </p>
-          </div>
+          <>
+            <div className="mb-6">
+              <label className="flex items-center gap-3 cursor-pointer group">
+                <div className="relative flex items-center">
+                  <input
+                    type="checkbox"
+                    checked={smartExport}
+                    onChange={(e) => setSmartExport(e.target.checked)}
+                    disabled={isExporting}
+                    className="peer sr-only"
+                  />
+                  <div className="w-5 h-5 border-2 border-neutral-700 rounded bg-neutral-950 peer-checked:bg-purple-600 peer-checked:border-purple-600 transition-all duration-200 group-hover:border-neutral-500" />
+                  <svg
+                    className="absolute w-3.5 h-3.5 text-white opacity-0 peer-checked:opacity-100 transition-opacity duration-200 left-0.5 pointer-events-none"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                    strokeWidth="3"
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                  </svg>
+                </div>
+                <span className="text-sm text-neutral-300 group-hover:text-white transition-colors">
+                  Умная сортировка дорожек (Фиксы)
+                </span>
+              </label>
+              <p className="text-[10px] text-neutral-500 mt-1 ml-8">
+                Если фикс меньше оригинала — экспортируются оба. Если фикс больше или равен — только фикс.
+              </p>
+            </div>
+            
+            <div className="mb-6">
+              <label className="flex items-center gap-3 cursor-pointer group">
+                <div className="relative flex items-center">
+                  <input
+                    type="checkbox"
+                    checked={additionalProcessing}
+                    onChange={(e) => setAdditionalProcessing(e.target.checked)}
+                    disabled={isExporting}
+                    className="peer sr-only"
+                  />
+                  <div className="w-5 h-5 border-2 border-neutral-700 rounded bg-neutral-950 peer-checked:bg-orange-600 peer-checked:border-orange-600 transition-all duration-200 group-hover:border-neutral-500" />
+                  <svg
+                    className="absolute w-3.5 h-3.5 text-white opacity-0 peer-checked:opacity-100 transition-opacity duration-200 left-0.5 pointer-events-none"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                    strokeWidth="3"
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                  </svg>
+                </div>
+                <span className="text-sm text-neutral-300 group-hover:text-white transition-colors">
+                  Дополнительная обработка видео
+                </span>
+              </label>
+              <p className="text-[10px] text-neutral-500 mt-1 ml-8">
+                Применяет отражение по горизонтали, масштабирование (1.02) и обрезку 1920:1080 до вшивания субтитров
+              </p>
+            </div>
+          </>
         )}
+
+        <div className="mb-6">
+          <label className={`flex items-center gap-3 cursor-pointer group ${!isYandexConnected ? 'opacity-50' : ''}`}>
+            <div className="relative flex items-center">
+              <input
+                type="checkbox"
+                checked={uploadToYandex}
+                onChange={(e) => setUploadToYandex(e.target.checked)}
+                disabled={isExporting || !isYandexConnected}
+                className="peer sr-only"
+              />
+              <div className="w-5 h-5 border-2 border-neutral-700 rounded bg-neutral-950 peer-checked:bg-blue-500 peer-checked:border-blue-500 transition-all duration-200 group-hover:border-neutral-500" />
+              <svg
+                className="absolute w-3.5 h-3.5 text-white opacity-0 peer-checked:opacity-100 transition-opacity duration-200 left-0.5 pointer-events-none"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth="3"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+              </svg>
+            </div>
+            <div className="flex items-center gap-1.5 text-sm text-neutral-300 group-hover:text-white transition-colors">
+              <Cloud className="w-4 h-4" />
+              <span>Загрузить на Яндекс.Диск после экспорта</span>
+            </div>
+          </label>
+          <p className="text-[10px] text-neutral-500 mt-1 ml-8">
+            {isYandexConnected 
+              ? 'Автоматически загрузит файлы и добавит ссылку в сообщение' 
+              : 'Яндекс.Диск не подключен (настройте в Настройках)'}
+          </p>
+        </div>
 
         {isExporting && (
           <div className="mb-6 space-y-2">
@@ -160,7 +240,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
             Отмена
           </button>
           <button 
-            onClick={() => onExport(targetDir, skipConversion, smartExport)} 
+            onClick={() => onExport(targetDir, skipConversion, smartExport, uploadToYandex, additionalProcessing)} 
             title="Начать экспорт"
             disabled={!targetDir || isExporting}
             className="px-6 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg text-sm font-medium transition-colors shadow-lg shadow-indigo-500/20"

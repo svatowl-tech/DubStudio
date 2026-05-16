@@ -1,0 +1,184 @@
+import express from 'express';
+import { createServer as createViteServer } from 'vite';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import fs from 'fs/promises';
+import dotenv from 'dotenv';
+
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
+
+// Mock Electron Environment State
+const mockIpcHandlers = new Map<string, Function>();
+
+// Monkey-patch require to mock 'electron'
+const Module = require('module');
+const originalRequire = Module.prototype.require;
+Module.prototype.require = function(id: string) {
+  if (id === 'electron') {
+    // console.log('[MonkeyPatch] Providing mock electron to:', this.filename || 'unknown');
+    return {
+      ipcMain: {
+        handle: (channel: string, fn: Function) => {
+          console.log(`[MonkeyPatch] Registering handler for: ${channel}`);
+          mockIpcHandlers.set(channel, fn);
+        },
+        on: (channel: string, fn: Function) => {}
+      },
+      app: {
+        getPath: (name: string) => path.join(__dirname, 'mock_user_data'),
+        on: () => {},
+        whenReady: () => Promise.resolve(),
+      },
+      BrowserWindow: class { 
+        webContents = { send: () => {} };
+        on() {}
+      },
+      dialog: {
+        showOpenDialog: async () => ({ canceled: true, filePaths: [] })
+      },
+      globalShortcut: { register: () => {} }
+    };
+  }
+  return originalRequire.apply(this, arguments as any);
+};
+
+dotenv.config();
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+async function startServer() {
+  const app = express();
+  const PORT = 3000;
+
+  app.use(express.json());
+
+  // Mock Electron Object for registration calls
+  const mockElectron = {
+    ipcMain: {
+      handle: (channel: string, fn: Function) => mockIpcHandlers.set(channel, fn),
+      on: (channel: string, fn: Function) => {}
+    },
+    app: {
+      getPath: (name: string) => path.join(__dirname, 'mock_user_data'),
+      on: () => {},
+      whenReady: () => Promise.resolve(),
+    },
+    BrowserWindow: class { 
+      webContents = { send: () => {} };
+      on() {}
+    },
+    dialog: {},
+    globalShortcut: { register: () => {} }
+  };
+
+  // Create mock user data dir
+  const userDataPath = path.join(__dirname, 'mock_user_data');
+  await fs.mkdir(userDataPath, { recursive: true });
+
+  // DataManager Setup
+  const DataManager = require('./electron/lib/DataManager.cjs');
+  const dataManager = new DataManager(userDataPath);
+  await dataManager.init();
+
+  const getData = (filename: string) => {
+    // console.log(`[DataManager] Reading: ${filename}`);
+    return dataManager.getData(filename);
+  };
+  const saveData = (filename: string, data: any) => {
+    // console.log(`[DataManager] Writing: ${filename}`);
+    return dataManager.saveData(filename, data);
+  };
+
+  // TaskQueue Setup
+  const TaskQueue = require('./electron/lib/TaskQueue.cjs');
+  const taskQueue = new TaskQueue();
+
+  // Register Handlers
+  console.log('[IPC Server] Starting handler registration...');
+  
+  const ProjectController = require('./electron/handlers/ProjectController.cjs');
+  const EpisodeHandlers = require('./electron/handlers/episodeHandlers.cjs');
+  const ApiController = require('./electron/handlers/ApiController.cjs');
+  const SyncController = require('./electron/handlers/SyncController.cjs');
+  const SystemController = require('./electron/handlers/SystemController.cjs');
+  const SubtitleController = require('./electron/handlers/SubtitleController.cjs');
+  const MediaController = require('./electron/handlers/MediaController.cjs');
+  const ExportController = require('./electron/handlers/ExportController.cjs');
+
+  ProjectController.registerProjectHandlers(getData, saveData, null);
+  EpisodeHandlers.registerEpisodeHandlers(getData, saveData);
+  ApiController.registerApiHandlers(getData);
+  SyncController.registerSyncHandlers(getData, saveData, userDataPath);
+  MediaController.registerMediaHandlers(getData, null, taskQueue);
+  ExportController.registerExportHandlers(getData, null);
+  SystemController.registerSystemHandlers(getData, saveData, null, taskQueue);
+  SubtitleController.registerSubtitleHandlers(getData);
+  
+  console.log('[IPC Server] Handler registration complete.');
+
+  // API Route to call IPC handlers from the browser frontend
+  app.post('/api/ipc/:channel', async (req, res) => {
+    const { channel } = req.params;
+    const args = req.body.args || [];
+    const handler = mockIpcHandlers.get(channel);
+
+    console.log(`[IPC Server] Called channel: ${channel}, handler found: ${!!handler}`);
+
+    if (handler) {
+      try {
+        const result = await handler({ sender: { send: () => {} } }, ...args);
+        res.json({ success: true, data: result });
+      } catch (error: any) {
+        console.error(`[IPC Server Error] channel: ${channel}, error:`, error);
+        res.json({ success: false, error: error.message });
+      }
+    } else {
+      console.warn(`[IPC Server 404] channel: ${channel} not found in registered handlers. Available:`, Array.from(mockIpcHandlers.keys()));
+      res.status(404).json({ success: false, error: `Handler for ${channel} not found` });
+    }
+  });
+
+  // OAuth Callback Handler
+  app.get(['/auth/callback', '/auth/callback/'], async (req, res) => {
+    const { code } = req.query;
+    
+    res.send(`
+      <html>
+        <body>
+          <script>
+            if (window.opener) {
+              window.opener.postMessage({ type: 'YANDEX_AUTH_SUCCESS', code: '${code}' }, '*');
+              window.close();
+            } else {
+              window.location.href = '/';
+            }
+          </script>
+          <p>Authentication successful. You can close this window.</p>
+        </body>
+      </html>
+    `);
+  });
+
+  // Vite middleware for development
+  if (process.env.NODE_ENV !== 'production') {
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: 'spa',
+    });
+    app.use(vite.middlewares);
+  } else {
+    const distPath = path.join(process.cwd(), 'dist');
+    app.use(express.static(distPath));
+    app.get('*', (req, res) => {
+      res.sendFile(path.join(distPath, 'index.html'));
+    });
+  }
+
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Server running on http://localhost:${PORT}`);
+  });
+}
+
+startServer();

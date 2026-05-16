@@ -7,15 +7,16 @@ const log = require('electron-log');
  */
 class AISubtitleProcessor {
   /**
-   * @param {string} apiKey - OpenRouter API key.
-   * @param {Object} glossary - Glossary of names and terms (e.g., { "Kanji": "Cyrillic" }).
+   * @param {string} apiKey - API key (can be 'ollama' or any string for local).
+   * @param {Object} glossary - Glossary of names and terms.
    * @param {string} model - AI model to use.
+   * @param {string} baseUrl - Base URL for the API (optional, defaults to OpenRouter).
    */
-  constructor(apiKey, glossary = {}, model = 'google/gemini-2.0-flash:free') {
+  constructor(apiKey, glossary = {}, model = 'google/gemini-2.0-flash-lite-preview-02-05:free', baseUrl = null) {
     this.apiKey = apiKey;
     this.glossary = glossary;
     this.model = model;
-    this.baseUrl = 'https://openrouter.ai/api/v1/chat/completions';
+    this.baseUrl = baseUrl || 'https://openrouter.ai/api/v1/chat/completions';
   }
 
   /**
@@ -33,26 +34,61 @@ class AISubtitleProcessor {
   }
 
   /**
+   * Cleans OCR-generated subtitle text.
+   * @param {string} text - The raw OCR text.
+   * @returns {string} Cleaned text.
+   */
+  cleanText(text) {
+    if (!text) return '';
+    // 1. Remove common OCR noise patterns
+    let cleaned = text
+      .replace(/\\N/g, ' ') // Replace newlines in ASS with spaces for now, or keep them if intended?
+      .replace(/[^\p{L}\p{N}\p{P}\s]/gu, '') // Remove non-printable/non-unicode garbage
+      .replace(/\s+/g, ' ') // Collapse spaces
+      .trim();
+    
+    // 2. Potentially more aggressive cleaning if needed
+    // ...
+    
+    return cleaned;
+  }
+
+  /**
    * Main method to process subtitles.
    * @param {Array} lines - Original subtitle lines.
    * @returns {Promise<Array>} Processed subtitle lines.
    */
   async processSubtitles(lines) {
-    if (!this.apiKey) {
-      throw new Error('OpenRouter API key is missing in config.json');
+    // 0. Pre-process and clean lines
+    const cleanedLines = lines.map(line => ({
+        ...line,
+        text: this.cleanText(line.text)
+    }));
+
+    // For local Ollama, apiKey might be optional or dummy
+    if (!this.apiKey && !this.baseUrl.includes('localhost') && !this.baseUrl.includes('127.0.0.1')) {
+      log.error('AISubtitleProcessor: API key is missing and not using a local endpoint');
+      throw new Error('API key is missing and not using a local endpoint');
     }
 
-    const batches = this.batchLines(lines);
+    const batches = this.batchLines(cleanedLines);
     const processedLines = [];
 
-    log.info(`AISubtitleProcessor: Starting processing ${lines.length} lines in ${batches.length} batches.`);
+    log.info(`AISubtitleProcessor: Starting processing ${cleanedLines.length} lines in ${batches.length} batches.`);
+    log.info(`AISubtitleProcessor: Using model ${this.model} at ${this.baseUrl}`);
 
     for (let i = 0; i < batches.length; i++) {
-      log.info(`AISubtitleProcessor: Processing batch ${i + 1}/${batches.length}`);
-      const translatedBatch = await this.translateBatch(batches[i]);
-      processedLines.push(...translatedBatch);
+        log.info(`AISubtitleProcessor: Processing batch ${i + 1}/${batches.length} (${batches[i].length} lines)`);
+      try {
+        const translatedBatch = await this.translateBatch(batches[i]);
+        processedLines.push(...translatedBatch);
+      } catch (error) {
+        log.error(`AISubtitleProcessor: Error in batch ${i + 1}:`, error.message);
+        throw error; // Re-throw to stop processing and notify user
+      }
     }
 
+    log.info(`AISubtitleProcessor: Finished processing ${processedLines.length} lines.`);
     return processedLines;
   }
 
@@ -93,19 +129,27 @@ Rules for translation:
     const userPrompt = batch.map(l => l.text).join('\n');
 
     try {
-      const response = await axios.post(this.baseUrl, {
+      const headers = {
+        'Content-Type': 'application/json'
+      };
+
+      if (this.apiKey && this.apiKey !== 'ollama') {
+        headers['Authorization'] = `Bearer ${this.apiKey}`;
+      }
+
+      const payload = {
         model: this.model,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt }
         ],
-        temperature: 0.3
-      }, {
-        headers: {
-          'Authorization': `Bearer ${this.apiKey}`,
-          'HTTP-Referer': 'https://github.com/SvatOwl/anime-dub-manager',
-          'X-Title': 'Anime Dub Manager'
-        }
+        temperature: 0.3,
+        max_tokens: 4096 
+      };
+
+      log.debug('AISubtitleProcessor: Sending request payload:', JSON.stringify(payload));
+      const response = await axios.post(this.baseUrl, payload, {
+        headers: headers
       });
 
       const content = response.data.choices[0].message.content.trim();
