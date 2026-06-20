@@ -28,6 +28,72 @@ async function prepareIcons() {
   }
 
   const pngPath = path.join(assetsDir, 'icon.png');
+  
+  // If we already have a valid PNG icon, do not risk corrupting it or running slow conversions on CI
+  if (fs.existsSync(pngPath)) {
+    try {
+      const header = fs.readFileSync(pngPath).subarray(0, 4);
+      if (header[0] === 0x89 && header[1] === 0x50 && header[2] === 0x4e && header[3] === 0x47) {
+        console.log(`Valid assets/icon.png already exists. Skipping dynamic rebuild to avoid build-time dependencies.`);
+        return;
+      }
+    } catch (e) {
+      console.warn('Failed to verify existing icon.png format:', e.message);
+    }
+  }
+
+  const icoPath = path.join(assetsDir, 'icon.ico');
+
+  // Try to extract high-quality PNG from icon.ico first (Zero-dependency, perfectly accurate)
+  if (fs.existsSync(icoPath)) {
+    try {
+      const buf = fs.readFileSync(icoPath);
+      // Read ICO header
+      const reserved = buf.readUInt16LE(0);
+      const type = buf.readUInt16LE(2);
+      const numImages = buf.readUInt16LE(4);
+      
+      if (reserved === 0 && type === 1 && numImages > 0) {
+        console.log(`Analyzing icon.ico: found ${numImages} sub-images.`);
+        let bestIndex = -1;
+        let maxWidth = 0;
+        let maxEntry = null;
+
+        for (let i = 0; i < numImages; i++) {
+          const entryOffset = 6 + i * 16;
+          let width = buf[entryOffset];
+          let height = buf[entryOffset + 1];
+          if (width === 0) width = 256;
+          if (height === 0) height = 256;
+          
+          const size = buf.readUInt32LE(entryOffset + 8);
+          const offset = buf.readUInt32LE(entryOffset + 12);
+
+          console.log(`  - Sub-image ${i}: ${width}x${height} (size: ${size} bytes, offset: ${offset})`);
+          if (width >= maxWidth) {
+            maxWidth = width;
+            bestIndex = i;
+            maxEntry = { offset, size, width };
+          }
+        }
+
+        if (maxEntry) {
+          const imgData = buf.subarray(maxEntry.offset, maxEntry.offset + maxEntry.size);
+          // Check if it's a valid PNG (starts with 0x89 0x50 0x4e 0x47)
+          if (imgData[0] === 0x89 && imgData[1] === 0x50 && imgData[2] === 0x4e && imgData[3] === 0x47) {
+            fs.writeFileSync(pngPath, imgData);
+            console.log(`Successfully extracted high-quality ${maxEntry.width}x${maxEntry.width} PNG from assets/icon.ico to: ${pngPath}`);
+            return;
+          } else {
+            console.warn(`Sub-image ${bestIndex} is not in PNG format (starts with ${imgData.subarray(0, 4).toString('hex')}).`);
+          }
+        }
+      }
+    } catch (icoErr) {
+      console.warn('Failed to extract PNG from icon.ico:', icoErr.message);
+    }
+  }
+
   const imagesDir = path.join(process.cwd(), 'src', 'assets', 'images');
   
   // Find any icon_*.jpg

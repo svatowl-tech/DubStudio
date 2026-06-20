@@ -40,24 +40,18 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
-      - name: Cache FFmpeg & AI Models
+      - name: Cache FFmpeg Binaries
         id: cache-assets
         uses: actions/cache@v4
         with:
           path: |
             assets/bin
-            assets/models
-          key: ${{ runner.os }}-assets-${{ hashFiles('scripts/download-ffmpeg.js', 'scripts/download-models.js') }}
+          key: ${{ runner.os }}-assets-${{ hashFiles('scripts/download-ffmpeg.js') }}
           restore-keys: |
             ${{ runner.os }}-assets-
 
       - name: Download FFmpeg Binaries (If not cached)
         run: node scripts/download-ffmpeg.js
-        env:
-          NODE_ENV: production
-
-      - name: Download Offline AI Models (If not cached)
-        run: node scripts/download-models.js
         env:
           NODE_ENV: production
 
