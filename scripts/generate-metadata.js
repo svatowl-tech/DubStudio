@@ -129,4 +129,30 @@ async function prepareIcons() {
   }
 }
 
+// Ensure and guarantee that empty assets/bin and assets/models directories exist.
+// This prevents electron-builder from failing on clean CI environments.
+function prepareRequiredDirectories() {
+  const assetsDir = path.join(process.cwd(), 'assets');
+  if (!fs.existsSync(assetsDir)) {
+    fs.mkdirSync(assetsDir, { recursive: true });
+  }
+
+  const binDir = path.join(assetsDir, 'bin');
+  if (!fs.existsSync(binDir)) {
+    fs.mkdirSync(binDir, { recursive: true });
+    // Write an optional placeholder
+    fs.writeFileSync(path.join(binDir, '.gitkeep'), '');
+    console.log(`Created assets/bin fallback folder.`);
+  }
+
+  const modelsDir = path.join(assetsDir, 'models');
+  if (!fs.existsSync(modelsDir)) {
+    fs.mkdirSync(modelsDir, { recursive: true });
+    // Write an optional placeholder
+    fs.writeFileSync(path.join(modelsDir, '.gitkeep'), '');
+    console.log(`Created assets/models fallback folder.`);
+  }
+}
+
+prepareRequiredDirectories();
 prepareIcons().catch(e => console.error('Error during icon preparation:', e));

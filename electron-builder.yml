@@ -1,6 +1,7 @@
 appId: com.dubbing.app
 productName: Anime Dub Manager
 copyright: "Copyright © 2026 Svat.Owl"
+npmRebuild: false
 
 directories:
   output: dist/electron
