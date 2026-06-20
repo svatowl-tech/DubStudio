@@ -25,13 +25,22 @@ export interface Episode {
   projectId: string;
   project?: Project;
   number: number;
+  title?: string;
+  airingDate?: string;
   status: EpisodeStatus;
   deadline?: string;
   rawPath?: string;
   subPath?: string;
   isHardsub?: boolean;
+  tgPostTemplate?: string;
+  vkPostTemplate?: string;
+  finalTgPostTemplate?: string;
+  linksTemplate?: string;
+  tgPostLink?: string;
+  vkPostLink?: string;
   assignments: RoleAssignment[];
   uploads: UploadedFile[];
+  statusHistory?: { status: EpisodeStatus; timestamp: string }[];
   createdAt: string;
   updatedAt: string;
 }
@@ -76,10 +85,18 @@ export interface Project {
   isOngoing?: boolean;
   synopsis?: string;
   posterUrl?: string;
+  anime365Id?: number | null;
+  airedEpisodes?: number;
   links?: string; // JSON string
   globalMapping?: string; // JSON string
   characterAliases?: string; // JSON string: Record<string, string> (alias -> mainName)
+  coverSettings?: string; // JSON string
   typeAndSeason?: string; // e.g. "TV1", "Movie", "OVA"
+  tgPostTemplate?: string;
+  vkPostTemplate?: string;
+  finalTgPostTemplate?: string;
+  linksTemplate?: string;
+  nextEpisodeDate?: string;
   episodes: Episode[];
   createdAt: string;
   updatedAt: string;

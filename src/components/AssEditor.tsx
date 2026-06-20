@@ -18,9 +18,12 @@ import {
   X,
   FileAudio,
   AlertCircle,
+  Mic,
 } from "lucide-react";
 import TranslatePanel from "./TranslatePanel";
 import AssOcrPanel from "./AssOcrPanel";
+import AssWhisperPanel from "./AssWhisperPanel";
+import AssDiarizationPanel from "./AssDiarizationPanel";
 import { Participant, Episode, RoleAssignment } from "../types";
 import { sanitizeFolderName } from "../lib/pathUtils";
 import { getParticipants } from "../services/dbService";
@@ -58,7 +61,7 @@ export default function AssEditor({
   const [status, setStatus] = useState("");
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [isSaving, setIsSaving] = useState(false);
-  const [activeTab, setActiveTab] = useState<"roles" | "raw" | "translate" | "ocr">("roles");
+  const [activeTab, setActiveTab] = useState<"roles" | "raw" | "translate" | "ocr" | "whisper" | "diarization">("roles");
   const [linkingCharacter, setLinkingCharacter] = useState<string | null>(null);
   const lastAnalyzedEpisodeId = React.useRef<string | null>(null);
 
@@ -519,19 +522,25 @@ export default function AssEditor({
     try {
       const taskType = exportRole === 'DABBER' ? 'export-dabber-files' : 'export-sound-engineer-files';
       const roleName = exportRole === 'DABBER' ? 'Даберам' : 'Звукорежиссеру';
+      const newStatus = exportRole === 'DABBER' ? 'RECORDING' : 'SOUND_ENGINEERING';
       
       const assignmentsToUse = currentAssignments || assignments;
+      
+      const updatedEpisode = {
+        ...currentEpisode,
+        status: newStatus as any,
+        assignments: assignmentsToUse.map(a => {
+          const { dubber, substitute, ...rest } = a;
+          return rest;
+        })
+      };
+
+      await ipcSafe.invoke('save-episode', updatedEpisode);
       
       await ipcSafe.invoke('enqueue-ffmpeg-task', {
         type: taskType,
         payload: { 
-          episode: {
-            ...currentEpisode,
-            assignments: assignmentsToUse.map(a => {
-              const { dubber, substitute, ...rest } = a;
-              return rest;
-            })
-          }, 
+          episode: updatedEpisode, 
           targetDir, 
           skipConversion, 
           smartExport,
@@ -545,6 +554,7 @@ export default function AssEditor({
       
       setIsExportModalOpen(false);
       setStatus(`Задание на экспорт (${roleName}) добавлено в очередь.`);
+      onRefresh();
     } catch (error: any) {
       console.error('Enqueue task error:', error);
       setStatus('Ошибка при постановке в очередь: ' + error.message);
@@ -945,7 +955,7 @@ export default function AssEditor({
   };
 
   return (
-    <div className="max-w-6xl mx-auto w-full h-full flex flex-col space-y-4 pb-8 overflow-hidden">
+    <div className="w-full h-full flex flex-col space-y-4 overflow-hidden pt-4 px-4 md:px-8 pb-8">
       <div className="flex items-center justify-between shrink-0">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-xl flex items-center justify-center shadow-lg">
@@ -1019,6 +1029,30 @@ export default function AssEditor({
             <FileText className="w-4 h-4" />
             Распознавание хардсаба
           </button>
+          <button
+            onClick={() => setActiveTab("whisper")}
+            title="Переключиться на распознавание речи"
+            className={`flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+              activeTab === "whisper"
+                ? "bg-neutral-800 text-white shadow-sm"
+                : "text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800/50"
+            }`}
+          >
+            <FileAudio className="w-4 h-4" />
+            Распознавание аудио
+          </button>
+          <button
+            onClick={() => setActiveTab("diarization")}
+            title="Разделение голосов (Диаризация)"
+            className={`flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+              activeTab === "diarization"
+                ? "bg-neutral-800 text-white shadow-sm"
+                : "text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800/50"
+            }`}
+          >
+            <Mic className="w-4 h-4" />
+            Диаризация голосов
+          </button>
         </div>
       </div>
 
@@ -1033,6 +1067,10 @@ export default function AssEditor({
         <TranslatePanel currentEpisode={currentEpisode} />
       ) : activeTab === "ocr" ? (
         <AssOcrPanel currentEpisode={currentEpisode} onRefresh={onRefresh} />
+      ) : activeTab === "whisper" ? (
+        <AssWhisperPanel currentEpisode={currentEpisode} onRefresh={onRefresh} />
+      ) : activeTab === "diarization" ? (
+        <AssDiarizationPanel currentEpisode={currentEpisode} onRefresh={onRefresh} />
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 flex-1 overflow-y-auto min-h-0 pb-4 pr-2">
           <div className="lg:col-span-1 space-y-6">
@@ -1348,14 +1386,26 @@ export default function AssEditor({
                                     {(() => {
                                       const portrait = getCharacterPortrait(assignment.characterName);
                                       return portrait ? (
-                                        <img 
-                                          src={portrait || undefined} 
-                                          alt="" 
-                                          className="w-6 h-6 rounded-full object-cover border border-neutral-700"
-                                          referrerPolicy="no-referrer"
-                                        />
+                                        <div className="relative w-6 h-6 flex-shrink-0">
+                                          <img 
+                                            src={portrait || undefined} 
+                                            alt="" 
+                                            className="absolute inset-0 w-6 h-6 rounded-full object-cover border border-neutral-700 z-10"
+                                            referrerPolicy="no-referrer"
+                                            onError={(e) => {
+                                              e.currentTarget.style.display = 'none';
+                                              const next = e.currentTarget.nextSibling;
+                                              if (next && next instanceof HTMLElement) {
+                                                next.classList.remove('hidden');
+                                              }
+                                            }}
+                                          />
+                                          <div className="absolute inset-0 w-6 h-6 rounded-full bg-neutral-800 flex items-center justify-center text-[10px] text-neutral-500 border border-neutral-700 hidden">
+                                            <User className="w-3 h-3" />
+                                          </div>
+                                        </div>
                                       ) : (
-                                        <div className="w-6 h-6 rounded-full bg-neutral-800 flex items-center justify-center text-[10px] text-neutral-500 border border-neutral-700">
+                                        <div className="w-6 h-6 rounded-full bg-neutral-800 flex items-center justify-center text-[10px] text-neutral-500 border border-neutral-700 flex-shrink-0">
                                           <User className="w-3 h-3" />
                                         </div>
                                       );
@@ -1408,14 +1458,26 @@ export default function AssEditor({
                                           onClick={() => handleLinkAsAlias(assignment.characterName, m.characterName)}
                                           className="px-1.5 py-0.5 bg-neutral-800 hover:bg-amber-500/20 text-neutral-300 rounded border border-neutral-700 flex items-center gap-1.5"
                                         >
-                                          {m.photoUrl && (
-                                            <img 
-                                              src={m.photoUrl || undefined} 
-                                              alt="" 
-                                              className="w-4 h-4 rounded-full object-cover border border-neutral-600"
-                                              referrerPolicy="no-referrer"
-                                            />
-                                          )}
+                                          {m.photoUrl ? (
+                                            <div className="relative w-4 h-4 shrink-0">
+                                              <img 
+                                                src={m.photoUrl || undefined} 
+                                                alt="" 
+                                                className="absolute inset-0 w-4 h-4 rounded-full object-cover border border-neutral-600 z-10"
+                                                referrerPolicy="no-referrer"
+                                                onError={(e) => {
+                                                  e.currentTarget.style.display = 'none';
+                                                  const next = e.currentTarget.nextSibling;
+                                                  if (next && next instanceof HTMLElement) {
+                                                    next.classList.remove('hidden');
+                                                  }
+                                                }}
+                                              />
+                                              <div className="absolute inset-0 w-4 h-4 rounded-full bg-neutral-700 flex items-center justify-center text-[6px] hidden">
+                                                <User className="w-2 h-2" />
+                                              </div>
+                                            </div>
+                                          ) : null}
                                           <span>{m.characterName}</span>
                                           {m.dubberId && <span className="text-[8px] text-indigo-400">({participants.find(p => p.id === m.dubberId)?.nickname})</span>}
                                         </button>

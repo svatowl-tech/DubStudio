@@ -1,8 +1,38 @@
 const ffmpeg = require('fluent-ffmpeg');
+const { app } = require('electron');
 let ffmpegPath = require('ffmpeg-static');
 const fs = require('fs');
 const path = require('path');
 const log = require('electron-log');
+
+// Пытаемся найти встроенный FFmpeg (который мы скачиваем в assets/bin при сборке)
+const isDev = !app.isPackaged;
+const ffmpegName = process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg';
+const ffprobeName = process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe';
+
+const resourcesPath = process.resourcesPath || '';
+
+const bundledFfmpegPath = isDev 
+  ? path.join(__dirname, '..', '..', 'assets', 'bin', ffmpegName)
+  : (resourcesPath ? path.join(resourcesPath, 'bin', ffmpegName) : '');
+
+const bundledFfprobePath = isDev
+  ? path.join(__dirname, '..', '..', 'assets', 'bin', ffprobeName)
+  : (resourcesPath ? path.join(resourcesPath, 'bin', ffprobeName) : '');
+
+if (fs.existsSync(bundledFfmpegPath)) {
+  log.info(`Using BUNDLED FFmpeg at: ${bundledFfmpegPath}`);
+  ffmpegPath = bundledFfmpegPath;
+  
+  if (fs.existsSync(bundledFfprobePath)) {
+    log.info(`Using BUNDLED FFprobe at: ${bundledFfprobePath}`);
+    ffmpeg.setFfprobePath(bundledFfprobePath);
+  }
+} else if (ffmpegPath) {
+  // Настройка пути к FFmpeg для работы в составе Electron (ffmpeg-static)
+  // Если путь находится внутри app.asar, заменяем его на app.asar.unpacked
+  ffmpegPath = ffmpegPath.replace('app.asar', 'app.asar.unpacked');
+}
 
 let activeProcesses = [];
 let processIdCounter = 0;
@@ -36,11 +66,7 @@ function killAllProcesses() {
   activeProcesses = [];
 }
 
-// Настройка пути к FFmpeg для работы в составе Electron
-// Если путь находится внутри app.asar, заменяем его на app.asar.unpacked
 if (ffmpegPath) {
-  ffmpegPath = ffmpegPath.replace('app.asar', 'app.asar.unpacked');
-  
   if (fs.existsSync(ffmpegPath)) {
     log.info('FFmpeg found at:', ffmpegPath);
     ffmpeg.setFfmpegPath(ffmpegPath);
@@ -71,7 +97,7 @@ if (ffmpegPath) {
  * @returns Promise с путем к готовому файлу
  */
 function bakeSubtitles(videoPath, finalAssPath, outputPath, onProgress, onCommand, options = {}) {
-  return new Promise((resolve, reject) => {
+  return new Promise(async (resolve, reject) => {
     // Normalize paths for Windows
     const vPath = path.resolve(videoPath);
     const aPath = path.resolve(finalAssPath);
@@ -108,7 +134,22 @@ function bakeSubtitles(videoPath, finalAssPath, outputPath, onProgress, onComman
 
     const filters = [];
     if (options.additionalProcessing) {
-      filters.push('hflip,scale=1.02*iw:-2,crop=1920:1080');
+      let origW = 1920;
+      let origH = 1080;
+      try {
+        const meta = await getVideoMetadata(vPath);
+        const videoStream = meta && meta.streams ? meta.streams.find(s => s.codec_type === 'video') : null;
+        if (videoStream && videoStream.width && videoStream.height) {
+          origW = videoStream.width;
+          origH = videoStream.height;
+        }
+      } catch (e) {
+        log.error('Error fetching video dimensions for bakeSubtitles:', e);
+      }
+      
+      const scaledW = Math.round((origW * 1.02) / 2) * 2;
+      const scaledH = Math.round((origH * 1.02) / 2) * 2;
+      filters.push(`hflip,scale=${scaledW}:${scaledH},crop=${origW}:${origH}`);
     }
     filters.push(`ass=filename='${escapedAssPath}'`);
 
@@ -139,7 +180,27 @@ function bakeSubtitles(videoPath, finalAssPath, outputPath, onProgress, onComman
         log.error('FFmpeg processing error: ', err);
         log.error('FFmpeg stderr: ', stderr);
         if (processId) removeProcess(processId);
-        reject(new Error(`FFmpeg Error: ${err.message}\n\nCommand: ${currentCommandLine}\n\nStderr: ${stderr}`));
+        
+        const errStr = (err?.message || '') + ' ' + (stderr || '');
+        const isNvencError = options.useNvenc && (
+          errStr.toLowerCase().includes('nvenc') || 
+          errStr.toLowerCase().includes('cuda') || 
+          errStr.toLowerCase().includes('nvidia') || 
+          errStr.toLowerCase().includes('driver') ||
+          errStr.toLowerCase().includes('api version') ||
+          errStr.toLowerCase().includes('encoder') ||
+          errStr.toLowerCase().includes('function not implemented')
+        );
+
+        if (isNvencError) {
+          log.warn('[FFmpeg] GPU NVENC error detected. Automatically retrying with safe CPU (libx264) transcoding...');
+          const fallbackOptions = { ...options, useNvenc: false };
+          bakeSubtitles(videoPath, finalAssPath, outputPath, onProgress, onCommand, fallbackOptions)
+            .then(resolve)
+            .catch(reject);
+        } else {
+          reject(new Error(`FFmpeg Error: ${err.message}\n\nCommand: ${currentCommandLine}\n\nStderr: ${stderr}`));
+        }
       })
       .run();
   });
@@ -155,7 +216,7 @@ function bakeSubtitles(videoPath, finalAssPath, outputPath, onProgress, onComman
  * @returns Promise с путем к готовому файлу
  */
 function transcodeToMp4(videoPath, outputPath, onProgress, onCommand, options = {}) {
-  return new Promise((resolve, reject) => {
+  return new Promise(async (resolve, reject) => {
     const vPath = path.resolve(videoPath);
     const oPath = path.resolve(outputPath);
 
@@ -179,7 +240,22 @@ function transcodeToMp4(videoPath, outputPath, onProgress, onCommand, options = 
     }
 
     if (options.additionalProcessing) {
-      command.videoFilters('hflip,scale=1.02*iw:-2,crop=1920:1080');
+      let origW = 1920;
+      let origH = 1080;
+      try {
+        const meta = await getVideoMetadata(vPath);
+        const videoStream = meta && meta.streams ? meta.streams.find(s => s.codec_type === 'video') : null;
+        if (videoStream && videoStream.width && videoStream.height) {
+          origW = videoStream.width;
+          origH = videoStream.height;
+        }
+      } catch (e) {
+        log.error('Error fetching video dimensions for transcodeToMp4:', e);
+      }
+      
+      const scaledW = Math.round((origW * 1.02) / 2) * 2;
+      const scaledH = Math.round((origH * 1.02) / 2) * 2;
+      command.videoFilters(`hflip,scale=${scaledW}:${scaledH},crop=${origW}:${origH}`);
     }
 
     if (options.audioStreamIndex !== undefined) {
@@ -215,7 +291,27 @@ function transcodeToMp4(videoPath, outputPath, onProgress, onCommand, options = 
         log.error('FFmpeg transcode error: ', err);
         log.error('FFmpeg stderr: ', stderr);
         if (processId) removeProcess(processId);
-        reject(new Error(`FFmpeg Transcode Error: ${err.message}\n\nCommand: ${currentCommandLine}\n\nStderr: ${stderr}`));
+
+        const errStr = (err?.message || '') + ' ' + (stderr || '');
+        const isNvencError = options.useNvenc && (
+          errStr.toLowerCase().includes('nvenc') || 
+          errStr.toLowerCase().includes('cuda') || 
+          errStr.toLowerCase().includes('nvidia') || 
+          errStr.toLowerCase().includes('driver') ||
+          errStr.toLowerCase().includes('api version') ||
+          errStr.toLowerCase().includes('encoder') ||
+          errStr.toLowerCase().includes('function not implemented')
+        );
+
+        if (isNvencError) {
+          log.warn('[FFmpeg] GPU NVENC transcode error detected. Automatically retrying with safe CPU (libx264) transcoding...');
+          const fallbackOptions = { ...options, useNvenc: false };
+          transcodeToMp4(videoPath, outputPath, onProgress, onCommand, fallbackOptions)
+            .then(resolve)
+            .catch(reject);
+        } else {
+          reject(new Error(`FFmpeg Transcode Error: ${err.message}\n\nCommand: ${currentCommandLine}\n\nStderr: ${stderr}`));
+        }
       })
       .run();
   });
@@ -337,11 +433,41 @@ function takeScreenshot(videoPath, timestamp, outputPath) {
   });
 }
 
+function getVideoMetadataFallback(videoPath) {
+  return new Promise((resolve, reject) => {
+    const { execFile } = require('child_process');
+    execFile(ffmpegPath, ['-i', videoPath], (err, stdout, stderr) => {
+      const output = stdout + '\n' + stderr;
+      const streams = [];
+      const lines = output.split('\n');
+      
+      for (const line of lines) {
+        if (line.includes('Stream #')) {
+          if (line.includes('Audio:')) {
+            streams.push({ codec_type: 'audio' });
+          } else if (line.includes('Video:')) {
+            streams.push({ codec_type: 'video' });
+          } else if (line.includes('Subtitle:')) {
+            streams.push({ codec_type: 'subtitle' });
+          }
+        }
+      }
+      resolve({ streams });
+    });
+  });
+}
+
 function getVideoMetadata(videoPath) {
   return new Promise((resolve, reject) => {
     ffmpeg.ffprobe(videoPath, (err, metadata) => {
-      if (err) reject(err);
-      else resolve(metadata);
+      if (err) {
+        log.warn(`ffprobe failed for ${videoPath}, using ffmpeg fallback probe:`, err.message);
+        getVideoMetadataFallback(videoPath)
+          .then(resolve)
+          .catch(() => reject(err));
+      } else {
+        resolve(metadata);
+      }
     });
   });
 }
@@ -367,6 +493,58 @@ function extractSubtitleTrack(videoPath, outputPath, streamIndex) {
   });
 }
 
+function extractAudioPeaks(videoPath, pointsPerSecond = 10, channelCount = 1) {
+  return new Promise((resolve, reject) => {
+    const { spawn } = require('child_process');
+    const samplingRate = 8000;
+    const samplesPerPeak = Math.floor(samplingRate / pointsPerSecond);
+    const peaks = [];
+    
+    // Check if the ffmpegPath is defined, else use system default
+    const currentFfmpegExec = ffmpegPath || 'ffmpeg';
+
+    log.info(`Extracting audio peaks for ${videoPath}`);
+    
+    const ffProcess = spawn(currentFfmpegExec, [
+      '-i', videoPath,
+      '-vn',
+      '-f', 's16le',
+      '-acodec', 'pcm_s16le',
+      '-ar', String(samplingRate),
+      '-ac', String(channelCount),
+      '-'
+    ]);
+
+    let chunkBuffer = Buffer.alloc(0);
+
+    ffProcess.stdout.on('data', (chunk) => {
+      chunkBuffer = Buffer.concat([chunkBuffer, chunk]);
+      
+      // Process chunks of size `samplesPerPeak * 2` (2 bytes per sample for s16le)
+      const bytesPerPeak = samplesPerPeak * 2;
+      while (chunkBuffer.length >= bytesPerPeak) {
+        let max = 0;
+        for (let i = 0; i < bytesPerPeak; i += 2) {
+          const sample = Math.abs(chunkBuffer.readInt16LE(i));
+          if (sample > max) max = sample;
+        }
+        peaks.push(max / 32768); // normalize 0-1
+        chunkBuffer = chunkBuffer.slice(bytesPerPeak);
+      }
+    });
+
+    ffProcess.on('close', (code) => {
+      log.info(`Audio peaks extraction finished with code ${code}, total peaks: ${peaks.length}`);
+      resolve(peaks);
+    });
+
+    ffProcess.on('error', (err) => {
+      log.error('Error during audio peaks extraction:', err);
+      reject(err);
+    });
+  });
+}
+
 module.exports = {
   bakeSubtitles,
   transcodeToMp4,
@@ -374,6 +552,7 @@ module.exports = {
   takeScreenshot,
   getVideoMetadata,
   extractSubtitleTrack,
+  extractAudioPeaks,
   setCustomFfmpegPath,
   getActiveProcesses,
   killAllProcesses,

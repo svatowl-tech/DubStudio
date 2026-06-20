@@ -47,6 +47,7 @@ const EpisodeSchema = z.object({
   isHardsub: z.boolean().optional().nullable(),
   assignments: z.array(RoleAssignmentSchema),
   uploads: z.array(UploadedFileSchema),
+  statusHistory: z.array(z.object({ status: z.string(), timestamp: z.string() })).optional().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });

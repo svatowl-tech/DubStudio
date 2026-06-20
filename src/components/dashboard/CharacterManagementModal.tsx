@@ -119,13 +119,25 @@ export default function CharacterManagementModal({ isOpen, onClose, selectedProj
                   {mapping.map((char, idx) => (
                     <tr key={char.characterName || ('char-' + idx)} className="hover:bg-neutral-900/30 transition-colors">
                       <td className="px-4 py-3">
-                        {char.photoUrl ? (
-                          <img src={char.photoUrl} alt={char.characterName} className="w-10 h-10 rounded-full object-cover" />
-                        ) : (
-                          <div className="w-10 h-10 rounded-full bg-neutral-800 flex items-center justify-center text-neutral-500">
+                        <div className="relative w-10 h-10 flex-shrink-0">
+                          {char.photoUrl ? (
+                            <img 
+                              src={char.photoUrl} 
+                              alt={char.characterName} 
+                              className="absolute inset-0 w-10 h-10 rounded-full object-cover z-10" 
+                              onError={(e) => {
+                                e.currentTarget.style.display = 'none';
+                                const next = e.currentTarget.nextSibling;
+                                if (next && next instanceof HTMLElement) {
+                                  next.classList.remove('hidden');
+                                }
+                              }}
+                            />
+                          ) : null}
+                          <div className={`absolute inset-0 w-10 h-10 rounded-full bg-neutral-800 flex items-center justify-center text-neutral-500 ${char.photoUrl ? 'hidden' : ''}`}>
                             <ImageIcon className="w-5 h-5" />
                           </div>
-                        )}
+                        </div>
                       </td>
                       <td className="px-4 py-3 text-white font-medium">{char.characterName}</td>
                       <td className="px-4 py-3">

@@ -27,12 +27,21 @@ Module.prototype.require = function(id: string) {
       },
       app: {
         getPath: (name: string) => path.join(__dirname, 'mock_user_data'),
+        getAppPath: () => __dirname,
         on: () => {},
         whenReady: () => Promise.resolve(),
+        isPackaged: false,
       },
       BrowserWindow: class { 
         webContents = { send: () => {} };
         on() {}
+      },
+      session: {
+        defaultSession: {
+          cookies: {
+            get: async () => []
+          }
+        }
       },
       dialog: {
         showOpenDialog: async () => ({ canceled: true, filePaths: [] })
@@ -62,8 +71,10 @@ async function startServer() {
     },
     app: {
       getPath: (name: string) => path.join(__dirname, 'mock_user_data'),
+      getAppPath: () => __dirname,
       on: () => {},
       whenReady: () => Promise.resolve(),
+      isPackaged: false,
     },
     BrowserWindow: class { 
       webContents = { send: () => {} };
@@ -106,15 +117,21 @@ async function startServer() {
   const SubtitleController = require('./electron/handlers/SubtitleController.cjs');
   const MediaController = require('./electron/handlers/MediaController.cjs');
   const ExportController = require('./electron/handlers/ExportController.cjs');
+  const WhisperController = require('./electron/handlers/WhisperController.cjs');
+  const LocalTranslateController = require('./electron/handlers/LocalTranslateController.cjs');
+  const DiarizationController = require('./electron/handlers/DiarizationController.cjs');
 
   ProjectController.registerProjectHandlers(getData, saveData, null);
   EpisodeHandlers.registerEpisodeHandlers(getData, saveData);
-  ApiController.registerApiHandlers(getData);
+  ApiController.registerApiHandlers(getData, saveData);
   SyncController.registerSyncHandlers(getData, saveData, userDataPath);
   MediaController.registerMediaHandlers(getData, null, taskQueue);
   ExportController.registerExportHandlers(getData, null);
   SystemController.registerSystemHandlers(getData, saveData, null, taskQueue);
   SubtitleController.registerSubtitleHandlers(getData);
+  WhisperController.registerWhisperHandlers();
+  LocalTranslateController.registerLocalTranslateHandlers();
+  DiarizationController.registerDiarizationHandlers();
   
   console.log('[IPC Server] Handler registration complete.');
 
@@ -125,6 +142,108 @@ async function startServer() {
     const handler = mockIpcHandlers.get(channel);
 
     console.log(`[IPC Server] Called channel: ${channel}, handler found: ${!!handler}`);
+
+    // Intercept heavy ML models to prevent dev server OOM crashes
+    const mockHeavyModels = ['load-local-translate-model', 'translate-local', 'load-diarization-model', 'run-diarization', 'check-local-translate-status', 'check-diarization-status', 'ai-process-subtitles'];
+    if (mockHeavyModels.includes(channel)) {
+      console.log(`[IPC Server] Intercepted heavy ML call "${channel}" to prevent OOM crash.`);
+      
+      if (channel === 'check-diarization-status') {
+        return res.json({
+          success: true,
+          data: {
+            success: true,
+            data: {
+              isLoaded: true,
+              isLoading: false,
+              modelName: 'onnx-community/pyannote-segmentation-3.0',
+              downloadProgress: 100,
+              loadingStatus: 'Готова к работе (Эмуляция веб-превью)'
+            }
+          }
+        });
+      }
+      
+      if (channel === 'check-local-translate-status') {
+        return res.json({
+          success: true,
+          data: {
+            success: true,
+            data: {
+              isLoaded: true,
+              isLoading: false,
+              modelName: 'Xenova/m2m100_418m',
+              downloadProgress: 100,
+              loadingStatus: 'Готова к работе (Эмуляция веб-превью)'
+            }
+          }
+        });
+      }
+
+      if (channel === 'run-diarization') {
+        // Dynamically assign subtitle lines to mock speakers so user can test assignments
+        const inputData = args[0] || {};
+        const lines = inputData.subtitleLines || [];
+        const mapping: Record<string, string> = {};
+        
+        lines.forEach((line: any, idx: number) => {
+          if (line && line.id) {
+            // Alternate speakers
+            mapping[line.id] = `Speaker ${(idx % 2) + 1}`;
+          }
+        });
+
+        return res.json({
+          success: true,
+          data: {
+            success: true,
+            data: {
+              speakerMapping: mapping,
+              detectedSpeakersCount: 2
+            }
+          }
+        });
+      }
+
+      if (channel === 'translate-local') {
+        const inputData = args[0] || {};
+        const text = inputData.text || '';
+        const destLang = inputData.destLang || 'ru';
+        
+        let translatedText = text;
+        if (destLang === 'ru') {
+          translatedText = `[Перевод]: ${text}`;
+        } else {
+          translatedText = `[Translated to ${destLang}]: ${text}`;
+        }
+
+        return res.json({
+          success: true,
+          data: {
+            success: true,
+            data: translatedText
+          }
+        });
+      }
+
+      if (channel === 'load-local-translate-model' || channel === 'load-diarization-model') {
+        return res.json({
+          success: true,
+          data: {
+            success: true,
+            data: { success: true }
+          }
+        });
+      }
+
+      return res.json({
+        success: true,
+        data: {
+          success: true,
+          data: { message: "Mocked response for web preview" }
+        }
+      });
+    }
 
     if (handler) {
       try {

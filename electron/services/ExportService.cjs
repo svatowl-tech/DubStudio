@@ -42,18 +42,23 @@ async function copyLargeFile(src, dest, onProgress, startP = 0, endP = 100) {
  * Service for handling complex export operations.
  */
 class ExportService {
-  static async exportDabberFiles(episode, targetDir, skipConversion, uploadToYandex, config, participantsData, onProgress, onCommand) {
+  static async exportDabberFiles(episode, targetDir, skipConversion, uploadToYandex, additionalProcessing, config, participantsData, projectsData, onProgress, onCommand) {
     if (!episode || !targetDir) throw new Error('Missing required parameters');
     log.info(`Exporting dabber files for episode ${episode.number} to ${targetDir}`);
     await fs.mkdir(targetDir, { recursive: true });
 
     let videoProgressEnd = episode.subPath ? 95 : 100;
 
+    const project = (projectsData || []).find(p => p.id === episode.projectId);
+    const projectTitle = project ? project.title : 'Unknown';
+    const baseVideoName = `${projectTitle}_${episode.number}`;
+
     if (episode.rawPath) {
       const videoName = path.basename(episode.rawPath);
+      const ext = path.extname(videoName);
 
       if (skipConversion) {
-        let outVideoPath = path.join(targetDir, videoName);
+        let outVideoPath = path.join(targetDir, `${baseVideoName}[оригинал]${ext}`);
         if (path.resolve(outVideoPath) !== path.resolve(episode.rawPath)) {
           onProgress({ percent: 0 }); // Start progress
           await copyLargeFile(episode.rawPath, outVideoPath, onProgress, 0, videoProgressEnd);
@@ -61,40 +66,40 @@ class ExportService {
           onProgress({ percent: videoProgressEnd });
         }
       } else if (episode.isHardsub) {
-        const ext = path.extname(videoName);
-        const nameWithoutExt = path.basename(videoName, ext);
-        const finalName = nameWithoutExt.endsWith('_hardsub') ? videoName : `${nameWithoutExt}_hardsub${ext}`;
+        const finalName = `${baseVideoName}_[хардсаб]${ext}`;
         let outVideoPath = path.join(targetDir, finalName);
         
         if (path.resolve(outVideoPath) === path.resolve(episode.rawPath)) {
-          outVideoPath = path.join(targetDir, `${nameWithoutExt}_exported${ext}`);
+          outVideoPath = path.join(targetDir, `${baseVideoName}_[хардсаб][обработка]${ext}`);
         }
 
         await transcodeToMp4(episode.rawPath, outVideoPath, (p) => onProgress({ percent: (p / 100) * videoProgressEnd }), onCommand, { 
           useNvenc: config.useNvenc, 
           gpuIndex: config.gpuIndex,
-          crf: 28
+          crf: 28,
+          additionalProcessing
         });
       } else {
-        let outVideoPath = path.join(targetDir, videoName);
+        const suffix = episode.subPath ? '_[с надписями]' : (additionalProcessing ? '_[обработка]' : '_[обработка]');
+        let outVideoPath = path.join(targetDir, `${baseVideoName}${suffix}${ext}`);
 
         if (path.resolve(outVideoPath) === path.resolve(episode.rawPath)) {
-          const ext = path.extname(videoName);
-          const name = path.basename(videoName, ext);
-          outVideoPath = path.join(targetDir, `${name}_exported${ext}`);
+          outVideoPath = path.join(targetDir, `${baseVideoName}${suffix}[копия]${ext}`);
         }
 
         if (episode.subPath) {
           await bakeSubtitles(episode.rawPath, episode.subPath, outVideoPath, (p) => onProgress({ percent: (p / 100) * videoProgressEnd }), onCommand, { 
             useNvenc: config.useNvenc, 
             gpuIndex: config.gpuIndex,
-            crf: 28
+            crf: 28,
+            additionalProcessing
           });
         } else {
           await transcodeToMp4(episode.rawPath, outVideoPath, (p) => onProgress({ percent: (p / 100) * videoProgressEnd }), onCommand, { 
             useNvenc: config.useNvenc, 
             gpuIndex: config.gpuIndex,
-            crf: 28
+            crf: 28,
+            additionalProcessing
           });
         }
       }
@@ -104,18 +109,16 @@ class ExportService {
       if (!episode.rawPath) {
         onProgress({ percent: 0 });
       }
-      const subName = path.basename(episode.subPath);
-      const ext = path.extname(subName);
-      const baseName = path.basename(subName, ext);
-      
-      const generalSubName = `${baseName}_общие${ext}`;
+      const ext = path.extname(episode.subPath);
+      const generalSubName = `${baseVideoName}_[субтитры_общие]${ext}`;
       
       // Использовать exportFullAssWithRoles вместо fs.copyFile, чтобы в ролях были дабберы
       await exportFullAssWithRoles(episode.subPath, path.join(targetDir, generalSubName), episode.assignments, participantsData);
       
       const subProgressStart = videoProgressEnd;
       await splitSubsByDubber(episode.subPath, targetDir, episode.assignments, participantsData, {
-        onProgress: (p) => onProgress({ percent: subProgressStart + (p.percent / 100 * (100 - subProgressStart)) })
+        onProgress: (p) => onProgress({ percent: subProgressStart + (p.percent / 100 * (100 - subProgressStart)) }),
+        baseFileName: baseVideoName
       });
       onProgress({ percent: 100 });
     }
@@ -165,11 +168,16 @@ class ExportService {
     log.info(`Exporting sound engineer files for episode ${episode.number} to ${targetDir}`);
     await fs.mkdir(targetDir, { recursive: true });
 
+    const project = (projectsData || []).find(p => p.id === episode.projectId);
+    const projectTitle = project ? project.title : 'Unknown';
+    const baseVideoName = `${projectTitle}_${episode.number}`;
+
     if (episode.rawPath) {
       const videoName = path.basename(episode.rawPath);
+      const ext = path.extname(videoName);
       
       if (skipConversion) {
-        let outVideoPath = path.join(targetDir, videoName);
+        let outVideoPath = path.join(targetDir, `${baseVideoName}[оригинал]${ext}`);
         if (path.resolve(outVideoPath) !== path.resolve(episode.rawPath)) {
           onProgress({ percent: 0 });
           await copyLargeFile(episode.rawPath, outVideoPath, onProgress, 0, 100);
@@ -177,10 +185,7 @@ class ExportService {
           onProgress({ percent: 100 });
         }
       } else if (episode.isHardsub) {
-        const ext = path.extname(videoName);
-        const nameWithoutExt = path.basename(videoName, ext);
-        const finalName = nameWithoutExt.endsWith('_hardsub') ? videoName : `${nameWithoutExt}_hardsub${ext}`;
-        const markedVideoPath = path.join(targetDir, finalName);
+        const markedVideoPath = path.join(targetDir, `${baseVideoName}_[хардсаб]${ext}`);
         
         if (additionalProcessing) {
           await transcodeToMp4(episode.rawPath, markedVideoPath, (p) => onProgress({ percent: p }), onCommand, { 
@@ -194,8 +199,6 @@ class ExportService {
           await copyLargeFile(episode.rawPath, markedVideoPath, onProgress, 0, 100);
         }
       } else {
-        const bakedVideoPath = path.join(targetDir, additionalProcessing ? `processed_${videoName}` : `baked_${videoName}`);
-        
         let hasSigns = false;
         let signsAssPath = null;
         if (episode.subPath) {
@@ -203,6 +206,9 @@ class ExportService {
           hasSigns = await extractSignsAss(episode.subPath, signsAssPath);
         }
         
+        const suffix = hasSigns ? '_[с надписями]' : (additionalProcessing ? '_[обработка]' : '[копия]');
+        const bakedVideoPath = path.join(targetDir, `${baseVideoName}${suffix}${ext}`);
+
         if (hasSigns) {
           await bakeSubtitles(episode.rawPath, signsAssPath, bakedVideoPath, (p) => onProgress({ percent: p }), onCommand, { 
             useNvenc: config.useNvenc, 
@@ -237,9 +243,6 @@ class ExportService {
       }
     }
 
-    const project = projectsData.find(p => p.id === episode.projectId);
-    const projectTitle = project ? project.title : 'Unknown';
-
     const getNick = (id) => {
       const p = participantsData.find(part => part.id === id);
       return p ? p.nickname : 'Unknown';
@@ -248,8 +251,8 @@ class ExportService {
     const getExportName = (upload, isFix) => {
       const nick = getNick(upload.uploadedById);
       const ext = path.extname(upload.path);
-      const fixSuffix = isFix ? '._Fix' : '.';
-      return `${nick}${fixSuffix} ${projectTitle}[${episode.number}]${ext}`;
+      const fixSuffix = isFix ? '_[фикс]' : '';
+      return `${baseVideoName}_[${nick}]${fixSuffix}${ext}`;
     };
 
     for (const dubberId in dubberFiles) {

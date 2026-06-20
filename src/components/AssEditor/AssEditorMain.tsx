@@ -101,14 +101,26 @@ export default function AssEditorMain({
                               {(() => {
                                 const portrait = getCharacterPortrait(assignment.characterName);
                                 return portrait ? (
-                                  <img 
-                                    src={portrait || undefined} 
-                                    alt="" 
-                                    className="w-6 h-6 rounded-full object-cover border border-neutral-700"
-                                    referrerPolicy="no-referrer"
-                                  />
+                                  <div className="relative w-6 h-6 flex-shrink-0">
+                                    <img 
+                                      src={portrait || undefined} 
+                                      alt="" 
+                                      className="absolute inset-0 w-6 h-6 rounded-full object-cover border border-neutral-700 z-10"
+                                      referrerPolicy="no-referrer"
+                                      onError={(e) => {
+                                        e.currentTarget.style.display = 'none';
+                                        const next = e.currentTarget.nextSibling;
+                                        if (next && next instanceof HTMLElement) {
+                                          next.classList.remove('hidden');
+                                        }
+                                      }}
+                                    />
+                                    <div className="absolute inset-0 w-6 h-6 rounded-full bg-neutral-800 flex items-center justify-center text-[10px] text-neutral-500 border border-neutral-700 hidden">
+                                      <User className="w-3 h-3" />
+                                    </div>
+                                  </div>
                                 ) : (
-                                  <div className="w-6 h-6 rounded-full bg-neutral-800 flex items-center justify-center text-[10px] text-neutral-500 border border-neutral-700">
+                                  <div className="w-6 h-6 rounded-full bg-neutral-800 flex items-center justify-center text-[10px] text-neutral-500 border border-neutral-700 flex-shrink-0">
                                     <User className="w-3 h-3" />
                                   </div>
                                 );
@@ -161,14 +173,26 @@ export default function AssEditorMain({
                                     onClick={() => handleLinkAsAlias(assignment.characterName, m.characterName)}
                                     className="px-1.5 py-0.5 bg-neutral-800 hover:bg-amber-500/20 text-neutral-300 rounded border border-neutral-700 flex items-center gap-1.5"
                                   >
-                                    {getCharacterPortrait(m.characterName) && (
-                                      <img 
-                                        src={getCharacterPortrait(m.characterName)} 
-                                        alt="" 
-                                        className="w-4 h-4 rounded-full object-cover border border-neutral-600"
-                                        referrerPolicy="no-referrer"
-                                      />
-                                    )}
+                                    {getCharacterPortrait(m.characterName) ? (
+                                      <div className="relative w-4 h-4 shrink-0">
+                                        <img 
+                                          src={getCharacterPortrait(m.characterName)} 
+                                          alt="" 
+                                          className="absolute inset-0 w-4 h-4 rounded-full object-cover border border-neutral-600 z-10"
+                                          referrerPolicy="no-referrer"
+                                          onError={(e) => {
+                                            e.currentTarget.style.display = 'none';
+                                            const next = e.currentTarget.nextSibling;
+                                            if (next && next instanceof HTMLElement) {
+                                              next.classList.remove('hidden');
+                                            }
+                                          }}
+                                        />
+                                        <div className="absolute inset-0 w-4 h-4 rounded-full bg-neutral-700 flex items-center justify-center text-[6px] hidden">
+                                          <User className="w-2 h-2" />
+                                        </div>
+                                      </div>
+                                    ) : null}
                                     <span>{m.characterName}</span>
                                     {m.dubberId && <span className="text-[8px] text-indigo-400">({participants.find(p => p.id === m.dubberId)?.nickname})</span>}
                                   </button>

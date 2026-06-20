@@ -89,7 +89,10 @@ export default function TaskQueuePanel() {
                         <span className="text-[10px] font-bold uppercase text-slate-500 tracking-wider">
                           {task.type === 'bake-subtitles' ? 'Рендеринг' : 
                            task.type === 'mux-release' ? 'Сборка' : 
-                           task.type === 'transcode-video' ? 'Конвертация' : task.type}
+                           task.type === 'transcode-video' ? 'Конвертация' : 
+                           task.type === 'export-dabber-files' ? 'Экспорт даберам' :
+                           task.type === 'export-sound-engineer-files' ? 'Экспорт звукорежиссеру' :
+                           task.type}
                         </span>
                         <span className="text-xs font-medium text-slate-200 truncate max-w-[180px]">
                           {task.metadata?.title || 'Без названия'}

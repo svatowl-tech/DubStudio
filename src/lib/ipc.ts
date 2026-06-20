@@ -95,6 +95,137 @@ function handleIpcMock(channel: string, args: any[]): any {
     localStorage.setItem(key, JSON.stringify(data));
   };
 
+  // Seed initial demo/preview data if localStorage is empty
+  if (typeof window !== 'undefined' && (!localStorage.getItem('projects') || JSON.parse(localStorage.getItem('projects') || '[]').length === 0)) {
+    const demoParticipants = [
+      { id: 'p1', nickname: 'Kira', telegram: '@kira_dub', tgChannel: '@kira_channel', vkLink: 'vk.com/kira', roles: ['DUBBER'] },
+      { id: 'p2', nickname: 'Anilibria_Enjoyer', telegram: '@ani_enjoyer', tgChannel: '', vkLink: '', roles: ['DUBBER', 'QA'] },
+      { id: 'p3', nickname: 'Saber', telegram: '@saber_dub', tgChannel: '@saber_notes', vkLink: 'vk.com/saber', roles: ['DUBBER'] },
+      { id: 'p4', nickname: 'OwlSound', telegram: '@owl_sound', tgChannel: '@owl_studio', vkLink: '', roles: ['SOUND_ENGINEER'] },
+    ];
+    
+    const demoProjects = [
+      {
+        id: 'proj1',
+        title: "Sousou no Frieren",
+        originalTitle: "Frieren: Beyond Journey's End",
+        status: 'ACTIVE',
+        lastActiveEpisode: 1,
+        totalEpisodes: 28,
+        assignedDubberIds: ['p1', 'p2', 'p3'],
+        soundEngineerId: 'p4',
+        releaseType: 'VOICEOVER',
+        emoji: '🧙‍♀️',
+        isOngoing: true,
+        synopsis: 'История эльфийки Фрирен, которая исследует новые земли и пытается понять человеческие эмоции после победы над Королём демонов.',
+        typeAndSeason: 'TV-1',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      }
+    ];
+
+    const demoEpisodes = [
+      {
+        id: 'ep1',
+        projectId: 'proj1',
+        number: 1,
+        status: 'RECORDING',
+        deadline: '2026-06-15',
+        rawPath: 'Frieren_01_RAW.mp4',
+        subPath: 'Frieren_01.ass',
+        assignments: [
+          { id: 'a1', episodeId: 'ep1', characterName: 'Frieren', dubberId: 'p1', status: 'RECORDED', lineCount: 154, isMain: true },
+          { id: 'a2', episodeId: 'ep1', characterName: 'Himmel', dubberId: 'p2', status: 'PENDING', lineCount: 42, isMain: true },
+          { id: 'a3', episodeId: 'ep1', characterName: 'Heiter', dubberId: 'p3', status: 'PENDING', lineCount: 28 }
+        ],
+        uploads: [
+          { id: 'u1', episodeId: 'ep1', assignmentId: 'a1', type: 'DUBBER_FILE', path: '/mock/files/frieren_vox.wav', uploadedById: 'p1', createdAt: new Date().toISOString() }
+        ],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      }
+    ];
+
+    localStorage.setItem('participants', JSON.stringify(demoParticipants));
+    localStorage.setItem('projects', JSON.stringify(demoProjects));
+    localStorage.setItem('episodes', JSON.stringify(demoEpisodes));
+  }
+
+  if (channel === 'search-nyaa-torrents') {
+    const q = (args[0]?.query || '').toLowerCase();
+    return [
+      {
+        title: `[SubsPlease] Sousou no Frieren - 01 (1080p) [RAW]`,
+        name: `[SubsPlease] Sousou no Frieren - 01 (1080p) [RAW]`,
+        torrent: `https://nyaa.si/download/mock1.torrent`,
+        magnet: `magnet:?xt=urn:btih:mockfrieren01raw1080p&dn=SousouNoFrieren01`,
+        size: '1.2 GiB',
+        date: '2026-05-20 12:00:00',
+        timestamp: '2026-05-20',
+        seeders: 245,
+        seeds: 245,
+        leechers: 12,
+        leechs: 12,
+        category: 'Anime - Raw'
+      },
+      {
+        title: `[Erai-raws] Sousou no Frieren - 01 [720p] [RAW]`,
+        name: `[Erai-raws] Sousou no Frieren - 01 [720p] [RAW]`,
+        torrent: `https://nyaa.si/download/mock2.torrent`,
+        magnet: `magnet:?xt=urn:btih:mockfrieren01raw720p&dn=SousouNoFrieren01_720`,
+        size: '720.5 MiB',
+        date: '2026-05-20 12:15:00',
+        timestamp: '2026-05-20',
+        seeders: 184,
+        seeds: 184,
+        leechers: 8,
+        leechs: 8,
+        category: 'Anime - Raw'
+      },
+      {
+        title: `[AnimeTime] Sousou no Frieren - 01 (1080p HEVC x265 10bit) [RAW]`,
+        name: `[AnimeTime] Sousou no Frieren - 01 (1080p HEVC x265 10bit) [RAW]`,
+        torrent: `https://nyaa.si/download/mock3.torrent`,
+        magnet: `magnet:?xt=urn:btih:mockfrieren01hevc&dn=SousouNoFrieren01_HEVC`,
+        size: '450.2 MiB',
+        date: '2026-05-20 13:40:00',
+        timestamp: '2026-05-20',
+        seeders: 95,
+        seeds: 95,
+        leechers: 4,
+        leechs: 4,
+        category: 'Anime - Raw'
+      }
+    ];
+  }
+
+  if (channel === 'start-torrent-download') {
+    localStorage.setItem('mock_download_progress', '0');
+    localStorage.setItem('mock_download_name', args[0]?.torrentUrl || args[0]?.magnet || 'Sousou no Frieren - 01 (1080p) [RAW]');
+    return { downloadId: 'mock-dl-12345' };
+  }
+
+  if (channel === 'get-torrent-download-status') {
+    const currentProgress = parseInt(localStorage.getItem('mock_download_progress') || '0', 10);
+    const downloadName = localStorage.getItem('mock_download_name') || 'Sousou no Frieren - 01 (1080p) [RAW]';
+    
+    let nextProgress = currentProgress + 20;
+    if (nextProgress > 100) nextProgress = 100;
+    
+    localStorage.setItem('mock_download_progress', nextProgress.toString());
+    
+    return {
+      id: 'mock-dl-12345',
+      name: downloadName.substring(0, 60) + (downloadName.length > 60 ? '...' : ''),
+      progress: nextProgress,
+      downloadSpeed: nextProgress === 100 ? 0 : 8500000 + Math.random() * 2000000,
+      numPeers: nextProgress === 100 ? 0 : 38,
+      status: nextProgress === 100 ? 'completed' : 'downloading',
+      filePath: nextProgress === 100 ? 'Frieren_01_RAW.mp4' : null,
+      error: null
+    };
+  }
+
   if (channel === 'get-config') {
     const config = localStorage.getItem('config');
     return config ? JSON.parse(config) : { baseDir: '' };
@@ -260,6 +391,134 @@ function handleIpcMock(channel: string, args: any[]): any {
 
   if (channel === 'clear-task-history') {
     return true;
+  }
+
+  // Anime365 Mock fallbacks for web preview
+  if (channel === 'anime365-search-series') {
+    const q = (args[0]?.query || '').toLowerCase();
+    return [
+      {
+        id: 4242,
+        title: "Sousou no Frieren",
+        titles: { ru: "Фрирен, провожающая в последний путь", romaji: "Sousou no Frieren", ja: "葬送のフリーレン", en: "Frieren: Beyond Journey's End" },
+        posterUrl: "https://shikimori.one/system/animes/original/52991.jpg",
+        numberOfEpisodes: 28,
+        year: 2023,
+        typeTitle: "TV Сериал",
+        isAiring: 0
+      },
+      {
+        id: 8484,
+        title: "Chainsaw Man",
+        titles: { ru: "Человек-бензопила", romaji: "Chainsaw Man", ja: "チェンソーマン", en: "Chainsaw Man" },
+        posterUrl: "https://shikimori.one/system/animes/original/44511.jpg",
+        numberOfEpisodes: 12,
+        year: 2022,
+        typeTitle: "TV Сериал",
+        isAiring: 0
+      }
+    ];
+  }
+
+  if (channel === 'anime365-get-series-details') {
+    const id = args[0]?.id;
+    return {
+      id: id || 4242,
+      title: "Sousou no Frieren",
+      titles: { ru: "Фрирен, провожающая в последний путь", romaji: "Sousou no Frieren", ja: "葬送のフリーレン", en: "Frieren: Beyond Journey's End" },
+      posterUrl: "https://shikimori.one/system/animes/original/52991.jpg",
+      numberOfEpisodes: 28,
+      year: 2023,
+      typeTitle: "TV Сериал",
+      isAiring: 0,
+      descriptions: [{ source: "Anime365", value: "История эльфийки Фрирен, которая исследует новые земли и пытается понять человеческие эмоции после победы над Королём демонов." }],
+      episodes: Array.from({ length: 28 }).map((_, idx) => ({
+        id: 1000 + idx,
+        episodeInt: String(idx + 1),
+        episodeFull: `Серия ${idx + 1}`,
+        episodeTitle: `Начало пути ${idx + 1}`
+      }))
+    };
+  }
+
+  if (channel === 'anime365-get-episode-translations') {
+    return [
+      {
+        id: 5001,
+        title: "Оригинал (RAW)",
+        type: "raw",
+        typeLang: "jpn",
+        qualityType: "1080p",
+        url: "https://smotret-anime.ru/translations/raw/5001.mp4",
+        embedUrl: "https://smotret-anime.ru/translations/embed/5001",
+        authorsSummary: "Original Audio",
+        duration: "24:00"
+      },
+      {
+        id: 5002,
+        title: "Субтитры (Альянс)",
+        type: "subtitles",
+        typeLang: "rus",
+        qualityType: "ass",
+        url: "https://smotret-anime.ru/translations/sub/5002.ass",
+        embedUrl: "",
+        authorsSummary: "Альянс",
+        duration: ""
+      },
+      {
+        id: 5003,
+        title: "Японские субтитры",
+        type: "subtitles",
+        typeLang: "jpn",
+        qualityType: "ass",
+        url: "https://smotret-anime.ru/translations/sub/5003.ass",
+        embedUrl: "",
+        authorsSummary: "Kitsunekko / Official Ja",
+        duration: ""
+      },
+      {
+        id: 5004,
+        title: "Субтитры (Anilibria)",
+        type: "subtitles",
+        typeLang: "rus",
+        qualityType: "srt",
+        url: "https://smotret-anime.ru/translations/sub/5004.srt",
+        embedUrl: "",
+        authorsSummary: "Anilibria Subs Team",
+        duration: ""
+      }
+    ];
+  }
+
+  if (channel === 'anime365-update-project-data') {
+    const projectId = args[0]?.projectId;
+    const projects = getLocalData('projects');
+    const project = projects.find((p: any) => p.id === projectId);
+    if (project) {
+      project.synopsis = "История эльфийки Фрирен, которая исследует новые земли и пытается понять человеческие эмоции после победы над Королём демонов. (Обновлено из Anime365!)";
+      project.posterUrl = "https://shikimori.one/system/animes/original/52991.jpg";
+      project.totalEpisodes = 28;
+      project.isOngoing = true;
+      project.anime365Id = 4242;
+      project.typeAndSeason = "TV-1";
+      saveLocalData('projects', projects);
+      return project;
+    }
+    return null;
+  }
+
+  if (channel === 'anime365-download-subtitle') {
+    return { success: true, subPath: "/mock/user_data/projects/proj1/subs/episode_1_subs.ass" };
+  }
+
+  if (channel === 'anime365-check-new-episodes') {
+    const projects = getLocalData('projects');
+    const project = projects.find((p: any) => p.id === args[0]?.projectId);
+    if (project) {
+      const currentMax = (project.episodes || []).reduce((max: number, ep: any) => Math.max(max, ep.number), 0) || 0;
+      return { maxEpisode: currentMax + 1, source: 'anime365' };
+    }
+    return { maxEpisode: null, source: 'none' };
   }
 
   return { success: true, mocked: true };

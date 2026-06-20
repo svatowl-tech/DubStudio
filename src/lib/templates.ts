@@ -112,7 +112,10 @@ export const generateFixesIssuedMessage = (episode: Episode, participants: Parti
     return `${dubber.nickname} (${mention}):\n${fixesText}`;
   }).join('\n\n');
 
-  const projectSlug = episode.project?.title.toLowerCase().replace(/\s+/g, '_') || 'project';
+  const projectSlug = (episode.project?.title || 'project')
+    .toLowerCase()
+    .replace(/\s+/g, '_')
+    .replace(/[^a-zа-яё0-9_]/g, '');
   const emoji = episode.project?.emoji || '✏️';
 
   return `${emoji} ВЫПИСАНЫ ФИКСЫ: ${episode.project?.title}
@@ -160,7 +163,6 @@ export const generateStatusMessage = (episode: Episode, participants: Participan
 📅 ДЕДЛАЙН ФИКСОВ: ${formatDeadline(episode.deadline)}
 ━━━━━━ ◦ ❖ ◦ ━━━━━━
 
-
 🎙 ЖДЕМ ДОРОЖКИ:
 ${roadsMentions || '• Все сдано!'}
 
@@ -169,172 +171,302 @@ ${fixesMentions || '• Фиксов нет!'}
 ━━━━━━ ◦ ❖ ◦ ━━━━━━`;
 };
 
-export const generateTGPostMessage = (episode: Episode, participants: Participant[]) => {
-  const assignments = episode.assignments || [];
-  const isRecastOrRedub = episode.project?.releaseType === 'RECAST' || episode.project?.releaseType === 'REDUB';
-  
-  const mainRoles = assignments.filter(a => a.isMain);
-  const secondaryDubberIds = new Set(assignments.filter(a => !a.isMain).map(a => a.substituteId || a.dubberId).filter(Boolean));
-  const secondaryDubbers = participants.filter(p => secondaryDubberIds.has(p.id));
+export const DEFAULT_TG_TEMPLATE_RECAST = `{emoji} {title} [{releaseTypeLabel}]
 
-  const mainRolesText = mainRoles.map(a => {
+👾 {progress} 👾
+
+━━━━━━ ◦ ❖ ◦ ━━━━━━
+Роли озвучили:
+{mainRoles:[➤ {character} - [{nickname}]({tgLink})\n]}
+———————————————-
+Второстепенные герои: {secondaryDubbers:[[{nickname}]({tgLink})], }
+
+Тайминг и работа со звуком: 
+{seMention}
+━━━━━━ ◦ ❖ ◦ ━━━━━━
+
+#{projectSlug}`;
+
+export const DEFAULT_TG_TEMPLATE_VOICEOVER = `{emoji} {title} [{releaseTypeLabel}]
+👾 {progress} 👾
+ 
+━━━━━━ ◦ ❖ ◦ ━━━━━━
+Роли озвучили:
+ 
+{dubbers:[[{nickname}]({tgLink})], }
+ 
+Тайминг и работа со звуком: 
+{seMention}
+━━━━━━ ◦ ❖ ◦ ━━━━━━
+#{projectSlug}`;
+
+export const DEFAULT_VK_TEMPLATE_RECAST = `{emoji} {title} [{releaseTypeLabel}]
+👾 {progress} 👾
+ 
+| Роли озвучили: {mainRoles:[{character} - {vk} ({nickname})], }
+| Второстепенные герои: {secondaryDubbers:[{vk} ({nickname})], }
+ 
+| Тайминг и работа со звуком: {seName}
+ 
+➪ Аниме 365: {linkAnime365}
+➪ Телеграм: {linkTg}
+➪ Kodik: {linkKodik}`;
+
+export const DEFAULT_VK_TEMPLATE_VOICEOVER = `{emoji} {title} [{releaseTypeLabel}]
+👾 {progress} 👾
+ 
+| Роли озвучили: {dubbers:[{vk} ({nickname})], }
+ 
+| Тайминг и работа со звуком: {seName}
+ 
+➪ Аниме 365: {linkAnime365}
+➪ Телеграм: {linkTg}
+➪ Kodik: {linkKodik}`;
+
+export const DEFAULT_LINKS_TEMPLATE = `➪ Аниме 365: {linkAnime365}
+➪ Телеграм: {linkTg}
+➪ Kodik: {linkKodik}
+➪ VK: {linkVk}
+➪ Shikimori: {linkShikimori}`;
+
+export const DEFAULT_FINAL_TG_TEMPLATE = `{emoji} СЕРИЯ ВЫЛОЖЕНА: {title}
+👾 {episodeNumber}/{totalEpisodes} 👾
+━━━━━━ ◦ ❖ ◦ ━━━━━━
+Ребята, всем спасибо за работу! Серия доступна по ссылкам ниже:
+
+{platformLinks}
+━━━━━━ ◦ ❖ ◦ ━━━━━━
+#{projectSlug} #готово`;
+
+export const getTemplateVariables = (episode: Episode, participants: Participant[]) => {
+  const assignments = episode.assignments || [];
+  
+  const mainRolesData = assignments.filter(a => a.isMain).map(a => {
     const dubber = participants.find(p => p.id === (a.substituteId || a.dubberId));
     if (!dubber) return null;
-    const url = dubber.tgChannel || `https://t.me/${(dubber.telegram || dubber.nickname).replace('@', '')}`;
-    return `➤ ${a.characterName} - [${dubber.nickname}](${url})`;
-  }).filter(Boolean).join('\n');
+    const tgLink = dubber.tgChannel || `https://t.me/${(dubber.telegram || dubber.nickname).replace('@', '')}`;
+    const vk = dubber.vkLink ? `@${dubber.vkLink.split('/').pop()}` : (dubber.telegram || dubber.nickname);
+    return {
+      character: a.characterName,
+      nickname: dubber.nickname,
+      tg: dubber.telegram || dubber.nickname,
+      tgLink,
+      vk
+    };
+  }).filter(Boolean);
 
-  const secondaryDubbersText = secondaryDubbers.map(d => {
-    const url = d.tgChannel || `https://t.me/${(d.telegram || d.nickname).replace('@', '')}`;
-    return `[${d.nickname}](${url})`;
-  }).join(', ');
+  const secondaryDubberIds = new Set(assignments.filter(a => !a.isMain).map(a => a.substituteId || a.dubberId).filter(Boolean));
+  const secondaryDubbersData = participants.filter(p => secondaryDubberIds.has(p.id)).map(d => {
+    const tgLink = d.tgChannel || `https://t.me/${(d.telegram || d.nickname).replace('@', '')}`;
+    const vk = d.vkLink ? `@${d.vkLink.split('/').pop()}` : (d.telegram || d.nickname);
+    return {
+      nickname: d.nickname,
+      tg: d.telegram || d.nickname,
+      tgLink,
+      vk
+    };
+  });
 
-  const projectSlug = episode.project?.title.toLowerCase().replace(/\s+/g, '_') || 'project';
-  const total = episode.project?.totalEpisodes || 12;
+  const dubbers = Array.from(new Set(assignments.map(a => a.substituteId || a.dubberId).filter(Boolean)))
+    .map(id => participants.find(p => p.id === id))
+    .filter(Boolean) as Participant[];
+  
+  const uniqueDubbersData = dubbers.map(d => {
+    const tgLink = d.tgChannel || `https://t.me/${(d.telegram || d.nickname).replace('@', '')}`;
+    const vk = d.vkLink ? `@${d.vkLink.split('/').pop()}` : (d.telegram || d.nickname);
+    return {
+      nickname: d.nickname,
+      tg: d.telegram || d.nickname,
+      tgLink,
+      vk
+    };
+  });
+
+  const projectSlug = (episode.project?.title || 'project')
+    .toLowerCase()
+    .replace(/\s+/g, '_')
+    .replace(/[^a-zа-яё0-9_]/g, '');
+  const totalEpisodes = (episode.project?.totalEpisodes || 12).toString();
+  const episodeNumber = episode.number.toString();
 
   const seId = episode.project?.soundEngineerId;
   const se = seId ? participants.find(p => p.id === seId) : null;
   const seMention = se ? ((se.telegram && se.telegram.startsWith('@')) ? se.telegram : `@${se.telegram || se.nickname}`) : '@Tenmag';
+  const seName = se ? se.nickname : 'Tenmag';
+  const seTg = se ? (se.telegram?.startsWith('@') ? se.telegram : `@${se.telegram || se.nickname}`) : '@Tenmag';
+  const seVk = se ? (se.vkLink ? `@${se.vkLink.split('/').pop()}` : se.nickname) : 'Tenmag';
 
   const emoji = episode.project?.emoji || '📢';
   const releaseTypeLabel = episode.project?.releaseType === 'VOICEOVER' ? 'Закадр' : episode.project?.releaseType === 'RECAST' ? 'Рекаст' : 'Редаб';
   
-  const title = `${episode.project?.title} [${releaseTypeLabel}]`;
-  const progress = isRecastOrRedub ? `🖤${episode.number}/${total}🖤` : `👾${episode.number}/${total}👾`;
+  const title = episode.project?.title || 'ТАЙТЛ';
+  const progress = `${episodeNumber}/${totalEpisodes}`;
 
-  if (isRecastOrRedub) {
-    return `${emoji} ${title}
+  // Find previous episode
+  const prevEp = episode.project?.episodes?.find(e => e.number === episode.number - 1);
+  const prevEpisodeNumber = prevEp ? prevEp.number.toString() : '';
+  const prevLinkTg = prevEp?.tgPostLink || '';
+  const prevLinkVk = prevEp?.vkPostLink || '';
 
-${progress}
+  const links = episode.project?.links ? JSON.parse(episode.project.links) : {};
 
-━━━━━━ ◦ ❖ ◦ ━━━━━━
-Роли озвучили:
-${mainRolesText}
-——————————————-
-Второстепенные герои: ${secondaryDubbersText}
+  const vars: Record<string, any> = {
+    emoji,
+    title,
+    projectTitle: title,
+    releaseTypeLabel,
+    projectReleaseType: releaseTypeLabel,
+    progress,
+    episodeNumber,
+    totalEpisodes,
+    prevEpisodeNumber,
+    prevLinkTg,
+    prevLinkVk,
+    seMention,
+    seName,
+    seNickname: seName,
+    seTg,
+    seVk,
+    projectSlug,
+    projectSlugRaw: projectSlug,
+    allTgMentions: uniqueDubbersData.map(d => (d.tg.startsWith('@') ? d.tg : `@${d.tg}`)).join(', '),
+    allVkMentions: uniqueDubbersData.map(d => (d.vk.startsWith('@') ? d.vk : `@${d.vk}`)).join(', '),
+    allTgLinks: uniqueDubbersData.map(d => d.tgLink).join('\n'),
+    mainNicknames: mainRolesData.map(r => r?.nickname).join(', '),
+    mainCharacters: mainRolesData.map(r => r?.character).join(', '),
+    secondaryNicknames: secondaryDubbersData.map(d => d.nickname).join(', '),
+    // Add backward compatibility strings (cleaned)
+    mainRolesText: mainRolesData.map(r => `${r?.character} - ${r?.nickname}`).join('\n'),
+    secondaryDubbersText: secondaryDubbersData.map(d => d.nickname).join(', '),
+    mainRolesInfo: mainRolesData.map(r => `${r?.character} - ${r?.vk} (${r?.nickname})`).join(', '),
+    secondaryDubbersInfo: secondaryDubbersData.map(d => `${d.vk} (${d.nickname})`).join(', '),
+    dubberLinks: uniqueDubbersData.map(d => `[${d.nickname}](${d.tgLink})`).join(', '),
+    dubberInfo: uniqueDubbersData.map(d => `${d.vk} (${d.nickname})`).join(', '),
+    // Add raw lists for new template engine
+    mainRoles: mainRolesData,
+    secondaryDubbers: secondaryDubbersData,
+    dubbers: uniqueDubbersData,
+  };
 
-Тайминг и работа со звуком: 
-${seMention}
-━━━━━━ ◦ ❖ ◦ ━━━━━━
+  // Dynamically add all links as {linkKey}
+  Object.keys(links).forEach(key => {
+    if (key !== 'quickUploadLinks') {
+      const varName = `link${key.charAt(0).toUpperCase() + key.slice(1)}`;
+      vars[varName] = links[key] || '';
+    }
+  });
 
-#${projectSlug}`;
+  const linksTpl = episode.linksTemplate || episode.project?.linksTemplate || DEFAULT_LINKS_TEMPLATE;
+  vars.platformLinks = applyTemplate(linksTpl, vars);
+
+  return vars;
+};
+
+export const applyTemplate = (template: string, vars: Record<string, any>) => {
+  let result = template;
+
+  // 1. Handle lists: {listName:[itemTemplate], separator}
+  const listRegex = /\{(\w+):\[([\s\S]*?)\](?:, ([\s\S]*?))?\}/g;
+  result = result.replace(listRegex, (match, key, itemTemplate, separator) => {
+    const list = vars[key];
+    if (!Array.isArray(list)) return '';
+    return list.map(item => {
+      let itemResult = itemTemplate;
+      Object.entries(item).forEach(([k, v]) => {
+        itemResult = itemResult.replace(new RegExp(`\\{${k}\\}`, 'g'), String(v || ''));
+      });
+      return itemResult;
+    }).join(separator || '');
+  });
+
+  // 2. Handle flat variables
+  for (const [key, value] of Object.entries(vars)) {
+    if (typeof value === 'string' || typeof value === 'number') {
+      result = result.replace(new RegExp(`{${key}}`, 'g'), String(value || ''));
+    }
   }
+  return result;
+};
 
-  // Original VOICEOVER format
-  const dubbers = assignments
-    .map(a => participants.find(p => p.id === (a.substituteId || a.dubberId)))
-    .filter(Boolean) as Participant[];
-  
-  const uniqueDubbers = Array.from(new Set(dubbers.map(d => d.id)))
-    .map(id => dubbers.find(d => d.id === id)!);
-
-  const dubberLinks = uniqueDubbers.map(d => {
-    const url = d.tgChannel || `https://t.me/${(d.telegram || d.nickname).replace('@', '')}`;
-    return `[${d.nickname}](${url})`;
-  }).join(', ');
-
-  return `${emoji} ${title}
-${progress}
- 
-━━━━━━ ◦ ❖ ◦ ━━━━━━
-Роли озвучили:
- 
-${dubberLinks}
- 
-Тайминг и работа со звуком: 
-${seMention}
-━━━━━━ ◦ ❖ ◦ ━━━━━━
-#${projectSlug}`;
+export const generateTGPostMessage = (episode: Episode, participants: Participant[]) => {
+  const isRecastOrRedub = episode.project?.releaseType === 'RECAST' || episode.project?.releaseType === 'REDUB';
+  const defaultTpl = isRecastOrRedub ? DEFAULT_TG_TEMPLATE_RECAST : DEFAULT_TG_TEMPLATE_VOICEOVER;
+  const tplStr = episode.tgPostTemplate || episode.project?.tgPostTemplate || defaultTpl;
+  const vars = getTemplateVariables(episode, participants);
+  return applyTemplate(tplStr, vars);
 };
 
 export const generateVKPostMessage = (episode: Episode, participants: Participant[]) => {
-  const assignments = episode.assignments || [];
   const isRecastOrRedub = episode.project?.releaseType === 'RECAST' || episode.project?.releaseType === 'REDUB';
-  
-  const mainRoles = assignments.filter(a => a.isMain);
-  const secondaryDubberIds = new Set(assignments.filter(a => !a.isMain).map(a => a.substituteId || a.dubberId).filter(Boolean));
-  const secondaryDubbers = participants.filter(p => secondaryDubberIds.has(p.id));
+  const defaultTpl = isRecastOrRedub ? DEFAULT_VK_TEMPLATE_RECAST : DEFAULT_VK_TEMPLATE_VOICEOVER;
+  const tplStr = episode.vkPostTemplate || episode.project?.vkPostTemplate || defaultTpl;
+  const vars = getTemplateVariables(episode, participants);
+  return applyTemplate(tplStr, vars);
+};
 
-  const mainRolesInfo = mainRoles.map(a => {
-    const dubber = participants.find(p => p.id === (a.substituteId || a.dubberId));
-    if (!dubber) return null;
-    const vk = dubber.vkLink ? `@${dubber.vkLink.split('/').pop()}` : dubber.telegram;
-    return `${a.characterName} - ${vk} (${dubber.nickname})`;
-  }).filter(Boolean).join(', ');
-
-  const secondaryDubbersInfo = secondaryDubbers.map(d => {
-    const vk = d.vkLink ? `@${d.vkLink.split('/').pop()}` : d.telegram;
-    return `${vk} (${d.nickname})`;
-  }).join(', ');
-
-  const total = episode.project?.totalEpisodes || 12;
-  const links = episode.project?.links ? JSON.parse(episode.project.links) : {};
-
-  const seId = episode.project?.soundEngineerId;
-  const se = seId ? participants.find(p => p.id === seId) : null;
-  const seName = se ? se.nickname : 'Tenmag';
-
-  const emoji = episode.project?.emoji || '📢';
-  const releaseTypeLabel = episode.project?.releaseType === 'VOICEOVER' ? 'Закадр' : episode.project?.releaseType === 'RECAST' ? 'Рекаст' : 'Редаб';
-
-  const title = `${episode.project?.title} [${releaseTypeLabel}]`;
-  const progress = isRecastOrRedub ? `🖤${episode.number}/${total}🖤` : `👾${episode.number}/${total}👾`;
-
-  if (isRecastOrRedub) {
-    return `${emoji} ${title}
-${progress}
- 
-| Роли озвучили: ${mainRolesInfo}
-| Второстепенные герои: ${secondaryDubbersInfo}
- 
-| Тайминг и работа со звуком: ${seName}
- 
-➪ Аниме 365: : ${links.anime365 || ''}
-➪ Телеграмм:: ${links.tg || ''}
-➪ Kodik: : ${links.kodik || ''}`;
+export const getTemplateString = (episode: Episode, type: 'TG' | 'VK' | 'FINAL_TG'): string => {
+  const isRecastOrRedub = episode.project?.releaseType === 'RECAST' || episode.project?.releaseType === 'REDUB';
+  if (type === 'TG') {
+    const defaultTpl = isRecastOrRedub ? DEFAULT_TG_TEMPLATE_RECAST : DEFAULT_TG_TEMPLATE_VOICEOVER;
+    return episode.tgPostTemplate || episode.project?.tgPostTemplate || defaultTpl;
   }
-
-  // Original VOICEOVER format
-  const dubbers = assignments
-    .map(a => participants.find(p => p.id === (a.substituteId || a.dubberId)))
-    .filter(Boolean) as Participant[];
-  
-  const uniqueDubbers = Array.from(new Set(dubbers.map(d => d.id)))
-    .map(id => dubbers.find(d => d.id === id)!);
-
-  const dubberInfo = uniqueDubbers.map(d => {
-    const vk = d.vkLink ? `@${d.vkLink.split('/').pop()}` : d.telegram;
-    return `${vk} (${d.nickname})`;
-  }).join(', ');
-
-  return `${emoji} ${title}
-${progress}
- 
-| Роли озвучили: ${dubberInfo}
- 
-| Тайминг и работа со звуком: ${seName}
- 
-➪ Аниме 365: : ${links.anime365 || ''}
-➪ Телеграмм:: ${links.tg || ''}
-➪ Kodik: : ${links.kodik || ''}`;
+  if (type === 'VK') {
+    const defaultTpl = isRecastOrRedub ? DEFAULT_VK_TEMPLATE_RECAST : DEFAULT_VK_TEMPLATE_VOICEOVER;
+    return episode.vkPostTemplate || episode.project?.vkPostTemplate || defaultTpl;
+  }
+  if (type === 'FINAL_TG') {
+    return episode.finalTgPostTemplate || episode.project?.finalTgPostTemplate || DEFAULT_FINAL_TG_TEMPLATE;
+  }
+  if (type === 'LINKS') {
+    return episode.linksTemplate || episode.project?.linksTemplate || DEFAULT_LINKS_TEMPLATE;
+  }
+  return '';
 };
 
 export const generateFinalTGMessage = (episode: Episode, participants: Participant[]) => {
-  const total = episode.project?.totalEpisodes || 12;
-  const links = episode.project?.links ? JSON.parse(episode.project.links) : {};
-  const projectSlug = episode.project?.title.toLowerCase().replace(/\s+/g, '_') || 'project';
-  const emoji = episode.project?.emoji || '✅';
-
-  return `${emoji} СЕРИЯ ВЫЛОЖЕНА: ${episode.project?.title}
-👾${episode.number}/${total}👾
-━━━━━━ ◦ ❖ ◦ ━━━━━━
-Ребята, всем спасибо за работу! Серия доступна по ссылкам ниже:
-
-➪ ➪ Аниме 365: : ${links.anime365 || ''}
-➪ ➪ Телеграмм:: ${links.tg || ''}
-➪ ➪ Kodik: : ${links.kodik || ''}
-➪ ➪ VK: : ${links.vk || ''}
-➪ ➪ Shikimori: : ${links.shikimori || ''}
-━━━━━━ ◦ ❖ ◦ ━━━━━━
-#${projectSlug} #готово`;
+  const vars = getTemplateVariables(episode, participants);
+  const defaultTpl = DEFAULT_FINAL_TG_TEMPLATE;
+  return applyTemplate(defaultTpl, vars);
 };
+
+export const convertToHTMLForTelegram = (text: string): string => {
+  if (!text) return '';
+  
+  let html = text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, linkText, url) => {
+    const safeUrl = url.replace(/"/g, '&quot;');
+    return `<a href="${safeUrl}">${linkText}</a>`;
+  });
+
+  html = html.replace(/\*\*([\s\S]+?)\*\*/g, '<b>$1</b>');
+  html = html.replace(/__([\s\S]+?)__/g, '<i>$1</i>');
+  html = html.replace(/(?<!_)_([^_]+?)_(?!_)/g, '<i>$1</i>');
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+  html = html
+    .replace(/&lt;b&gt;/gi, '<b>')
+    .replace(/&lt;\/b&gt;/gi, '</b>')
+    .replace(/&lt;i&gt;/gi, '<i>')
+    .replace(/&lt;\/i&gt;/gi, '</i>')
+    .replace(/&lt;strong&gt;/gi, '<strong>')
+    .replace(/&lt;\/strong&gt;/gi, '</strong>')
+    .replace(/&lt;em&gt;/gi, '<em>')
+    .replace(/&lt;\/em&gt;/gi, '</em>')
+    .replace(/&lt;s&gt;/gi, '<s>')
+    .replace(/&lt;\/s&gt;/gi, '</s>')
+    .replace(/&lt;u&gt;/gi, '<u>')
+    .replace(/&lt;\/u&gt;/gi, '</u>')
+    .replace(/&lt;code&gt;/gi, '<code>')
+    .replace(/&lt;\/code&gt;/gi, '</code>')
+    .replace(/&lt;pre&gt;/gi, '<pre>')
+    .replace(/&lt;\/pre&gt;/gi, '</pre>');
+
+  html = html.replace(/\n/g, '<br/>');
+
+  return `<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; white-space: pre-wrap;">${html}</div>`;
+};
+

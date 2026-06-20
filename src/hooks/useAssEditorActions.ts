@@ -536,11 +536,18 @@ export const useAssEditorActions = (
     
     try {
       const taskType = state.exportRole === 'DABBER' ? 'export-dabber-files' : 'export-sound-engineer-files';
-      const roleName = state.exportRole === 'DABBER' ? 'Даберам' : 'Звукорежиссеру';
+      const roleName = state.exportRole === 'DABBER' ? 'Даберам' : 'Звукоreжиссеру';
+      const newStatus = state.exportRole === 'DABBER' ? 'RECORDING' : 'SOUND_ENGINEERING';
       
       // Use provided assignments or fallback to episode.assignments
       const assignmentsToUse = currentAssignments || currentEpisode.assignments || [];
-      const episodeWithAssignments = { ...currentEpisode, assignments: assignmentsToUse };
+      const episodeWithAssignments = {
+        ...currentEpisode,
+        status: newStatus as any,
+        assignments: assignmentsToUse
+      };
+      
+      await ipcSafe.invoke('save-episode', episodeWithAssignments);
       
       await ipcSafe.invoke('enqueue-ffmpeg-task', {
         type: taskType,
@@ -556,6 +563,7 @@ export const useAssEditorActions = (
       });
       
       state.setIsExportModalOpen(false);
+      onRefresh();
     } catch (error: any) {
       console.error("Export error:", error);
       setStatus('Ошибка при постановке в очередь: ' + error.message);

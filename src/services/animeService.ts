@@ -27,6 +27,7 @@ export const searchAnime = async (query: string) => {
         status: anime.status,
         type: anime.type,
         episodes: anime.episodes,
+        aired_episodes: anime.episodes_aired || anime.aired_episodes || 0,
         source: 'mal'
       }));
     }
@@ -44,6 +45,7 @@ export const searchAnime = async (query: string) => {
           status: anime.status === 'ongoing' ? 'Currently Airing' : anime.status === 'released' ? 'Finished Airing' : anime.status,
           type: anime.kind ? anime.kind.toUpperCase() : '',
           episodes: anime.episodes,
+          aired_episodes: anime.episodes_aired || 0,
           source: 'shikimori'
         };
       });
@@ -75,6 +77,7 @@ export const getAnimeDetails = async (id: number, source: string = 'shikimori') 
         image: finalImageOriginal,
         status: shikimoriData?.status || anime.status,
         episodes: shikimoriData?.episodes || anime.episodes,
+        aired_episodes: shikimoriData?.episodes_aired || anime.episodes_aired || 0,
         aired_on: shikimoriData?.aired_on || anime.aired?.from?.split('T')[0],
         description: shikimoriData?.description || anime.synopsis,
         type: anime.type || shikimoriData?.kind?.toUpperCase() || '',
@@ -93,6 +96,7 @@ export const getAnimeDetails = async (id: number, source: string = 'shikimori') 
       image: data.image?.original && !isPlaceholder ? `https://shikimori.one${data.image.original}` : '',
       status: data.status,
       episodes: data.episodes,
+      aired_episodes: data.episodes_aired || 0,
       aired_on: data.aired_on,
       description: data.description,
       type: data.kind ? data.kind.toUpperCase() : '',

@@ -1,4 +1,4 @@
-name: Build & Release Electron App
+name: Build & Release Desktop App
 
 on:
   push:
@@ -11,13 +11,13 @@ on:
       - main
 
 jobs:
-  build:
+  release:
+    name: Build and Release
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     
-    # Права для загрузки релиза
     permissions:
       contents: write
 
@@ -29,19 +29,54 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: 'npm'
 
-      - name: Install Dependencies
-        run: npm install
+      - name: Install System Dependencies (Linux Only)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libarchive-tools dpkg fakeroot rpm
 
-      - name: Build frontend
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Cache FFmpeg & AI Models
+        id: cache-assets
+        uses: actions/cache@v4
+        with:
+          path: |
+            assets/bin
+            assets/models
+          key: ${{ runner.os }}-assets-${{ hashFiles('scripts/download-ffmpeg.js', 'scripts/download-models.js') }}
+          restore-keys: |
+            ${{ runner.os }}-assets-
+
+      - name: Download FFmpeg Binaries (If not cached)
+        run: node scripts/download-ffmpeg.js
+        env:
+          NODE_ENV: production
+
+      - name: Download Offline AI Models (If not cached)
+        run: node scripts/download-models.js
+        env:
+          NODE_ENV: production
+
+      - name: Generate App Metadata
+        run: node scripts/generate-metadata.js
+
+      - name: Build Svelte/React Frontend
         run: npm run build
 
-      - name: Build Electron app and Publish (main/tags only)
-        if: github.event_name == 'push'
+      - name: Build & Publish Electron App (On Tag Push)
+        if: startsWith(github.ref, 'refs/tags/v')
         run: npx electron-builder --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Prevent macOS codesign errors if certificates are not set up
+          CSC_IDENTITY_AUTO_DISCOVERY: false
 
-      - name: Build Electron app (PR only)
-        if: github.event_name == 'pull_request'
+      - name: Compile Electron App Test (On Push or PR without Tag)
+        if: "!startsWith(github.ref, 'refs/tags/v')"
         run: npx electron-builder --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false

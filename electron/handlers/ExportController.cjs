@@ -6,22 +6,23 @@ const { wrapIpcHandler } = require('../lib/IpcWrapper.cjs');
 const ExportService = require('../services/ExportService.cjs');
 
 function registerExportHandlers(getData, mainWindow) {
-  ipcMain.handle('export-dabber-files', wrapIpcHandler(async (event, { episode, targetDir, skipConversion, uploadToYandex }) => {
+  ipcMain.handle('export-dabber-files', wrapIpcHandler(async (event, { episode, targetDir, skipConversion, uploadToYandex, additionalProcessing }) => {
     if (!episode || !targetDir) throw new Error('Missing required parameters');
     
     const config = await getData('config.json');
     const baseDir = config.baseDir || app.getPath('userData');
     const exportDir = path.isAbsolute(targetDir) ? targetDir : path.join(baseDir, targetDir);
     const participantsData = await getData('participants.json');
+    const projectsData = await getData('projects.json');
     
     const onProgress = (p) => {
       if (mainWindow) mainWindow.webContents.send('ffmpeg-progress', p.percent);
     };
 
-    return await ExportService.exportDabberFiles(episode, exportDir, skipConversion, uploadToYandex, config, participantsData, onProgress);
+    return await ExportService.exportDabberFiles(episode, exportDir, skipConversion, uploadToYandex, additionalProcessing, config, participantsData, projectsData, onProgress);
   }));
 
-  ipcMain.handle('export-sound-engineer-files', wrapIpcHandler(async (event, { episode, targetDir, skipConversion, smartExport, uploadToYandex }) => {
+  ipcMain.handle('export-sound-engineer-files', wrapIpcHandler(async (event, { episode, targetDir, skipConversion, smartExport, uploadToYandex, additionalProcessing }) => {
     if (!episode || !targetDir) throw new Error('Missing required parameters');
     
     const config = await getData('config.json');
@@ -34,7 +35,7 @@ function registerExportHandlers(getData, mainWindow) {
       if (mainWindow) mainWindow.webContents.send('ffmpeg-progress', p.percent);
     };
 
-    return await ExportService.exportSoundEngineerFiles(episode, exportDir, skipConversion, smartExport, uploadToYandex, config, projectsData, participantsData, onProgress);
+    return await ExportService.exportSoundEngineerFiles(episode, exportDir, skipConversion, smartExport, uploadToYandex, additionalProcessing, config, projectsData, participantsData, onProgress);
   }));
 
   ipcMain.handle('build-release', wrapIpcHandler(async (event, { episode, targetDir, customAudioPath, customRawPath }) => {

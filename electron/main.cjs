@@ -7,6 +7,7 @@ const { autoUpdater } = require('electron-updater');
 const DataManager = require('./lib/DataManager.cjs');
 const TaskQueue = require('./lib/TaskQueue.cjs');
 const MediaWorker = require('./lib/MediaWorker.cjs');
+const { initSharedOnnx } = require('./lib/onnxConfig.cjs');
 
 let dataManager;
 let taskQueue;
@@ -35,7 +36,6 @@ const { bakeSubtitles, transcodeToMp4, muxRelease, takeScreenshot, getVideoMetad
 const { getRawSubtitles, saveRawSubtitles, saveTranslatedSubtitles, splitSubsByActor, splitSubsByDubber, exportFullAssWithRoles, extractSignsAss, cleanAssFile } = require('./services/subtitleService.cjs');
 const { translateText } = require('./services/translateService.cjs');
 const { searchAnime, getAnimeDetails, getAnimeCharacters, getNextEpisodeDate } = require('./services/animeApiService.cjs');
-const AISubtitleProcessor = require('./services/AISubtitleProcessor.cjs');
 
 const { registerEpisodeHandlers } = require('./handlers/episodeHandlers.cjs');
 const { registerProjectHandlers } = require('./handlers/ProjectController.cjs');
@@ -45,6 +45,9 @@ const { registerSubtitleHandlers } = require('./handlers/SubtitleController.cjs'
 const { registerSystemHandlers } = require('./handlers/SystemController.cjs');
 const { registerApiHandlers } = require('./handlers/ApiController.cjs');
 const { registerSyncHandlers } = require('./handlers/SyncController.cjs');
+const { registerWhisperHandlers } = require('./handlers/WhisperController.cjs');
+const { registerLocalTranslateHandlers } = require('./handlers/LocalTranslateController.cjs');
+const { registerDiarizationHandlers } = require('./handlers/DiarizationController.cjs');
 
 
 let mainWindow = null;
@@ -169,6 +172,7 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
+  initSharedOnnx();
   dataManager = new DataManager(app.getPath('userData'));
   await dataManager.init();
 
@@ -197,8 +201,11 @@ app.whenReady().then(async () => {
   registerExportHandlers(getData, mainWindow, taskQueue);
   registerSubtitleHandlers(getData, saveData);
   registerSystemHandlers(getData, saveData, mainWindow, taskQueue);
-  registerApiHandlers(getData);
+  registerApiHandlers(getData, saveData);
   registerSyncHandlers(getData, saveData, app.getPath('userData'));
+  registerWhisperHandlers();
+  registerLocalTranslateHandlers();
+  registerDiarizationHandlers();
 
   // Check for updates
   if (process.env.NODE_ENV !== 'development') {

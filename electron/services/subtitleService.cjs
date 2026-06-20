@@ -138,6 +138,13 @@ async function cleanAssFile(assFilePath) {
 
 async function getRawSubtitles(assFilePath) {
   try {
+    try {
+      await fs.access(assFilePath);
+    } catch {
+      // File does not exist, return empty structure instead of crashing the UI
+      return { lines: [], actors: [] };
+    }
+
     const stats = await fs.stat(assFilePath);
     const mtime = stats.mtimeMs;
     
@@ -179,7 +186,10 @@ async function getRawSubtitles(assFilePath) {
             style: parsed.style,
             name: parsed.name,
             text: parsed.text,
-            rawLineIndex: i
+            rawLineIndex: i,
+            standardParts: parsed.standardParts,
+            prefix: parsed.prefix,
+            formatInfo: parsed.formatInfo
           });
         }
       } else if (trimmedLine.startsWith('[')) {
@@ -221,8 +231,44 @@ async function getRawSubtitles(assFilePath) {
 }
 
 async function saveRawSubtitles(assFilePath, updates) {
-  const content = await fs.readFile(assFilePath, 'utf-8');
-  const lines = content.split('\n');
+  let content = '';
+  let lines = [];
+  try {
+    content = await fs.readFile(assFilePath, 'utf-8');
+    lines = content.split('\n');
+  } catch (err) {
+    if (err.code === 'ENOENT') {
+      // File does not exist! We will generate it from scratch using updates
+      const assLines = [];
+      assLines.push('[Script Info]');
+      assLines.push('Title: Generated Subtitles');
+      assLines.push('ScriptType: v4.00+');
+      assLines.push('PlayResX: 640');
+      assLines.push('PlayResY: 360');
+      assLines.push('');
+      assLines.push('[V4+ Styles]');
+      assLines.push('Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding');
+      assLines.push('Style: Default,Arial,20,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,2,2,10,10,10,1');
+      assLines.push('');
+      assLines.push('[Events]');
+      assLines.push('Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text');
+      
+      for (const line of updates) {
+        const start = line.start || '0:00:00.00';
+        const end = line.end || '0:00:00.00';
+        const style = line.style || 'Default';
+        const name = (line.name || '').replace(/,/g, ';');
+        const text = line.text || '';
+        assLines.push(`Dialogue: 0,${start},${end},${style},${name},0,0,0,,${text}`);
+      }
+      
+      const newContent = assLines.join('\n');
+      await fs.writeFile(assFilePath, newContent, 'utf-8');
+      return;
+    } else {
+      throw err;
+    }
+  }
   
   let inEvents = false;
   let formatParts = [];
@@ -437,7 +483,8 @@ async function splitSubsByDubber(assFilePath, outputDirectory, assignments, dubb
   log.info(`Splitting subtitles by dubber: ${assFilePath} -> ${outputDirectory}`);
   const {
     saveSignsInAss = false,
-    outputFormat = 'ass' // 'ass' or 'srt'
+    outputFormat = 'ass', // 'ass' or 'srt'
+    baseFileName = path.basename(assFilePath, '.ass')
   } = options || {};
 
   const content = await fs.readFile(assFilePath, 'utf-8');
@@ -548,7 +595,7 @@ async function splitSubsByDubber(assFilePath, outputDirectory, assignments, dubb
     }
 
     const ext = outputFormat === 'ass' ? '.ass' : '.srt';
-    const outputPath = path.join(outputDirectory, `${dubber.nickname} (${lineCount})${ext}`);
+    const outputPath = path.join(outputDirectory, `${baseFileName}_[${dubber.nickname}]_${lineCount}${ext}`);
     log.info(`Writing file for dubber ${dubber.nickname}: ${outputPath}`);
     await fs.writeFile(outputPath, newLines.join('\n'), 'utf-8');
     if (outputFormat === 'ass') await cleanAssFile(outputPath);
@@ -681,41 +728,59 @@ async function saveTranslatedSubtitles(assFilePath, translatedLines) {
   
   let inEvents = false;
   let formatParts = [];
-
-  const translatedMap = new Map();
-  for (const line of translatedLines) {
-    translatedMap.set(line.rawLineIndex, line.text);
-  }
+  let firstDialogueIndex = -1;
+  let lastDialogueIndex = -1;
 
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trimEnd();
-    const trimmedLine = line.trim();
-
-    if (trimmedLine.startsWith('[Events]')) {
-      inEvents = true;
-      continue;
-    }
-
-    if (inEvents && trimmedLine.startsWith('Format:')) {
+    const trimmedLine = lines[i].trim();
+    if (trimmedLine.startsWith('[Events]')) inEvents = true;
+    else if (inEvents && trimmedLine.startsWith('Format:')) {
       formatParts = trimmedLine.substring(7).split(',').map(s => s.trim());
-      continue;
-    }
-
-    if (inEvents && trimmedLine.startsWith('Dialogue:')) {
-      if (translatedMap.has(i)) {
-        const parsed = parseDialogueLine(line, formatParts);
-        if (parsed) {
-          const standardParts = parsed.standardParts.map((p, idx) => idx === parsed.formatInfo.textIndex ? p : p.trim());
-          standardParts[parsed.formatInfo.textIndex] = translatedMap.get(i) || '';
-          lines[i] = `${parsed.prefix}${standardParts.join(',')}`;
-        }
-      }
+    } else if (inEvents && trimmedLine.startsWith('Dialogue:')) {
+      if (firstDialogueIndex === -1) firstDialogueIndex = i;
+      lastDialogueIndex = i;
     } else if (trimmedLine.startsWith('[')) {
       if (trimmedLine !== '[Events]') inEvents = false;
     }
   }
 
-  await fs.writeFile(assFilePath, lines.join('\n'), 'utf-8');
+  if (firstDialogueIndex === -1) firstDialogueIndex = lines.length;
+  if (lastDialogueIndex === -1) lastDialogueIndex = firstDialogueIndex - 1;
+
+  const newDialogueLines = [];
+  for (const line of translatedLines) {
+    if (line.standardParts && line.prefix && line.formatInfo) {
+      const parts = [...line.standardParts];
+      parts[line.formatInfo.textIndex] = line.text;
+      if (line.start) parts[line.formatInfo.startIndex] = line.start;
+      if (line.end) parts[line.formatInfo.endIndex] = line.end;
+      if (line.name !== undefined) parts[line.formatInfo.nameIndex] = line.name.replace(/,/g, ';');
+      newDialogueLines.push(`${line.prefix}${parts.join(',')}`);
+    } else {
+      // Fallback for new lines or missing format info
+      const start = line.start || '0:00:00.00';
+      const end = line.end || '0:00:00.00';
+      const style = line.style || 'Default';
+      const name = (line.name || '').replace(/,/g, ';');
+      const text = line.text || '';
+      newDialogueLines.push(`Dialogue: 0,${start},${end},${style},${name},0,0,0,,${text}`);
+    }
+  }
+
+  const preLines = lines.slice(0, firstDialogueIndex);
+  const postLines = lines.slice(lastDialogueIndex + 1);
+  
+  // Filter out any stray old Dialogues between first and last if we slice
+  // Actually, we just need to drop ALL Dialogue lines from preLines and postLines
+  const filterOutDialogue = (l) => !l.trim().startsWith('Dialogue:');
+  
+  const finalLines = [
+    ...preLines.filter(filterOutDialogue),
+    ...newDialogueLines,
+    ...postLines.filter(filterOutDialogue)
+  ];
+
+  await fs.writeFile(assFilePath, finalLines.join('\n'), 'utf-8');
   await cleanAssFile(assFilePath);
 }
 

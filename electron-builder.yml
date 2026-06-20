@@ -6,6 +6,12 @@ directories:
   output: dist/electron
   buildResources: assets
 
+extraResources:
+  - from: assets/bin
+    to: bin
+  - from: assets/models
+    to: models
+
 files:
   - dist/**/*
   - electron/**/*
@@ -59,3 +65,5 @@ linux:
 
 asarUnpack:
   - "**/node_modules/ffmpeg-static/**/*"
+  - "**/node_modules/onnxruntime-node/**/*"
+  - "**/node_modules/@xenova/transformers/**/*"

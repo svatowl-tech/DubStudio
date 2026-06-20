@@ -85,7 +85,7 @@ export default function DatabasePanel() {
   };
 
   return (
-    <div className="p-8 max-w-6xl w-full mx-auto space-y-8">
+    <div className="p-8 w-full mx-auto space-y-8">
       <h1 className="text-3xl font-bold text-white">База участников</h1>
       
       <div className="flex gap-4">

@@ -119,68 +119,66 @@ export const ExportModal: React.FC<ExportModalProps> = ({
         </div>
 
         {role === 'SOUND_ENGINEER' && (
-          <>
-            <div className="mb-6">
-              <label className="flex items-center gap-3 cursor-pointer group">
-                <div className="relative flex items-center">
-                  <input
-                    type="checkbox"
-                    checked={smartExport}
-                    onChange={(e) => setSmartExport(e.target.checked)}
-                    disabled={isExporting}
-                    className="peer sr-only"
-                  />
-                  <div className="w-5 h-5 border-2 border-neutral-700 rounded bg-neutral-950 peer-checked:bg-purple-600 peer-checked:border-purple-600 transition-all duration-200 group-hover:border-neutral-500" />
-                  <svg
-                    className="absolute w-3.5 h-3.5 text-white opacity-0 peer-checked:opacity-100 transition-opacity duration-200 left-0.5 pointer-events-none"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                    strokeWidth="3"
-                  >
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                  </svg>
-                </div>
-                <span className="text-sm text-neutral-300 group-hover:text-white transition-colors">
-                  Умная сортировка дорожек (Фиксы)
-                </span>
-              </label>
-              <p className="text-[10px] text-neutral-500 mt-1 ml-8">
-                Если фикс меньше оригинала — экспортируются оба. Если фикс больше или равен — только фикс.
-              </p>
-            </div>
-            
-            <div className="mb-6">
-              <label className="flex items-center gap-3 cursor-pointer group">
-                <div className="relative flex items-center">
-                  <input
-                    type="checkbox"
-                    checked={additionalProcessing}
-                    onChange={(e) => setAdditionalProcessing(e.target.checked)}
-                    disabled={isExporting}
-                    className="peer sr-only"
-                  />
-                  <div className="w-5 h-5 border-2 border-neutral-700 rounded bg-neutral-950 peer-checked:bg-orange-600 peer-checked:border-orange-600 transition-all duration-200 group-hover:border-neutral-500" />
-                  <svg
-                    className="absolute w-3.5 h-3.5 text-white opacity-0 peer-checked:opacity-100 transition-opacity duration-200 left-0.5 pointer-events-none"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                    strokeWidth="3"
-                  >
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                  </svg>
-                </div>
-                <span className="text-sm text-neutral-300 group-hover:text-white transition-colors">
-                  Дополнительная обработка видео
-                </span>
-              </label>
-              <p className="text-[10px] text-neutral-500 mt-1 ml-8">
-                Применяет отражение по горизонтали, масштабирование (1.02) и обрезку 1920:1080 до вшивания субтитров
-              </p>
-            </div>
-          </>
+          <div className="mb-6">
+            <label className="flex items-center gap-3 cursor-pointer group">
+              <div className="relative flex items-center">
+                <input
+                  type="checkbox"
+                  checked={smartExport}
+                  onChange={(e) => setSmartExport(e.target.checked)}
+                  disabled={isExporting}
+                  className="peer sr-only"
+                />
+                <div className="w-5 h-5 border-2 border-neutral-700 rounded bg-neutral-950 peer-checked:bg-purple-600 peer-checked:border-purple-600 transition-all duration-200 group-hover:border-neutral-500" />
+                <svg
+                  className="absolute w-3.5 h-3.5 text-white opacity-0 peer-checked:opacity-100 transition-opacity duration-200 left-0.5 pointer-events-none"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth="3"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                </svg>
+              </div>
+              <span className="text-sm text-neutral-300 group-hover:text-white transition-colors">
+                Умная сортировка дорожек (Фиксы)
+              </span>
+            </label>
+            <p className="text-[10px] text-neutral-500 mt-1 ml-8">
+              Если фикс меньше оригинала — экспортируются оба. Если фикс больше или равен — только фикс.
+            </p>
+          </div>
         )}
+        
+        <div className="mb-6">
+          <label className="flex items-center gap-3 cursor-pointer group">
+            <div className="relative flex items-center">
+              <input
+                type="checkbox"
+                checked={additionalProcessing}
+                onChange={(e) => setAdditionalProcessing(e.target.checked)}
+                disabled={isExporting}
+                className="peer sr-only"
+              />
+              <div className="w-5 h-5 border-2 border-neutral-700 rounded bg-neutral-950 peer-checked:bg-orange-600 peer-checked:border-orange-600 transition-all duration-200 group-hover:border-neutral-500" />
+              <svg
+                className="absolute w-3.5 h-3.5 text-white opacity-0 peer-checked:opacity-100 transition-opacity duration-200 left-0.5 pointer-events-none"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth="3"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+              </svg>
+            </div>
+            <span className="text-sm text-neutral-300 group-hover:text-white transition-colors">
+              Дополнительная обработка видео
+            </span>
+          </label>
+          <p className="text-[10px] text-neutral-500 mt-1 ml-8">
+            Применяет отражение по горизонтали, масштабирование (1.02) и обрезку 1920:1080 до вшивания субтитров
+          </p>
+        </div>
 
         <div className="mb-6">
           <label className={`flex items-center gap-3 cursor-pointer group ${!isYandexConnected ? 'opacity-50' : ''}`}>

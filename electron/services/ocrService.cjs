@@ -10,7 +10,8 @@ async function extractHardsub(videoPath, outputAssPath, onProgress, options = {}
   const { 
     language = 'rus+eng', 
     preprocess = false,
-    fps = 0.5 
+    fps = 0.5,
+    crop = null
   } = options;
 
   const tempDir = path.join(path.dirname(videoPath), 'temp_ocr_' + Date.now());
@@ -20,6 +21,17 @@ async function extractHardsub(videoPath, outputAssPath, onProgress, options = {}
     // 1. Extract frames
     log.info('Extracting frames for OCR...');
     
+    // Construct crop filter if specified
+    let cropFilter = null;
+    if (crop) {
+      if (typeof crop === 'string') {
+        cropFilter = crop;
+      } else if (typeof crop === 'object') {
+        const { x = 0, y = 75, w = 100, h = 25 } = crop;
+        cropFilter = `crop=in_w*${w/100}:in_h*${h/100}:in_w*${x/100}:in_h*${y/100}`;
+      }
+    }
+
     // Choose filter chain based on preprocess flag
     // For subtitles, we want high contrast and sharpness
     // format=gray: converts to grayscale
@@ -27,6 +39,7 @@ async function extractHardsub(videoPath, outputAssPath, onProgress, options = {}
     // threshold: binarizes the image (black and white only) - helpful for clear text
     const vf = [
       `fps=${fps}`,
+      cropFilter,
       preprocess ? 'format=gray,curves=strong_contrast,unsharp=5:5:1.0:5:5:0.0' : null
     ].filter(Boolean).join(',');
 

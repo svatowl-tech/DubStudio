@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { LayoutDashboard, Scissors, Settings, Mic2, Activity, PlaySquare, Database } from 'lucide-react';
+import { LayoutDashboard, Scissors, Settings, Mic2, Activity, PlaySquare, Database, Image as ImageIcon, BarChart2 } from 'lucide-react';
 import { Toaster } from 'sonner';
 import Dashboard from './components/Dashboard';
 import QAPanel from './components/QAPanel';
@@ -8,13 +8,16 @@ import AssEditor from './components/AssEditor';
 import DatabasePanel from './components/DatabasePanel';
 import SettingsPanel from './components/SettingsPanel';
 import TaskQueuePanel from './components/TaskQueuePanel';
+import CoverGenerator from './components/CoverGenerator';
+import { StatsPanel } from './components/StatsPanel';
+import ActiveDownloadsIndicator from './components/ActiveDownloadsIndicator';
 import { Project, Episode } from './types';
 import { ipcSafe } from './lib/ipcSafe';
 import { VideoProvider } from './contexts/VideoContext';
 import { useGlobalKeyboard } from './hooks/useGlobalKeyboard';
 
 function AppContent() {
-  type TabType = 'dashboard' | 'subtitles' | 'qa' | 'release' | 'settings' | 'database';
+  type TabType = 'dashboard' | 'subtitles' | 'qa' | 'release' | 'settings' | 'database' | 'cover' | 'stats';
   const [activeTab, setActiveTab] = useState<TabType>('dashboard');
   const [savedAudioUrl, setSavedAudioUrl] = useState<string | null>(null);
   
@@ -53,6 +56,19 @@ function AppContent() {
     loadProjects();
     // Ensure window has focus on startup to avoid unresponsive inputs
     window.focus();
+
+    // Fix Electron focus bug: WebContents often drops caret focus.
+    const handlePointerDown = () => {
+      // Calling window.focus() on interaction tells OS to re-focus the window context
+      if (!document.hasFocus()) {
+        window.focus();
+      }
+    };
+    window.addEventListener('pointerdown', handlePointerDown, true);
+    
+    return () => {
+      window.removeEventListener('pointerdown', handlePointerDown, true);
+    };
   }, [loadProjects]);
 
   const handleNavigate = (tab: TabType) => {
@@ -136,6 +152,19 @@ function AppContent() {
           </button>
 
           <button
+            onClick={() => setActiveTab('cover')}
+            title="Генерация обложек для серий"
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-colors text-left ${
+              activeTab === 'cover' 
+                ? 'bg-pink-600/10 text-pink-400' 
+                : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200'
+            }`}
+          >
+            <ImageIcon className="w-5 h-5" />
+            <span>Обложки серии</span>
+          </button>
+
+          <button
             onClick={() => setActiveTab('release')}
             title="Финальная сборка и экспорт релиза"
             className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-colors text-left ${
@@ -150,6 +179,18 @@ function AppContent() {
         </nav>
 
         <div className="p-4 border-t border-neutral-800 space-y-1">
+          <button
+            onClick={() => setActiveTab('stats')}
+            title="Интеллектуальная аналитика работы дабберов, кураторов и звукорежиссеров"
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-colors text-left ${
+              activeTab === 'stats' 
+                ? 'bg-blue-600/10 text-blue-400' 
+                : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200'
+            }`}
+          >
+            <BarChart2 className="w-5 h-5" />
+            <span>Статистика</span>
+          </button>
           <button
             onClick={() => setActiveTab('database')}
             title="Управление списком даберов, звукорежиссеров и их контактами"
@@ -178,7 +219,7 @@ function AppContent() {
       </aside>
 
       {/* Main Content */}
-      <main className={`flex-1 bg-neutral-950 flex flex-col p-8 ${['subtitles', 'qa'].includes(activeTab) ? 'overflow-hidden' : 'overflow-y-auto'}`}>
+      <main className={`flex-1 bg-neutral-950 flex flex-col ${['subtitles', 'qa'].includes(activeTab) ? 'overflow-hidden' : 'overflow-y-auto'}`}>
         {activeTab === 'dashboard' && (
           <Dashboard 
             onNavigate={handleNavigate} 
@@ -193,11 +234,14 @@ function AppContent() {
         {activeTab === 'subtitles' && <AssEditor currentEpisode={currentEpisode} onRefresh={loadProjects} />}
         {activeTab === 'release' && <ReleasePanel currentEpisode={currentEpisode} onRefresh={loadProjects} />}
         {activeTab === 'database' && <DatabasePanel />}
+        {activeTab === 'stats' && <StatsPanel />}
         {activeTab === 'settings' && <SettingsPanel />}
         {activeTab === 'qa' && <QAPanel currentEpisode={currentEpisode} onRefresh={loadProjects} />}
+        {activeTab === 'cover' && <CoverGenerator currentEpisode={currentEpisode} />}
         <TaskQueuePanel />
       </main>
       <Toaster position="top-right" richColors theme="dark" />
+      <ActiveDownloadsIndicator />
     </div>
   );
 }

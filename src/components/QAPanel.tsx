@@ -355,7 +355,7 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
         name: newCharacterName
       }];
 
-      await ipcSafe.invoke('save-raw-subtitles', currentEpisode.subPath, updates);
+      await ipcSafe.invoke('save-raw-subtitles', { filePath: currentEpisode.subPath, lines: updates });
       
       // Update local state
       setSubLines(prev => prev.map(l => 
@@ -670,17 +670,24 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
 
   const handleExportSoundEngineer = async (targetDir: string, skipConversion: boolean, smartExport?: boolean) => {
     if (!currentEpisode) return;
-    setIsUploading(true);
     try {
-      await ipcSafe.invoke('export-sound-engineer-files', { episode: currentEpisode, targetDir, skipConversion, smartExport });
+      await ipcSafe.invoke('enqueue-ffmpeg-task', {
+        type: 'export-sound-engineer-files',
+        payload: {
+          episode: currentEpisode,
+          targetDir,
+          skipConversion,
+          smartExport
+        },
+        metadata: {
+          title: `Экспорт Звукорежиссеру: ${currentEpisode.project?.title || 'Проект'} - Серия ${currentEpisode.number}`
+        }
+      });
       setIsExportModalOpen(false);
-      toast.success('Экспорт для звукорежиссера успешно завершен!');
+      toast.success('Экспорт для звукорежиссера добавлен в фоновую очередь задач!');
     } catch (error: any) {
-      if (error.name !== 'AbortError') {
-        toast.error('Ошибка экспорта: ' + (error.message || String(error)));
-      }
-    } finally {
-      setIsUploading(false);
+      console.error('Export sound engineer task enqueue error:', error);
+      toast.error('Ошибка добавления экспорта в очередь: ' + (error.message || String(error)));
     }
   };
 

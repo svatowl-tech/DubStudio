@@ -6,3 +6,6 @@ coverage/
 *.log
 .env*
 !.env.example
+assets/models/
+assets/ffmpeg/
+dist-electron/

@@ -177,7 +177,24 @@ export default function CreateProjectModal({ isOpen, onClose, onCreate }: Create
                     onClick={() => handleSelectAnime(anime)}
                     className="w-full flex items-center gap-3 p-2 rounded-lg hover:bg-neutral-800 text-left transition-colors group"
                   >
-                    <img src={anime.image || undefined} alt="" className="w-10 h-14 object-cover rounded" referrerPolicy="no-referrer" />
+                    <div className="relative w-10 h-14 flex-shrink-0 bg-neutral-900 rounded overflow-hidden">
+                      <img 
+                        src={anime.image || undefined} 
+                        alt="" 
+                        className="absolute inset-0 w-10 h-14 object-cover rounded z-10" 
+                        referrerPolicy="no-referrer"
+                        onError={(e) => {
+                          e.currentTarget.style.display = 'none';
+                          const next = e.currentTarget.nextSibling;
+                          if (next && next instanceof HTMLElement) {
+                            next.classList.remove('hidden');
+                          }
+                        }}
+                      />
+                      <div className="absolute inset-0 w-10 h-14 bg-neutral-900 text-neutral-600 flex items-center justify-center font-bold text-xs hidden">
+                        🎬
+                      </div>
+                    </div>
                     <div className="flex-1 min-w-0">
                       <div className="text-sm font-medium text-white truncate group-hover:text-blue-400">{anime.title}</div>
                       <div className="text-xs text-neutral-500">{anime.type} • {anime.episodes || '?'} эп. • {anime.status}</div>
@@ -298,13 +315,26 @@ export default function CreateProjectModal({ isOpen, onClose, onCreate }: Create
                 <div id="character-list-container" className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-40 overflow-y-auto p-1 scroll-smooth">
                   {newProjectCharacters.map((char, idx) => (
                     <div key={char.name || ('char-' + idx)} className="flex gap-2 group items-center">
-                      {char.photoUrl ? (
-                        <img src={char.photoUrl} alt="" className="w-8 h-8 rounded-full object-cover border border-neutral-800" referrerPolicy="no-referrer" />
-                      ) : (
-                        <div className="w-8 h-8 rounded-full bg-neutral-900 border border-neutral-800 flex items-center justify-center text-neutral-700">
+                      <div className="relative w-8 h-8 flex-shrink-0">
+                        {char.photoUrl ? (
+                          <img 
+                            src={char.photoUrl} 
+                            alt="" 
+                            className="absolute inset-0 w-8 h-8 rounded-full object-cover border border-neutral-800 z-10" 
+                            referrerPolicy="no-referrer"
+                            onError={(e) => {
+                              e.currentTarget.style.display = 'none';
+                              const next = e.currentTarget.nextSibling;
+                              if (next && next instanceof HTMLElement) {
+                                next.classList.remove('hidden');
+                              }
+                            }}
+                          />
+                        ) : null}
+                        <div className={`absolute inset-0 w-8 h-8 rounded-full bg-neutral-900 border border-neutral-800 flex items-center justify-center text-neutral-700 ${char.photoUrl ? 'hidden' : ''}`}>
                           <User className="w-4 h-4" />
                         </div>
-                      )}
+                      </div>
                       <input 
                         type="text"
                         value={char.name}

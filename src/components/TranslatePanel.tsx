@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from "react";
-import { Languages, FileText, Loader2, RefreshCw, Save, Edit3, Check, X, AlertCircle, ChevronDown, BrainCircuit, Eye, EyeOff } from "lucide-react";
+import React, { useState, useEffect, useRef } from "react";
+import { Languages, FileText, Loader2, RefreshCw, Save, Edit3, Check, X, AlertCircle, ChevronDown, BrainCircuit, Eye, EyeOff, Trash2, Plus, Copy, Scissors } from "lucide-react";
 import { ipcSafe } from "../lib/ipcSafe";
 import { Episode } from "../types";
 import { BATCH_SIZE, SIGN_KEYWORDS } from "../constants";
@@ -24,6 +24,166 @@ const LANGUAGES = [
   { code: 'ko', name: 'Корейский' },
 ];
 
+const TRANSLATION_MODELS = [
+  { id: 'Xenova/m2m100_418M', name: 'M2M-100 (418M)', size: '~400 MB', description: 'Самая легкая и быстрая модель.' },
+  { id: 'Xenova/nllb-200-distilled-600M', name: 'NLLB-200 (600M) - Рекомендуется', size: '~600 MB', description: 'Оптимальный баланс скорости и качества.' },
+  { id: 'Xenova/m2m100_1.2b', name: 'M2M-100 (1.2B)', size: '~1.2 GB', description: 'Высокое качество перевода, требует больше памяти.' },
+];
+
+interface TranslatedLineRowProps {
+  line: any;
+  idx: number;
+  editingId: string | number | null;
+  editText: string;
+  editStart: string;
+  editEnd: string;
+  sourceLang: string;
+  setEditText: (t: string) => void;
+  setEditStart: (s: string) => void;
+  setEditEnd: (e: string) => void;
+  saveEdit: (id: string | number) => void;
+  setEditingId: (id: string | number | null) => void;
+  handleAddLine: (id: string | number) => void;
+  handleDuplicateLine: (id: string | number) => void;
+  translateSingleLine: (idx: number) => void;
+  startEditing: (id: string | number, text: string, start: string, end: string) => void;
+  handleDeleteLine: (id: string | number) => void;
+}
+
+const TranslatedLineRow = React.memo(({
+  line,
+  idx,
+  editingId,
+  editText,
+  editStart,
+  editEnd,
+  setEditText,
+  setEditStart,
+  setEditEnd,
+  saveEdit,
+  setEditingId,
+  handleAddLine,
+  handleDuplicateLine,
+  translateSingleLine,
+  startEditing,
+  handleDeleteLine
+}: TranslatedLineRowProps) => {
+  const isEditing = editingId === line.id;
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    if (isEditing && textareaRef.current) {
+      textareaRef.current.focus();
+      // Adjust height
+      textareaRef.current.style.height = 'auto';
+      textareaRef.current.style.height = textareaRef.current.scrollHeight + 'px';
+    }
+  }, [isEditing]);
+
+  return (
+    <tr key={line.id} className="border-b border-neutral-800/50 hover:bg-white/5 transition-colors group">
+      <td className="p-4 text-sm text-neutral-400 italic font-light border-r border-neutral-800/50">
+        {line.originalText || line.text}
+      </td>
+      <td className="p-4 text-sm text-white relative">
+        {isEditing ? (
+          <div className="flex gap-2 w-full">
+            <div className="flex-1 flex flex-col gap-2">
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={editStart}
+                  onChange={e => setEditStart(e.target.value)}
+                  className="w-24 bg-neutral-950 border border-neutral-700/50 rounded-lg p-1 px-2 text-xs font-mono text-neutral-300 focus:outline-none focus:border-indigo-500"
+                />
+                <span className="text-neutral-500">-</span>
+                <input
+                  type="text"
+                  value={editEnd}
+                  onChange={e => setEditEnd(e.target.value)}
+                  className="w-24 bg-neutral-950 border border-neutral-700/50 rounded-lg p-1 px-2 text-xs font-mono text-neutral-300 focus:outline-none focus:border-indigo-500"
+                />
+              </div>
+              <textarea
+                ref={textareaRef}
+                value={editText}
+                onChange={e => setEditText(e.target.value)}
+                className="w-full bg-neutral-950 border border-indigo-500 rounded-lg p-2 text-sm text-white focus:outline-none min-h-[60px]"
+                onInput={(e) => {
+                  const target = e.target as HTMLTextAreaElement;
+                  target.style.height = 'auto';
+                  target.style.height = target.scrollHeight + 'px';
+                }}
+              />
+            </div>
+            <div className="flex flex-col gap-2">
+              <button 
+                onClick={(e) => { e.stopPropagation(); saveEdit(line.id); }} 
+                className="p-2 bg-emerald-600 rounded-lg text-white hover:bg-emerald-500"
+              >
+                <Check className="w-4 h-4" />
+              </button>
+              <button 
+                onClick={(e) => { e.stopPropagation(); setEditingId(null); }} 
+                className="p-2 bg-neutral-800 rounded-lg text-white hover:bg-neutral-700"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="flex justify-between items-start gap-4" onClick={() => startEditing(line.id, line.text, line.start, line.end)}>
+            <div className="flex-1">
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-[10px] text-neutral-500 font-mono">{line.start} - {line.end}</span>
+                {line.name && <span className="text-[10px] bg-neutral-800 text-neutral-400 px-1.5 rounded">{line.name}</span>}
+              </div>
+              <span>{line.text || <span className="opacity-20 italic">Пустая реплика</span>}</span>
+            </div>
+            <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all" onClick={e => e.stopPropagation()}>
+              <button 
+                onClick={() => handleAddLine(line.id)}
+                title="Добавить пустую реплику ниже"
+                className="p-1.5 text-neutral-500 hover:text-emerald-400"
+              >
+                <Plus className="w-4 h-4" />
+              </button>
+              <button 
+                onClick={() => handleDuplicateLine(line.id)}
+                title="Дублировать / Разделить реплику"
+                className="p-1.5 text-neutral-500 hover:text-indigo-400"
+              >
+                <Copy className="w-4 h-4" />
+              </button>
+              <button 
+                onClick={() => translateSingleLine(idx)}
+                title="Перевести эту реплику"
+                className="p-1.5 text-neutral-500 hover:text-indigo-400"
+              >
+                <BrainCircuit className="w-4 h-4" />
+              </button>
+              <button 
+                onClick={() => startEditing(line.id, line.text, line.start, line.end)}
+                title="Редактировать вручную"
+                className="p-1.5 text-neutral-500 hover:text-amber-400"
+              >
+                <Edit3 className="w-4 h-4" />
+              </button>
+              <button 
+                onClick={() => handleDeleteLine(line.id)}
+                title="Удалить реплику"
+                className="p-1.5 text-neutral-500 hover:text-red-400"
+              >
+                <Trash2 className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        )}
+      </td>
+    </tr>
+  );
+});
+
 export default function TranslatePanel({ currentEpisode }: TranslatePanelProps) {
   const [sourceLang, setSourceLang] = useState("ja");
   const [destLang, setDestLang] = useState("ru");
@@ -31,32 +191,18 @@ export default function TranslatePanel({ currentEpisode }: TranslatePanelProps) 
   const [status, setStatus] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
   const [translatedLines, setTranslatedLines] = useState<any[]>([]);
-  const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  const [editingId, setEditingId] = useState<string | number | null>(null);
   const [editText, setEditText] = useState("");
-  const [openRouterKey, setOpenRouterKey] = useState<string | null>(null);
-  const [aiModel, setAiModel] = useState<string>("google/gemini-2.0-flash-lite-preview-02-05:free");
-  const [aiProvider, setAiProvider] = useState<string>("openrouter");
-  const [ollamaUrl, setOllamaUrl] = useState<string>("http://localhost:11434");
-  const [ollamaModel, setOllamaModel] = useState<string>("llama3");
+  const [editStart, setEditStart] = useState("");
+  const [editEnd, setEditEnd] = useState("");
+  const [aiProvider, setAiProvider] = useState<string>("google");
+  const [allowProfanity, setAllowProfanity] = useState(true);
   const [showSigns, setShowSigns] = useState(false);
 
   useEffect(() => {
+    // Force set provider to google by default
     ipcSafe.invoke('get-config').then(config => {
-      if (config?.openRouterKey) {
-        setOpenRouterKey(config.openRouterKey);
-      }
-      if (config?.aiModel) {
-        setAiModel(config.aiModel);
-      }
-      if (config?.aiProvider) {
-        setAiProvider(config.aiProvider);
-      }
-      if (config?.ollamaUrl) {
-        setOllamaUrl(config.ollamaUrl);
-      }
-      if (config?.ollamaModel) {
-        setOllamaModel(config.ollamaModel);
-      }
+      setAiProvider('google');
     });
   }, []);
 
@@ -66,7 +212,7 @@ export default function TranslatePanel({ currentEpisode }: TranslatePanelProps) 
     } else {
       setTranslatedLines([]);
       setStatus("");
-      setEditingIndex(null);
+      setEditingId(null);
     }
   }, [currentEpisode]);
 
@@ -98,104 +244,21 @@ export default function TranslatePanel({ currentEpisode }: TranslatePanelProps) 
     const line = translatedLines[index];
     if (!line.originalText || !line.originalText.trim()) return;
 
-    const controller = new AbortController();
-    const signal = controller.signal;
-
-    // Set a local loading state for this line if possible, or just use global
     setStatus(`Перевод реплики ${index + 1}...`);
     
     try {
-      let translatedText = line.text;
-
-      const useAi = (aiProvider === 'openrouter' && openRouterKey) || aiProvider === 'ollama';
-
-      if (useAi) {
-        const genreInfo = GENRES.find(g => g.id === selectedGenre);
-        const sourceLangName = LANGUAGES.find(l => l.code === sourceLang)?.name || sourceLang;
-        const destLangName = LANGUAGES.find(l => l.code === destLang)?.name || destLang;
-
-        const prompt = `
-          Переведи следующую реплику из аниме с языка "${sourceLangName}" на язык "${destLangName}".
-          Жанр аниме: ${genreInfo?.name}.
-          ${genreInfo?.prompt}
-          
-          Верни ответ СТРОГО в формате JSON объекта:
-          {
-            "translation": "текст перевода"
-          }
-          
-          Не добавляй никаких пояснений, только JSON.
-          
-          Реплика для перевода:
-          ${line.originalText}
-        `;
-
-        try {
-          const url = aiProvider === 'openrouter' 
-            ? "https://openrouter.ai/api/v1/chat/completions"
-            : `${ollamaUrl}/v1/chat/completions`;
-
-          const headers: any = {
-            "Content-Type": "application/json",
-          };
-
-          if (aiProvider === 'openrouter') {
-            headers["Authorization"] = `Bearer ${openRouterKey}`;
-            headers["HTTP-Referer"] = window.location.origin;
-            headers["X-Title"] = "Anime Dub Manager";
-          }
-
-          const response = await fetch(url, {
-            method: "POST",
-            headers: headers,
-            body: JSON.stringify({
-              model: aiProvider === 'openrouter' ? aiModel : ollamaModel,
-              messages: [{ role: "user", content: prompt }],
-              response_format: { type: "json_object" },
-              max_tokens: 1000
-            }),
-            signal
-          });
-
-          if (!response.ok) {
-            throw new Error(`Ошибка API: ${response.status}`);
-          }
-
-          const resultData = await response.json();
-          const content = resultData.choices[0].message.content;
-          
-          try {
-            const parsed = JSON.parse(content);
-            translatedText = parsed.translation || Object.values(parsed)[0] as string;
-          } catch (e) {
-            translatedText = content.trim();
-          }
-        } catch (aiError: any) {
-          if (aiError.name === 'AbortError') return;
-          console.warn("AI translation failed, falling back to Google:", aiError);
-          const result = await ipcSafe.invoke('translate-text', {
-            text: line.originalText,
-            sourceLang,
-            destLang
-          });
-          translatedText = result['destination-text'];
-        }
-      } else {
-        // Fallback to Google Translate
-        const result = await ipcSafe.invoke('translate-text', {
-          text: line.originalText,
-          sourceLang,
-          destLang
-        });
-        translatedText = result['destination-text'];
-      }
+      const result = await ipcSafe.invoke('translate-text', {
+        text: line.originalText,
+        sourceLang,
+        destLang
+      });
+      const translatedText = result['destination-text'];
 
       const newLines = [...translatedLines];
       newLines[index] = { ...line, text: translatedText };
       setTranslatedLines(newLines);
       setStatus("Готово!");
     } catch (error: any) {
-      if (error.name === 'AbortError') return;
       console.error("Single line translation error:", error);
       setStatus(`Ошибка: ${error.message}`);
     }
@@ -235,52 +298,26 @@ export default function TranslatePanel({ currentEpisode }: TranslatePanelProps) 
         } catch (e) {}
       }
 
-      if (openRouterKey) {
-        setStatus("AI Перевод (OpenRouter) запущен...");
-        
-        try {
-          const processed = await ipcSafe.invoke('ai-process-subtitles', { 
-            lines: lines.filter((l: any) => l.text && l.text.trim()),
-            glossary 
+      setStatus("Использую стандартный (внешний) перевод...");
+      
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (line.text && line.text.trim()) {
+          setStatus(`Перевод реплики ${i + 1} / ${lines.length}...`);
+          const result = await ipcSafe.invoke('translate-text', {
+            text: line.text,
+            sourceLang,
+            destLang
           });
-          
-          // Map processed lines back to original indices
-          let processedIdx = 0;
-          for (let i = 0; i < lines.length; i++) {
-            if (lines[i].text && lines[i].text.trim()) {
-              newTranslatedLines[i] = {
-                ...lines[i],
-                originalText: lines[i].text,
-                text: processed[processedIdx]?.text || lines[i].text
-              };
-              processedIdx++;
-            } else {
-              newTranslatedLines[i] = { ...lines[i], originalText: lines[i].text };
-            }
-          }
-        } catch (error: any) {
-          throw new Error(`AI Processing failed: ${error.message}`);
-        }
-      } else {
-        setStatus("AI ключ не найден. Использую стандартный перевод...");
-        
-        for (let i = 0; i < lines.length; i++) {
-          const line = lines[i];
-          if (line.text && line.text.trim()) {
-            setStatus(`Перевод реплики ${i + 1} / ${lines.length}...`);
-            const result = await ipcSafe.invoke('translate-text', {
-              text: line.text,
-              sourceLang,
-              destLang
-            });
-            newTranslatedLines[i] = {
-              ...line,
-              originalText: line.text,
-              text: result['destination-text']
-            };
-          } else {
-            newTranslatedLines[i] = { ...line, originalText: line.text };
-          }
+          newTranslatedLines[i] = {
+            ...line,
+            originalText: line.text,
+            text: result['destination-text']
+          };
+          // Небольшая задержка, чтобы не получить 429 Too Many Requests от публичного API Google
+          await new Promise(r => setTimeout(r, 300));
+        } else {
+          newTranslatedLines[i] = { ...line, originalText: line.text };
         }
       }
 
@@ -314,20 +351,130 @@ export default function TranslatePanel({ currentEpisode }: TranslatePanelProps) 
     }
   };
 
-  const startEditing = (index: number, text: string) => {
-    setEditingIndex(index);
+  const startEditing = (id: string | number, text: string, start: string = "", end: string = "") => {
+    setEditingId(id);
     setEditText(text);
+    setEditStart(start);
+    setEditEnd(end);
   };
 
-  const saveEdit = (index: number) => {
+  const saveEdit = (id: string | number) => {
     const newLines = [...translatedLines];
-    newLines[index].text = editText;
+    const index = newLines.findIndex(l => l.id === id);
+    if (index !== -1) {
+      newLines[index].text = editText;
+      newLines[index].start = editStart || newLines[index].start;
+      newLines[index].end = editEnd || newLines[index].end;
+      setTranslatedLines(newLines);
+    }
+    setEditingId(null);
+  };
+
+  const handleDeleteLine = (id: string | number) => {
+    if (!confirm('Вы уверены, что хотите удалить эту реплику?')) return;
+    const newLines = translatedLines.filter(l => l.id !== id);
     setTranslatedLines(newLines);
-    setEditingIndex(null);
+  };
+
+  const handleDuplicateLine = (id: string | number) => {
+    const index = translatedLines.findIndex(l => l.id === id);
+    if (index === -1) return;
+    
+    const newLines = [...translatedLines];
+    const line = newLines[index];
+    const start = parseAssTimeToSeconds(line.start);
+    const end = parseAssTimeToSeconds(line.end);
+    const duration = end - start;
+    
+    if (duration < 0.05) return; // Prevent creating too small lines
+
+    const mid = start + duration / 2;
+    const midTime = secondsToAssTime(mid);
+
+    // Update current line
+    newLines[index] = { ...line, end: midTime };
+
+    const newId = `dup-${Date.now()}-${Math.random()}`;
+    const newLine = { 
+      ...line, 
+      start: midTime,
+      id: newId, 
+      originalIndex: undefined, 
+      rawLineIndex: undefined 
+    };
+    newLines.splice(index + 1, 0, newLine);
+    setTranslatedLines(newLines);
+  };
+
+  const parseAssTimeToSeconds = (timeStr: string) => {
+    if (!timeStr) return 0;
+    const parts = timeStr.split(':');
+    if (parts.length === 3) {
+      const hours = parseInt(parts[0], 10);
+      const minutes = parseInt(parts[1], 10);
+      const seconds = parseFloat(parts[2]);
+      return (hours * 3600) + (minutes * 60) + seconds;
+    }
+    return 0;
+  };
+
+  const secondsToAssTime = (seconds: number) => {
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = seconds % 60;
+    return `${h}:${m.toString().padStart(2, '0')}:${s.toFixed(2).padStart(5, '0')}`;
+  };
+
+  const handleAddLine = (id: string | number) => {
+    const index = translatedLines.findIndex(l => l.id === id);
+    if (index === -1) return;
+    
+    const newLines = [...translatedLines];
+    const prevLine = { ...newLines[index] };
+    const nextLine = index + 1 < newLines.length ? { ...newLines[index + 1] } : undefined;
+    
+    const startA = parseAssTimeToSeconds(prevLine.start);
+    const endA = parseAssTimeToSeconds(prevLine.end);
+    const durationA = endA - startA;
+    const takeA = durationA / 2;
+    const newEndA = endA - takeA;
+
+    prevLine.end = secondsToAssTime(newEndA);
+    newLines[index] = prevLine;
+
+    let newStart = newEndA;
+    let newEnd = endA; // Default if no next line
+
+    if (nextLine) {
+      const startB = parseAssTimeToSeconds(nextLine.start);
+      const endB = parseAssTimeToSeconds(nextLine.end);
+      const durationB = endB - startB;
+      const takeB = durationB / 2;
+      const newStartB = startB + takeB;
+      
+      const updatedNext = { ...nextLine, start: secondsToAssTime(newStartB) };
+      newLines[index + 1] = updatedNext;
+      newEnd = newStartB;
+    }
+
+    const newId = `add-${Date.now()}-${Math.random()}`;
+    const newLine = {
+      ...prevLine,
+      text: '',
+      originalText: '',
+      start: secondsToAssTime(newStart),
+      end: secondsToAssTime(newEnd),
+      originalIndex: undefined,
+      id: newId,
+      rawLineIndex: undefined
+    };
+    
+    newLines.splice(index + 1, 0, newLine);
+    setTranslatedLines(newLines);
   };
 
   return (
-    <div className="p-6 space-y-6 max-w-6xl mx-auto">
+    <div className="space-y-6 w-full h-full flex flex-col overflow-hidden">
       <div className="flex items-center justify-between">
         <h2 className="text-2xl font-bold text-white flex items-center gap-3">
           <div className="p-2 bg-indigo-600/20 rounded-lg">
@@ -342,11 +489,19 @@ export default function TranslatePanel({ currentEpisode }: TranslatePanelProps) 
         )}
       </div>
       
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 flex-1 min-h-0">
         {/* Settings Panel */}
-        <div className="lg:col-span-1 space-y-6">
+        <div className="lg:col-span-1 space-y-4 overflow-y-auto pr-2 custom-scrollbar">
           <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-6 shadow-xl space-y-6">
             <div className="space-y-4">
+              <div>
+                <label className="block text-[10px] font-bold text-neutral-500 uppercase tracking-widest mb-2">Способ перевода</label>
+                <div className="p-3 bg-neutral-950 border border-neutral-800 rounded-xl text-xs text-neutral-300 font-semibold flex items-center gap-2">
+                  <Languages className="w-4 h-4 text-indigo-400" />
+                  Google Облако (Стабильно)
+                </div>
+              </div>
+
               <div>
                 <label className="block text-[10px] font-bold text-neutral-500 uppercase tracking-widest mb-2">Исходный язык</label>
                 <div className="relative">
@@ -387,6 +542,19 @@ export default function TranslatePanel({ currentEpisode }: TranslatePanelProps) 
                   </select>
                   <ChevronDown className="w-4 h-4 text-neutral-500 absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none" />
                 </div>
+              </div>
+
+              <div className="flex items-center justify-between p-3 bg-neutral-950 border border-neutral-800 rounded-xl">
+                <div className="flex flex-col">
+                  <span className="text-xs font-bold text-white">Бранная лексика</span>
+                  <span className="text-[10px] text-neutral-500 italic">Разрешить мат в переводе</span>
+                </div>
+                <button
+                  onClick={() => setAllowProfanity(!allowProfanity)}
+                  className={`w-12 h-6 rounded-full transition-all relative ${allowProfanity ? 'bg-red-600' : 'bg-neutral-800'}`}
+                >
+                  <div className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-all ${allowProfanity ? 'left-7' : 'left-1'}`} />
+                </button>
               </div>
             </div>
             
@@ -433,8 +601,8 @@ export default function TranslatePanel({ currentEpisode }: TranslatePanelProps) 
         </div>
 
         {/* Lines List */}
-        <div className="lg:col-span-2">
-          <div className="bg-neutral-900 border border-neutral-800 rounded-2xl overflow-hidden shadow-xl flex flex-col h-[700px]">
+        <div className="lg:col-span-3 flex flex-col min-h-0">
+          <div className="bg-neutral-900 border border-neutral-800 rounded-2xl overflow-hidden shadow-xl flex flex-col flex-1 min-h-0">
             <div className="p-4 border-b border-neutral-800 bg-neutral-900/50 flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <FileText className="w-4 h-4 text-indigo-400" />
@@ -454,84 +622,52 @@ export default function TranslatePanel({ currentEpisode }: TranslatePanelProps) 
                       <th className="p-4 text-[10px] font-bold text-neutral-500 uppercase tracking-widest w-1/2">Перевод ({destLang})</th>
                     </tr>
                   </thead>
-                  <tbody>
-                    {translatedLines
-                      .map((line, idx) => ({ ...line, originalIndex: idx }))
-                      .filter(line => {
-                        if (showSigns) return true;
-                        const name = (line.name || "").toLowerCase();
-                        const style = (line.style || "").toLowerCase();
-                        
-                        const signs = ["sign", "signs", "title", "op", "ed", "song", "note", "music", "logo", "staff", "credit", "credits", "надпись", "титры", "инфо", "info"];
-                        
-                        const isSign = signs.some(s => {
-                          if (s === 'op' || s === 'ed') {
-                            const regex = new RegExp(`(^|[^a-z])${s}([^a-z]|$)`, 'i');
-                            return regex.test(name) || regex.test(style);
-                          }
-                          return name.includes(s) || style.includes(s);
-                        }) || SIGN_KEYWORDS.some(k => name.includes(k.toLowerCase()) || style.includes(k.toLowerCase()));
+                      <tbody>
+                        {translatedLines
+                          .filter(line => {
+                            if (showSigns) return true;
+                            const name = (line.name || "").toLowerCase();
+                            const style = (line.style || "").toLowerCase();
+                            
+                            const signs = ["sign", "signs", "title", "op", "ed", "song", "note", "music", "logo", "staff", "credit", "credits", "надпись", "титры", "инфо", "info"];
+                            
+                            const isSign = signs.some(s => {
+                              if (s === 'op' || s === 'ed') {
+                                const regex = new RegExp(`(^|[^a-z])${s}([^a-z]|$)`, 'i');
+                                return regex.test(name) || regex.test(style);
+                              }
+                              return name.includes(s) || style.includes(s);
+                            }) || SIGN_KEYWORDS.some(k => name.includes(k.toLowerCase()) || style.includes(k.toLowerCase()));
 
-                        if (!name && style && isSign) return false;
-                        return !isSign;
-                      })
-                      .map((line) => {
-                        const idx = line.originalIndex;
-                        return (
-                          <tr key={idx} className="border-b border-neutral-800/50 hover:bg-white/5 transition-colors group">
-                            <td className="p-4 text-sm text-neutral-400 italic font-light border-r border-neutral-800/50">
-                              {line.originalText || line.text}
-                            </td>
-                            <td className="p-4 text-sm text-white relative">
-                              {editingIndex === idx ? (
-                                <div className="flex gap-2">
-                                  <textarea
-                                    value={editText}
-                                    onChange={e => setEditText(e.target.value)}
-                                    className="flex-1 bg-neutral-950 border border-indigo-500 rounded-lg p-2 text-sm text-white focus:outline-none min-h-[60px]"
-                                    autoFocus
-                                  />
-                                  <div className="flex flex-col gap-2">
-                                    <button onClick={() => saveEdit(idx)} className="p-2 bg-emerald-600 rounded-lg text-white hover:bg-emerald-500">
-                                      <Check className="w-4 h-4" />
-                                    </button>
-                                    <button onClick={() => setEditingIndex(null)} className="p-2 bg-neutral-800 rounded-lg text-white hover:bg-neutral-700">
-                                      <X className="w-4 h-4" />
-                                    </button>
-                                  </div>
-                                </div>
-                              ) : (
-                                <div className="flex justify-between items-start gap-4">
-                                  <div className="flex-1">
-                                    <div className="flex items-center gap-2 mb-1">
-                                      <span className="text-[10px] text-neutral-500 font-mono">{line.start} - {line.end}</span>
-                                      {line.name && <span className="text-[10px] bg-neutral-800 text-neutral-400 px-1.5 rounded">{line.name}</span>}
-                                    </div>
-                                    <span>{line.text}</span>
-                                  </div>
-                                  <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all">
-                                    <button 
-                                      onClick={() => translateSingleLine(idx)}
-                                      title="Перевести эту реплику"
-                                      className="p-1.5 text-neutral-500 hover:text-indigo-400"
-                                    >
-                                      <BrainCircuit className="w-4 h-4" />
-                                    </button>
-                                    <button 
-                                      onClick={() => startEditing(idx, line.text)}
-                                      title="Редактировать вручную"
-                                      className="p-1.5 text-neutral-500 hover:text-indigo-400"
-                                    >
-                                      <Edit3 className="w-4 h-4" />
-                                    </button>
-                                  </div>
-                                </div>
-                              )}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                  </tbody>
+                            if (!name && style && isSign) return false;
+                            return !isSign;
+                          })
+                          .map((line) => {
+                            const idx = translatedLines.indexOf(line);
+                            return (
+                              <TranslatedLineRow
+                                key={line.id}
+                                line={line}
+                                idx={idx}
+                                editingId={editingId}
+                                editText={editText}
+                                editStart={editStart}
+                                editEnd={editEnd}
+                                sourceLang={sourceLang}
+                                setEditText={setEditText}
+                                setEditStart={setEditStart}
+                                setEditEnd={setEditEnd}
+                                saveEdit={saveEdit}
+                                setEditingId={setEditingId}
+                                handleAddLine={handleAddLine}
+                                handleDuplicateLine={handleDuplicateLine}
+                                translateSingleLine={translateSingleLine}
+                                startEditing={startEditing}
+                                handleDeleteLine={handleDeleteLine}
+                              />
+                            );
+                          })}
+                      </tbody>
                 </table>
               ) : (
                 <div className="h-full flex flex-col items-center justify-center text-neutral-600 space-y-4">

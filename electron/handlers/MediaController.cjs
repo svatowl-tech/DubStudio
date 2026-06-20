@@ -88,11 +88,11 @@ function registerMediaHandlers(getData, mainWindow, taskQueue) {
         break;
       }
       case 'export-dabber-files': {
-        const { episode, targetDir, skipConversion, uploadToYandex } = payload;
-        taskFn = async (id, ep, tDir, sConv, upYandex, onProgress, onCommand) => {
-          return await ExportService.exportDabberFiles(ep, tDir, sConv, upYandex, config, participantsData, onProgress, onCommand);
+        const { episode, targetDir, skipConversion, uploadToYandex, additionalProcessing } = payload;
+        taskFn = async (id, ep, tDir, sConv, upYandex, addProc, onProgress, onCommand) => {
+          return await ExportService.exportDabberFiles(ep, tDir, sConv, upYandex, addProc, config, participantsData, projectsData, onProgress, onCommand);
         };
-        args = [episode, targetDir, skipConversion, uploadToYandex];
+        args = [episode, targetDir, skipConversion, uploadToYandex, additionalProcessing];
         break;
       }
       case 'export-sound-engineer-files': {
@@ -163,12 +163,18 @@ function registerMediaHandlers(getData, mainWindow, taskQueue) {
     return { path: outputPath };
   }));
 
-  ipcMain.handle('extract-hardsub', wrapIpcHandler(async (event, { videoPath, outputAssPath, language, preprocess }) => {
+  ipcMain.handle('extract-audio-peaks', wrapIpcHandler(async (event, { videoPath, pointsPerSecond = 10 }) => {
+    if (!videoPath) throw new Error('Missing videoPath');
+    const { extractAudioPeaks } = require('../services/ffmpegService.cjs');
+    return await extractAudioPeaks(videoPath, pointsPerSecond);
+  }));
+
+  ipcMain.handle('extract-hardsub', wrapIpcHandler(async (event, { videoPath, outputAssPath, language, preprocess, crop }) => {
     if (!videoPath || !outputAssPath) throw new Error('Missing required paths');
-    log.info(`Starting hardsub OCR extraction: ${videoPath} -> ${outputAssPath} (lang: ${language}, preprocess: ${preprocess})`);
+    log.info(`Starting hardsub OCR extraction: ${videoPath} -> ${outputAssPath} (lang: ${language}, preprocess: ${preprocess}, crop: ${JSON.stringify(crop)})`);
     return await extractHardsub(videoPath, outputAssPath, (percent) => {
       if (mainWindow) mainWindow.webContents.send('ffmpeg-progress', percent);
-    }, { language, preprocess });
+    }, { language, preprocess, crop });
   }));
 }
 

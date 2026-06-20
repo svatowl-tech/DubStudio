@@ -8,12 +8,9 @@ export default function SettingsPanel() {
     ffmpegPath: '',
     useNvenc: false,
     gpuIndex: '0',
-    openRouterKey: '',
-    aiModel: 'google/gemini-2.0-flash-lite-preview-02-05:free',
-    aiProvider: 'openrouter', // 'openrouter', 'ollama'
-    ollamaEnabled: false,
-    ollamaUrl: 'http://localhost:11434',
-    ollamaModel: 'llama3',
+    aiProvider: 'transformers', // 'transformers' is default
+    translationModel: 'Xenova/nllb-200-distilled-600M',
+    transformersModelDownloaded: false,
     yandexClientId: 'ba2d620516e94f91b713e1afaa74283e',
     yandexClientSecret: 'd7bf8221a1a74aeea750887581de5ea6'
   });
@@ -23,19 +20,7 @@ export default function SettingsPanel() {
   const [showAuthCodeInput, setShowAuthCodeInput] = useState(false);
   const [authCode, setAuthCode] = useState('');
 
-  const aiModels = [
-    { id: 'google/gemini-2.0-flash-lite-preview-02-05:free', name: 'Google: Gemini 2.0 Flash Lite (free)' },
-    { id: 'google/gemini-2.0-flash-exp:free', name: 'Google: Gemini 2.0 Flash Exp (free)' },
-    { id: 'deepseek/deepseek-r1:free', name: 'DeepSeek: R1 (free)' },
-    { id: 'deepseek/deepseek-chat:free', name: 'DeepSeek: V3 (free)' },
-    { id: 'meta-llama/llama-3.3-70b-instruct:free', name: 'Meta: Llama 3.3 70B (free)' },
-    { id: 'qwen/qwen-2.5-72b-instruct:free', name: 'Qwen: 2.5 72B (free)' },
-    { id: 'openrouter/auto', name: 'Free Models Router (Auto)' }
-  ];
-
   const [gpus, setGpus] = useState<{ name: string, index: string }[]>([]);
-  const [ollamaModels, setOllamaModels] = useState<{ name: string }[]>([]);
-  const [isFetchingOllama, setIsFetchingOllama] = useState(false);
 
   useEffect(() => {
     ipcSafe.invoke('get-config').then(data => {
@@ -43,17 +28,12 @@ export default function SettingsPanel() {
         setSettings(prev => ({ 
           ...prev, 
           ...data,
-          // Ensure defaults if missing
           baseDir: data.baseDir || '',
           ffmpegPath: data.ffmpegPath || '',
           useNvenc: !!data.useNvenc,
           gpuIndex: data.gpuIndex || '0',
-          openRouterKey: data.openRouterKey || '',
-          aiModel: data.aiModel || 'google/gemini-2.0-flash-lite-preview-02-05:free',
-          aiProvider: data.aiProvider || 'openrouter',
-          ollamaEnabled: !!data.ollamaEnabled,
-          ollamaUrl: data.ollamaUrl || 'http://localhost:11434',
-          ollamaModel: data.ollamaModel || 'llama3',
+          aiProvider: data.aiProvider || 'transformers',
+          translationModel: data.translationModel || 'Xenova/nllb-200-distilled-600M',
           yandexClientId: data.yandexClientId || 'ba2d620516e94f91b713e1afaa74283e',
           yandexClientSecret: data.yandexClientSecret || 'd7bf8221a1a74aeea750887581de5ea6'
         }));
@@ -132,20 +112,6 @@ export default function SettingsPanel() {
     }
   };
 
-  const fetchOllamaModels = async () => {
-    if (isFetchingOllama) return;
-    setIsFetchingOllama(true);
-    try {
-      const res = await ipcSafe.invoke('get-ollama-models', { url: settings.ollamaUrl });
-      if (Array.isArray(res)) {
-        setOllamaModels(res);
-      }
-    } catch (err) {
-      console.error('Failed to fetch Ollama models:', err);
-    } finally {
-      setIsFetchingOllama(false);
-    }
-  };
   const handleSave = async () => {
     try {
       await ipcSafe.invoke('save-config', settings);
@@ -227,100 +193,7 @@ export default function SettingsPanel() {
         </section>
 
 
-        {/* AI Провайдер */}
-        <section>
-          <h2 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
-            <Key className="w-5 h-5 text-amber-400" />
-            Настройки AI (Перевод)
-          </h2>
-          
-          <div className="flex gap-4 mb-6 p-1 bg-neutral-950 rounded-lg border border-neutral-800">
-            <button 
-              onClick={() => setSettings({...settings, aiProvider: 'openrouter'})}
-              className={`flex-1 py-2 rounded-md text-sm font-medium transition-all ${settings.aiProvider === 'openrouter' ? 'bg-amber-600 text-white' : 'text-neutral-400 hover:text-white'}`}
-            >
-              OpenRouter (Облако)
-            </button>
-            <button 
-              onClick={() => setSettings({...settings, aiProvider: 'ollama'})}
-              className={`flex-1 py-2 rounded-md text-sm font-medium transition-all ${settings.aiProvider === 'ollama' ? 'bg-indigo-600 text-white' : 'text-neutral-400 hover:text-white'}`}
-            >
-              Ollama (Локально)
-            </button>
-          </div>
 
-          <div className="space-y-4">
-            {settings.aiProvider === 'openrouter' ? (
-              <>
-                <div>
-                  <label className="block text-sm text-neutral-400 mb-2">OpenRouter API Key</label>
-                  <div className="relative">
-                    <input 
-                      type="password" 
-                      value={settings.openRouterKey}
-                      onChange={(e) => setSettings({...settings, openRouterKey: e.target.value})}
-                      className="w-full bg-neutral-950 border border-neutral-800 rounded-lg px-4 py-3 text-white focus:border-amber-500 outline-none"
-                      placeholder="sk-or-v1-..."
-                    />
-                    <Key className="w-4 h-4 text-neutral-600 absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none" />
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-sm text-neutral-400 mb-2">Модель OpenRouter</label>
-                  <select 
-                    value={settings.aiModel}
-                    onChange={(e) => setSettings({...settings, aiModel: e.target.value})}
-                    className="w-full bg-neutral-950 border border-neutral-800 rounded-lg px-4 py-3 text-white focus:border-amber-500 outline-none appearance-none cursor-pointer"
-                  >
-                    {aiModels.map(model => (
-                      <option key={model.id} value={model.id}>{model.name}</option>
-                    ))}
-                  </select>
-                </div>
-              </>
-            ) : (
-              <>
-                <div>
-                  <label className="block text-sm text-neutral-400 mb-2">Ollama Base URL</label>
-                  <input 
-                    type="text" 
-                    value={settings.ollamaUrl}
-                    onChange={(e) => setSettings({...settings, ollamaUrl: e.target.value})}
-                    className="w-full bg-neutral-950 border border-neutral-800 rounded-lg px-4 py-3 text-white focus:border-indigo-500 outline-none"
-                    placeholder="http://localhost:11434"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-sm text-neutral-400 mb-2">Модель Ollama</label>
-                  <div className="relative">
-                    <select 
-                      value={settings.ollamaModel}
-                      onFocus={fetchOllamaModels}
-                      onChange={(e) => setSettings({...settings, ollamaModel: e.target.value})}
-                      className="w-full bg-neutral-900 border border-neutral-800 rounded-lg px-4 py-3 text-white focus:border-indigo-500 outline-none appearance-none cursor-pointer"
-                    >
-                      <option value="" disabled>Выберите скачанную модель</option>
-                      {ollamaModels.map(m => (
-                        <option key={m.name} value={m.name}>{m.name}</option>
-                      ))}
-                      {!ollamaModels.some(m => m.name === settings.ollamaModel) && settings.ollamaModel && (
-                        <option value={settings.ollamaModel}>{settings.ollamaModel} (сохранено)</option>
-                      )}
-                    </select>
-                    <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-neutral-500">
-                      <Terminal className="w-4 h-4" />
-                    </div>
-                  </div>
-                  <p className="text-[10px] text-neutral-500 mt-2">
-                    Список загружается из вашей локальной Ollama при нажатии на поле.
-                  </p>
-                </div>
-              </>
-            )}
-          </div>
-        </section>
 
         {/* Видеокарта */}
         <section>
@@ -357,6 +230,44 @@ export default function SettingsPanel() {
                 </select>
               </div>
             )}
+          </div>
+        </section>
+
+        {/* Локальные модели */}
+        <section>
+          <h2 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
+            <Cpu className="w-5 h-5 text-indigo-400" />
+            Локальные модели ИИ
+          </h2>
+          <div className="bg-neutral-950 border border-neutral-800 rounded-xl p-6 space-y-4">
+            <p className="text-sm text-neutral-400">
+              Модели для перевода текста и разделения голосов (Diarization) скачиваются автоматически через Hugging Face. Если автоматическая загрузка не работает из-за блокировок, вы можете скачать их вручную и поместить в соответствующие папки.
+            </p>
+            <div className="flex gap-4">
+              <button 
+                onClick={() => ipcSafe.invoke('open-path', 'models/diarization')}
+                className="flex items-center gap-2 bg-neutral-800 hover:bg-neutral-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+                title="Эта папка используется для загрузки модели pyannote-segmentation-3.0"
+              >
+                <Folder className="w-4 h-4 text-indigo-400" />
+                Папка моделей разделения
+              </button>
+              <button 
+                onClick={() => ipcSafe.invoke('open-path', 'models/translation')}
+                className="flex items-center gap-2 bg-neutral-800 hover:bg-neutral-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+                title="Эта папка используется для m2m100/nllb-200"
+              >
+                <Folder className="w-4 h-4 text-purple-400" />
+                Папка моделей перевода
+              </button>
+            </div>
+            <div className="pt-4 border-t border-neutral-800/50">
+               <p className="text-xs text-neutral-500 mb-2 font-bold uppercase tracking-wide">Поддерживаемые репозитории (Hugging Face):</p>
+               <ul className="text-xs text-neutral-400 space-y-1 list-disc list-inside">
+                 <li><span className="text-indigo-300">Разделение голосов:</span> onnx-community/pyannote-segmentation-3.0</li>
+                 <li><span className="text-purple-300">Перевод (по умолчанию):</span> Xenova/nllb-200-distilled-600M</li>
+               </ul>
+            </div>
           </div>
         </section>
 

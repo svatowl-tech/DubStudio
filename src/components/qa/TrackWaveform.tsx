@@ -3,6 +3,35 @@ import WaveSurfer from 'wavesurfer.js';
 import RegionsPlugin from 'wavesurfer.js/dist/plugins/regions.esm.js';
 import { Track, SubtitleLine } from '../../types';
 
+function generateSyntheticPeaks(lines: SubtitleLine[], duration: number) {
+  const pointsPerSecond = 10;
+  const numPoints = Math.max(100, Math.min(Math.ceil(duration * pointsPerSecond), 10000));
+  const peaks = new Float32Array(numPoints);
+  
+  // Base ambient hum
+  for (let i = 0; i < numPoints; i++) {
+    peaks[i] = 0.05 + Math.sin(i * 0.15) * 0.02 + Math.random() * 0.03;
+  }
+  
+  // Speech peaks
+  for (const line of lines) {
+    const startSec = line.startSec || 0;
+    const endSec = line.endSec || 0;
+    
+    const startIdx = Math.max(0, Math.floor((startSec / duration) * numPoints));
+    const endIdx = Math.min(numPoints - 1, Math.floor((endSec / duration) * numPoints));
+    
+    for (let j = startIdx; j <= endIdx; j++) {
+      const progress = (j - startIdx) / Math.max(1, endIdx - startIdx);
+      const envelope = Math.sin(progress * Math.PI);
+      const wave = 0.4 + Math.sin(j * 0.9) * 0.3 + Math.sin(j * 2.1) * 0.12 + (Math.random() - 0.5) * 0.15;
+      peaks[j] = Math.max(0.1, Math.min(0.95, wave * envelope + 0.06));
+    }
+  }
+  
+  return Array.from(peaks);
+}
+
 interface TrackWaveformProps {
   track: Track;
   currentTime: number;
@@ -47,13 +76,42 @@ export const TrackWaveform = ({ track, currentTime, isPlaying, subLines, onTimeU
       onRegionClick(region);
     });
 
+    const isVideoFile = (path?: string) => {
+      if (!path) return false;
+      const lower = path.toLowerCase();
+      return lower.endsWith('.mp4') || 
+             lower.endsWith('.mkv') || 
+             lower.endsWith('.avi') || 
+             lower.endsWith('.mov') || 
+             lower.endsWith('.webm') || 
+             lower.endsWith('.flv') ||
+             lower.endsWith('.m4v');
+    };
+
     const selectedFile = track.files.find(f => f.id === track.selectedFileId) || track.files[0];
-    if (selectedFile && selectedFile.path) {
+    const loadSyntheticPeaks = () => {
+      const maxEnd = subLines.length > 0 ? Math.max(...subLines.map(l => l.endSec || 0)) : 10;
+      const duration = maxEnd + 3;
+      const peaks = generateSyntheticPeaks(subLines, duration);
+      if (wavesurferRef.current) {
+        try {
+          const silentWav = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA';
+          wavesurferRef.current.load(silentWav, [peaks], duration);
+        } catch (err) {
+          console.error('TrackWaveform sync load error:', err);
+        }
+      }
+    };
+
+    if (selectedFile && selectedFile.path && !isVideoFile(selectedFile.path)) {
       const audioUrl = selectedFile.path.startsWith('file://') || selectedFile.path.startsWith('http') ? selectedFile.path : `file://${selectedFile.path}`;
       wavesurferRef.current.load(audioUrl).catch(err => {
         if (err.name === 'AbortError' || err.message?.includes('aborted')) return;
-        console.error('WaveSurfer load error:', err);
+        console.warn('Quality-track WAV load failed, using synthetic peaks fallback:', err);
+        loadSyntheticPeaks();
       });
+    } else {
+      loadSyntheticPeaks();
     }
 
     wavesurferRef.current.on('audioprocess', () => {
