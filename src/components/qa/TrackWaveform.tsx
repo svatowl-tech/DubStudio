@@ -104,12 +104,30 @@ export const TrackWaveform = ({ track, currentTime, isPlaying, subLines, onTimeU
     };
 
     if (selectedFile && selectedFile.path && !isVideoFile(selectedFile.path)) {
-      const audioUrl = selectedFile.path.startsWith('file://') || selectedFile.path.startsWith('http') ? selectedFile.path : `file://${selectedFile.path}`;
-      wavesurferRef.current.load(audioUrl).catch(err => {
-        if (err.name === 'AbortError' || err.message?.includes('aborted')) return;
-        console.warn('Quality-track WAV load failed, using synthetic peaks fallback:', err);
-        loadSyntheticPeaks();
-      });
+      (async () => {
+        let audioUrl = selectedFile.path;
+        if (!window.electronAPI) {
+          const cleanName = selectedFile.path.replace(/\\/g, '/').split('/').pop() || selectedFile.path;
+          const cached = (window as any).getFileFromCache?.(cleanName);
+          if (cached) {
+            audioUrl = URL.createObjectURL(cached);
+          } else {
+            try {
+              const { resolveLocalPath } = await import('../../lib/webFileSystem');
+              const resolved = await resolveLocalPath(selectedFile.path);
+              if (resolved) audioUrl = resolved;
+            } catch (err) {}
+          }
+        } else {
+          audioUrl = selectedFile.path.startsWith('file://') || selectedFile.path.startsWith('http') ? selectedFile.path : `file://${selectedFile.path}`;
+        }
+
+        wavesurferRef.current?.load(audioUrl).catch(err => {
+          if (err.name === 'AbortError' || err.message?.includes('aborted')) return;
+          console.warn('Quality-track WAV load failed, using synthetic peaks fallback:', err);
+          loadSyntheticPeaks();
+        });
+      })();
     } else {
       loadSyntheticPeaks();
     }

@@ -48,6 +48,43 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
   const [silenceThreshold, setSilenceThreshold] = useState(0.01); // Default threshold
   const [currentSubId, setCurrentSubId] = useState<string | null>(null);
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
+  const [videoUrl, setVideoUrl] = useState<string | undefined>(undefined);
+
+  useEffect(() => {
+    let active = true;
+    const resolvePath = async () => {
+      if (!currentEpisode?.rawPath) {
+        if (active) setVideoUrl(undefined);
+        return;
+      }
+      
+      if (!window.electronAPI) {
+        // Мы в веб-версии
+        const cleanName = currentEpisode.rawPath.replace(/\\/g, '/').split('/').pop() || currentEpisode.rawPath;
+        const cached = (window as any).getFileFromCache?.(cleanName);
+        if (cached) {
+          if (active) setVideoUrl(URL.createObjectURL(cached));
+          return;
+        }
+        try {
+          const { resolveLocalPath } = await import('../lib/webFileSystem');
+          const resolved = await resolveLocalPath(currentEpisode.rawPath);
+          if (active) setVideoUrl(resolved);
+        } catch (e) {
+          if (active) setVideoUrl(currentEpisode.rawPath);
+        }
+      } else {
+        // Мы в Электроне
+        let src = currentEpisode.rawPath;
+        if (!src.startsWith('http') && !src.startsWith('file://') && !src.startsWith('blob:')) {
+          src = `file://${src}`;
+        }
+        if (active) setVideoUrl(src);
+      }
+    };
+    resolvePath();
+    return () => { active = false; };
+  }, [currentEpisode?.rawPath]);
 
   const [confirmState, setConfirmState] = useState<{
     isOpen: boolean;
@@ -157,13 +194,31 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
 
       const selectedFile = track.files.find(f => f.id === track.selectedFileId) || track.files[0];
       if (selectedFile && selectedFile.path && !audioRefs.current[track.id]) {
-        const audioUrl = selectedFile.path.startsWith('file://') || selectedFile.path.startsWith('http') ? selectedFile.path : `file://${selectedFile.path}`;
+        let audioUrl = selectedFile.path;
+        if (!window.electronAPI) {
+          const cleanName = selectedFile.path.replace(/\\/g, '/').split('/').pop() || selectedFile.path;
+          const cached = (window as any).getFileFromCache?.(cleanName);
+          if (cached) {
+            audioUrl = URL.createObjectURL(cached);
+          }
+        } else {
+          audioUrl = selectedFile.path.startsWith('file://') || selectedFile.path.startsWith('http') ? selectedFile.path : `file://${selectedFile.path}`;
+        }
         const audio = new Audio(audioUrl);
         audio.volume = volumes[track.id] ?? 0.8;
         audioRefs.current[track.id] = audio;
         updated = true;
       } else if (selectedFile && selectedFile.path && audioRefs.current[track.id]) {
-        const audioUrl = selectedFile.path.startsWith('file://') || selectedFile.path.startsWith('http') ? selectedFile.path : `file://${selectedFile.path}`;
+        let audioUrl = selectedFile.path;
+        if (!window.electronAPI) {
+          const cleanName = selectedFile.path.replace(/\\/g, '/').split('/').pop() || selectedFile.path;
+          const cached = (window as any).getFileFromCache?.(cleanName);
+          if (cached) {
+            audioUrl = URL.createObjectURL(cached);
+          }
+        } else {
+          audioUrl = selectedFile.path.startsWith('file://') || selectedFile.path.startsWith('http') ? selectedFile.path : `file://${selectedFile.path}`;
+        }
         // Update source if it changed
         if (audioRefs.current[track.id].src !== audioUrl) {
           audioRefs.current[track.id].src = audioUrl;
@@ -934,7 +989,7 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
             <div className="aspect-video bg-black rounded-xl overflow-hidden border border-neutral-800 relative group max-h-[50vh] mx-auto w-full">
               <video 
                 ref={videoRef}
-                src={currentEpisode.rawPath || undefined}
+                src={videoUrl || undefined}
                 className="w-full h-full object-contain"
                 onTimeUpdate={(e) => {
                   setCurrentTime(e.currentTarget.currentTime);
@@ -1110,7 +1165,7 @@ export default function QAPanel({ currentEpisode, onRefresh }: QAPanelProps) {
                 <div className="aspect-video bg-black rounded-xl overflow-hidden border border-neutral-800 relative group">
                   <video 
                     ref={videoRef}
-                    src={currentEpisode.rawPath || undefined}
+                    src={videoUrl || undefined}
                     className="w-full h-full object-contain"
                     onTimeUpdate={(e) => {
                       // If video is master, sync others

@@ -230,12 +230,30 @@ export default function CoverGenerator({ currentEpisode }: CoverGeneratorProps) 
       };
     }
     
-    let src = videoPath;
-    if (!src.startsWith('http') && !src.startsWith('file://') && !src.startsWith('blob:')) {
-        src = `file://${src}`;
-    }
-    if (videoRef.current.src !== src) {
-      videoRef.current.src = src;
+    if (!videoRef.current.src || videoRef.current.src === '') {
+      (async () => {
+        let src = videoPath;
+        if (!window.electronAPI) {
+          const cleanName = videoPath.replace(/\\/g, '/').split('/').pop() || videoPath;
+          const cached = (window as any).getFileFromCache?.(cleanName);
+          if (cached) {
+            src = URL.createObjectURL(cached);
+          } else {
+            try {
+              const { resolveLocalPath } = await import('../lib/webFileSystem');
+              const resolved = await resolveLocalPath(videoPath);
+              if (resolved) src = resolved;
+            } catch (err) {}
+          }
+        } else {
+          if (!src.startsWith('http') && !src.startsWith('file://') && !src.startsWith('blob:')) {
+            src = `file://${src}`;
+          }
+        }
+        if (videoRef.current && videoRef.current.src !== src) {
+          videoRef.current.src = src;
+        }
+      })();
     }
     videoRef.current.currentTime = timeSec;
   };

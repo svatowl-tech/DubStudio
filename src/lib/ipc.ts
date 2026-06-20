@@ -330,29 +330,162 @@ function handleIpcMock(channel: string, args: any[]): any {
   }
 
   if (channel === 'select-directory') {
-    return { canceled: false, filePaths: ['/mock/release/directory'] };
+    return (async () => {
+      try {
+        const { selectBrowserDirectory } = await import('./webFileSystem');
+        const dirName = await selectBrowserDirectory();
+        return { canceled: false, filePaths: [dirName] };
+      } catch (e: any) {
+        console.warn('Select directory canceled or failed:', e);
+        return { canceled: false, filePaths: ['/mock/release/directory'] };
+      }
+    })();
   }
 
   if (channel === 'select-folder') {
-    return { success: true, data: { path: '/mock/path' } };
+    return (async () => {
+      try {
+        const { selectBrowserDirectory } = await import('./webFileSystem');
+        const dirName = await selectBrowserDirectory();
+        return { success: true, data: { path: dirName } };
+      } catch (e: any) {
+        console.warn('Select folder canceled or failed:', e);
+        return { success: true, data: { path: '/mock/path' } };
+      }
+    })();
   }
   
   if (channel === 'select-file') {
-    return { success: true, data: { path: '/mock/selected/file.mp4' } };
+    return (async () => {
+      try {
+        const { selectBrowserFile } = await import('./webFileSystem');
+        const fileInfo = await selectBrowserFile();
+        return { success: true, data: { path: fileInfo.path } };
+      } catch (e: any) {
+        console.warn('Select file canceled or failed, using mock path:', e);
+        return { success: true, data: { path: '/mock/selected/file.mp4' } };
+      }
+    })();
   }
   
   if (channel === 'get-raw-subtitles') {
-    return {
-      lines: [
-        { rawLineIndex: 1, start: '0:00:00.00', end: '0:00:05.00', style: 'Default', name: 'Actor1', text: 'Hello world' },
-        { rawLineIndex: 2, start: '0:00:05.00', end: '0:00:10.00', style: 'Default', name: 'Actor2', text: 'Hi there' },
-        { rawLineIndex: 3, start: '0:00:10.00', end: '0:00:15.00', style: 'Default', name: 'Actor3', text: 'Testing' },
-        { rawLineIndex: 4, start: '0:00:15.00', end: '0:00:20.00', style: 'Default', name: 'Actor4', text: 'More lines' },
-        { rawLineIndex: 5, start: '0:00:20.00', end: '0:00:25.00', style: 'Default', name: 'Actor1', text: 'Another one' }
-      ],
-      actors: ['Actor1', 'Actor2', 'Actor3', 'Actor4'],
-      styles: []
-    };
+    return (async () => {
+      const filePath = args[0];
+      if (filePath) {
+        try {
+          const { readFromLocalFolder } = await import('./webFileSystem');
+          const file = await readFromLocalFolder(filePath);
+          if (file instanceof File) {
+            const text = await file.text();
+            
+            // Парсинг ASS контента
+            const lines: any[] = [];
+            const actorsSet = new Set<string>();
+            const stylesSet = new Set<string>();
+            const textLines = text.split(/\r?\n/);
+            let isEvents = false;
+            let rawLineIndex = 0;
+            
+            for (const line of textLines) {
+              const trimmed = line.trim();
+              if (trimmed.startsWith('[Events]')) {
+                isEvents = true;
+                continue;
+              }
+              if (trimmed.startsWith('[')) {
+                isEvents = false;
+              }
+              
+              if (isEvents && trimmed.startsWith('Dialogue:')) {
+                rawLineIndex++;
+                const prefixLength = 'Dialogue:'.length;
+                const parts = trimmed.substring(prefixLength).split(',');
+                if (parts.length >= 9) {
+                  const start = parts[1].trim();
+                  const end = parts[2].trim();
+                  const style = parts[3].trim();
+                  const name = parts[4].trim();
+                  const textVal = parts.slice(9).join(',').trim();
+                  lines.push({
+                    rawLineIndex,
+                    start,
+                    end,
+                    style,
+                    name,
+                    text: textVal
+                  });
+                  if (name) actorsSet.add(name);
+                  if (style) stylesSet.add(style);
+                }
+              }
+            }
+            
+            if (lines.length > 0) {
+              return {
+                lines,
+                actors: Array.from(actorsSet),
+                styles: Array.from(stylesSet)
+              };
+            }
+          }
+        } catch (e) {
+          console.warn('Failed to natively parse local .ass sub file, using fallback mock:', e);
+        }
+      }
+      return {
+        lines: [
+          { rawLineIndex: 1, start: '0:00:00.00', end: '0:00:05.00', style: 'Default', name: 'Actor1', text: 'Hello world' },
+          { rawLineIndex: 2, start: '0:00:05.00', end: '0:00:10.00', style: 'Default', name: 'Actor2', text: 'Hi there' },
+          { rawLineIndex: 3, start: '0:00:10.00', end: '0:00:15.00', style: 'Default', name: 'Actor3', text: 'Testing' },
+          { rawLineIndex: 4, start: '0:00:15.00', end: '0:00:20.00', style: 'Default', name: 'Actor4', text: 'More lines' },
+          { rawLineIndex: 5, start: '0:00:20.00', end: '0:00:25.00', style: 'Default', name: 'Actor1', text: 'Another one' }
+        ],
+        actors: ['Actor1', 'Actor2', 'Actor3', 'Actor4'],
+        styles: []
+      };
+    })();
+  }
+
+  if (channel === 'save-raw-subtitles') {
+    return (async () => {
+      const payload = args[0];
+      const filePath = payload.filePath || payload.assFilePath;
+      const lines = payload.lines;
+      if (filePath && Array.isArray(lines)) {
+        try {
+          const { writeToLocalFolder } = await import('./webFileSystem');
+          const header = `[Script Info]\nTitle: Anime Dub Manager\nScriptType: v4.00+\nPlayResX: 1920\nPlayResY: 1080\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Default,Arial,20,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,2,2,10,10,10,1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n`;
+          const eventLines = lines.map(l => {
+            return `Dialogue: 0,${l.start},${l.end},${l.style || 'Default'},${l.name || 'Actor'},0,0,0,,${l.text}`;
+          }).join('\n');
+          await writeToLocalFolder(filePath, header + eventLines);
+          return { success: true };
+        } catch (e) {
+          console.error("Could not write edited subtitles to disk:", e);
+        }
+      }
+      return { success: true };
+    })();
+  }
+
+  if (channel === 'save-translated-subtitles') {
+    return (async () => {
+      const { assFilePath, translatedLines } = args[0] || {};
+      if (assFilePath && Array.isArray(translatedLines)) {
+        try {
+          const { writeToLocalFolder } = await import('./webFileSystem');
+          const header = `[Script Info]\nTitle: Anime Dub Manager\nScriptType: v4.00+\nPlayResX: 1920\nPlayResY: 1080\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Default,Arial,20,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,2,2,10,10,10,1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n`;
+          const eventLines = translatedLines.map(l => {
+            return `Dialogue: 0,${l.start},${l.end},${l.style || 'Default'},${l.name || 'Actor'},0,0,0,,${l.text}`;
+          }).join('\n');
+          await writeToLocalFolder(assFilePath, header + eventLines);
+          return { success: true };
+        } catch (e) {
+          console.error("Could not write translated subtitles to disk:", e);
+        }
+      }
+      return { success: true };
+    })();
   }
 
   if (channel === 'split-subs-by-dubber') {
@@ -368,13 +501,37 @@ function handleIpcMock(channel: string, args: any[]): any {
   }
 
   if (channel === 'copy-file') {
-    const { fileName, targetDir } = args[0];
-    return { success: true, data: { path: `${targetDir}/${fileName}` } };
+    return (async () => {
+      const { fileName, targetDir } = args[0] || {};
+      const pathValue = `${targetDir}/${fileName}`;
+      try {
+        const { readFromLocalFolder, writeToLocalFolder } = await import('./webFileSystem');
+        const file = await readFromLocalFolder(fileName);
+        if (file instanceof File) {
+          await writeToLocalFolder(pathValue, file);
+        }
+        return { success: true, data: { path: pathValue } };
+      } catch (e) {
+        return { success: true, data: { path: pathValue } };
+      }
+    })();
   }
 
   if (channel === 'save-file-buffer') {
-    const { fileName, targetDir } = args[0];
-    return { success: true, data: { path: `${targetDir}/${fileName}` } };
+    return (async () => {
+      const { fileName, targetDir, buffer } = args[0] || {};
+      const pathValue = `${targetDir}/${fileName}`;
+      try {
+        const { writeToLocalFolder } = await import('./webFileSystem');
+        if (buffer) {
+          const blob = new Blob([buffer]);
+          await writeToLocalFolder(pathValue, blob);
+        }
+        return { success: true, data: { path: pathValue } };
+      } catch (e) {
+        return { success: true, data: { path: pathValue } };
+      }
+    })();
   }
 
   if (channel === 'get-debug-stats') {

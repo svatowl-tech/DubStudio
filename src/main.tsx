@@ -3,6 +3,7 @@ import {createRoot} from 'react-dom/client';
 import App from './App.tsx';
 import DebugConsole from './components/DebugConsole.tsx';
 import './index.css';
+import './lib/webFileSystem.ts';
 
 const isDebug = window.location.hash === '#/debug';
 
