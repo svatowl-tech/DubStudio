@@ -80,6 +80,103 @@ export const ipcRenderer: {
   }
 };
 
+export let isStorageSynced = false;
+
+export async function syncAndLoadFromDir() {
+  try {
+    const { readFromLocalFolder, writeToLocalFolder } = await import('./webFileSystem');
+    
+    // We try to read projects.json, episodes.json, participants.json, config.json from the selected folder
+    const keys = ['projects', 'episodes', 'participants', 'config'];
+    
+    for (const key of keys) {
+      const filename = `${key}.json`;
+      try {
+        const fileOrStr = await readFromLocalFolder(filename);
+        let folderContentStr = '';
+        if (fileOrStr && typeof fileOrStr === 'object' && typeof (fileOrStr as any).text === 'function') {
+          folderContentStr = await (fileOrStr as any).text();
+        } else if (typeof fileOrStr === 'string') {
+          folderContentStr = fileOrStr;
+        }
+        
+        if (folderContentStr) {
+          let folderData: any;
+          try {
+            folderData = JSON.parse(folderContentStr);
+          } catch (e) {
+            console.warn(`Could not parse ${filename}, setting defaults:`, e);
+            continue;
+          }
+          const localStr = localStorage.getItem(key);
+          let localData: any;
+          try {
+            localData = localStr ? JSON.parse(localStr) : (key === 'config' ? {} : []);
+          } catch (e) {
+            localData = key === 'config' ? {} : [];
+          }
+          
+          if (key === 'config') {
+            // For config, merge objects, preference to newer or non-empty fields
+            const mergedConfig = { ...localData, ...folderData };
+            localStorage.setItem('config', JSON.stringify(mergedConfig));
+          } else {
+            // For entities (list of objects with 'id'):
+            // Smart Merge to ensure no data is lost!
+            const mergedList = Array.isArray(localData) ? [...localData] : [];
+            const folderList = Array.isArray(folderData) ? folderData : [];
+            
+            for (const folderItem of folderList) {
+              if (!folderItem || !folderItem.id) continue;
+              const existingIndex = mergedList.findIndex((item: any) => item && item.id === folderItem.id);
+              if (existingIndex === -1) {
+                // If it is only in the folder, add it to mergedList
+                mergedList.push(folderItem);
+              } else {
+                // If it is in both: merge them prioritizing the one with the newer 'updatedAt'
+                const localItem = mergedList[existingIndex];
+                const localUpdate = localItem && localItem.updatedAt ? new Date(localItem.updatedAt).getTime() : 0;
+                const folderUpdate = folderItem.updatedAt ? new Date(folderItem.updatedAt).getTime() : 0;
+                
+                if (folderUpdate > localUpdate) {
+                  mergedList[existingIndex] = { ...localItem, ...folderItem };
+                } else {
+                  mergedList[existingIndex] = { ...folderItem, ...localItem };
+                }
+              }
+            }
+            
+            // Save merged list back to localStorage
+            localStorage.setItem(key, JSON.stringify(mergedList));
+            
+            // AND duplicate the complete merged list back to the local folder!
+            await writeToLocalFolder(filename, JSON.stringify(mergedList, null, 2));
+          }
+        }
+      } catch (err) {
+        // If file doesn't exist in folder, we try to write the current localStorage data there so they align
+        const localStr = localStorage.getItem(key);
+        if (localStr) {
+          try {
+            await writeToLocalFolder(filename, localStr);
+          } catch (writeErr) {
+            console.warn(`Could not sync ${filename} to directory during fallback:`, writeErr);
+          }
+        }
+      }
+    }
+    console.log('Synchronized all data files with working directory successfully.');
+  } catch (e) {
+    console.warn('Sync/Load with working directory skipped (no root folder or user denied permission):', e);
+  }
+}
+
+export async function ensureStorageSynced() {
+  if (isStorageSynced) return;
+  isStorageSynced = true;
+  await syncAndLoadFromDir();
+}
+
 /**
  * Fallback mock logic for when running in browser without server
  */
@@ -227,12 +324,21 @@ function handleIpcMock(channel: string, args: any[]): any {
   }
 
   if (channel === 'get-config') {
-    const config = localStorage.getItem('config');
-    return config ? JSON.parse(config) : { baseDir: '' };
+    return (async () => {
+      await ensureStorageSynced();
+      const config = localStorage.getItem('config');
+      return config ? JSON.parse(config) : { baseDir: '' };
+    })();
   }
   if (channel === 'save-config') {
-    localStorage.setItem('config', JSON.stringify(args[0]));
-    return { success: true };
+    return (async () => {
+      const config = args[0] || {};
+      localStorage.setItem('config', JSON.stringify(config));
+      
+      // Sync on baseDir setting change/update immediately to merge databases!
+      await syncAndLoadFromDir();
+      return { success: true };
+    })();
   }
   
   if (channel === 'cloud-sync-status') {
@@ -254,69 +360,96 @@ function handleIpcMock(channel: string, args: any[]): any {
     const key = `${entity}s`;
     
     if (action === 'get') {
-      if (entity === 'project') {
-        // Join logic for projects
-        const projects = getLocalData('projects');
-        const episodes = getLocalData('episodes');
-        const participants = getLocalData('participants');
-        
-        return projects.map((project: any) => {
-          const projectEpisodes = episodes.filter((ep: any) => ep.projectId === project.id).map((ep: any) => {
-            const assignments = (ep.assignments || []).map((assignment: any) => {
-              const dubber = participants.find((p: any) => p.id === assignment.dubberId);
-              return { ...assignment, dubber };
+      return (async () => {
+        await ensureStorageSynced();
+        if (entity === 'project') {
+          // Join logic for projects
+          const projects = getLocalData('projects');
+          const episodes = getLocalData('episodes');
+          const participants = getLocalData('participants');
+          
+          return projects.map((project: any) => {
+            const projectEpisodes = episodes.filter((ep: any) => ep.projectId === project.id).map((ep: any) => {
+              const assignments = (ep.assignments || []).map((assignment: any) => {
+                const dubber = participants.find((p: any) => p.id === assignment.dubberId);
+                return { ...assignment, dubber };
+              });
+              const uploads = (ep.uploads || []).map((upload: any) => {
+                const uploadedBy = participants.find((p: any) => p.id === upload.uploadedById);
+                return { ...upload, uploadedBy };
+              });
+              return { ...ep, assignments, uploads };
             });
-            const uploads = (ep.uploads || []).map((upload: any) => {
-              const uploadedBy = participants.find((p: any) => p.id === upload.uploadedById);
-              return { ...upload, uploadedBy };
-            });
-            return { ...ep, assignments, uploads };
+            return { ...project, episodes: projectEpisodes };
           });
-          return { ...project, episodes: projectEpisodes };
-        });
-      }
-      return getLocalData(key);
+        }
+        return getLocalData(key);
+      })();
     }
     
     if (action === 'save') {
-      const items = getLocalData(key);
-      const item = args[0];
-      const index = items.findIndex((i: any) => i.id === item.id);
-      
-      let dataToSave = { ...item };
-      if (entity === 'episode') {
-        delete dataToSave.project;
-        if (dataToSave.assignments) {
-          dataToSave.assignments = dataToSave.assignments.map((a: any) => {
-            const { dubber, substitute, ...rest } = a;
-            return rest;
-          });
+      return (async () => {
+        await ensureStorageSynced();
+        const items = getLocalData(key);
+        const item = args[0];
+        const index = items.findIndex((i: any) => i.id === item.id);
+        
+        let dataToSave = { ...item };
+        if (entity === 'episode') {
+          delete dataToSave.project;
+          if (dataToSave.assignments) {
+            dataToSave.assignments = dataToSave.assignments.map((a: any) => {
+              const { dubber, substitute, ...rest } = a;
+              return rest;
+            });
+          }
+          if (dataToSave.uploads) {
+            dataToSave.uploads = dataToSave.uploads.map((u: any) => {
+              const { uploadedBy, ...rest } = u;
+              return rest;
+            });
+          }
+        } else if (entity === 'project') {
+          delete dataToSave.episodes;
         }
-        if (dataToSave.uploads) {
-          dataToSave.uploads = dataToSave.uploads.map((u: any) => {
-            const { uploadedBy, ...rest } = u;
-            return rest;
-          });
-        }
-      } else if (entity === 'project') {
-        delete dataToSave.episodes;
-      }
 
-      if (index !== -1) {
-        items[index] = dataToSave;
-      } else {
-        items.push(dataToSave);
-      }
-      saveLocalData(key, items);
-      return { success: true };
+        if (index !== -1) {
+          items[index] = dataToSave;
+        } else {
+          items.push(dataToSave);
+        }
+        saveLocalData(key, items);
+        
+        // Save copy to selected working directory folder
+        try {
+          const { writeToLocalFolder } = await import('./webFileSystem');
+          await writeToLocalFolder(`${key}.json`, JSON.stringify(items, null, 2));
+        } catch (e) {
+          console.warn(`Could not duplicate save-${entity} to baseDir:`, e);
+        }
+
+        return { success: true };
+      })();
     }
     
     if (action === 'delete') {
-      const items = getLocalData(key);
-      const id = args[0];
-      const filtered = items.filter((i: any) => i.id !== id);
-      saveLocalData(key, filtered);
-      return { success: true };
+      return (async () => {
+        await ensureStorageSynced();
+        const items = getLocalData(key);
+        const id = args[0];
+        const filtered = items.filter((i: any) => i.id !== id);
+        saveLocalData(key, filtered);
+        
+        // Save copy to selected working directory folder
+        try {
+          const { writeToLocalFolder } = await import('./webFileSystem');
+          await writeToLocalFolder(`${key}.json`, JSON.stringify(filtered, null, 2));
+        } catch (e) {
+          console.warn(`Could not sync delete-${entity} to baseDir:`, e);
+        }
+
+        return { success: true };
+      })();
     }
   }
 
@@ -325,8 +458,17 @@ function handleIpcMock(channel: string, args: any[]): any {
   }
 
   if (channel === 'import-participants') {
-    saveLocalData('participants', args[0]);
-    return { success: true };
+    return (async () => {
+      await ensureStorageSynced();
+      saveLocalData('participants', args[0]);
+      try {
+        const { writeToLocalFolder } = await import('./webFileSystem');
+        await writeToLocalFolder('participants.json', JSON.stringify(args[0], null, 2));
+      } catch (e) {
+        console.warn(`Could not sync import-participants to working directory:`, e);
+      }
+      return { success: true };
+    })();
   }
 
   if (channel === 'select-directory') {

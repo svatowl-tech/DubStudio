@@ -96,6 +96,7 @@ class DataManager {
     this.userDataPath = userDataPath;
     this.backupPath = path.join(userDataPath, 'backups');
     this.saveQueues = new Map();
+    this.baseDir = null;
   }
 
   /**
@@ -105,8 +106,87 @@ class DataManager {
     try {
       await fs.mkdir(this.backupPath, { recursive: true });
       log.info('DataManager initialized. Backup path:', this.backupPath);
+      
+      // Load config to fetch baseDir
+      const config = await this.getData('config.json');
+      if (config && config.baseDir) {
+        this.baseDir = config.baseDir;
+        log.info('DataManager: Loaded baseDir config on startup:', this.baseDir);
+        await this.syncAndLoadFromBaseDir();
+      }
     } catch (e) {
       log.error('Failed to initialize DataManager:', e);
+    }
+  }
+
+  async syncAndLoadFromBaseDir() {
+    if (!this.baseDir) return;
+    try {
+      await fs.mkdir(this.baseDir, { recursive: true });
+      const files = ['projects.json', 'episodes.json', 'participants.json', 'config.json'];
+      
+      for (const file of files) {
+        const localPath = path.join(this.userDataPath, file);
+        const folderPath = path.join(this.baseDir, file);
+        
+        let folderData = null;
+        try {
+          const folderContent = await fs.readFile(folderPath, 'utf-8');
+          folderData = JSON.parse(folderContent);
+        } catch (e) {
+          // Folder copy doesn't exist yet, or is invalid
+        }
+        
+        let localData = null;
+        try {
+          const localContent = await fs.readFile(localPath, 'utf-8');
+          localData = JSON.parse(localContent);
+        } catch (e) {
+          // Local copy doesn't exist yet
+        }
+        
+        if (folderData) {
+          if (file === 'config.json') {
+            // Merge configs
+            const merged = { ...(localData || {}), ...folderData };
+            const json = JSON.stringify(merged, null, 2);
+            await fs.writeFile(localPath, json, 'utf-8');
+          } else {
+            // Entities: smart merge prioritizing newer updatedAt
+            const mergedList = Array.isArray(localData) ? [...localData] : [];
+            const folderList = Array.isArray(folderData) ? folderData : [];
+            
+            for (const folderItem of folderList) {
+              if (!folderItem || !folderItem.id) continue;
+              const existingIndex = mergedList.findIndex(item => item && item.id === folderItem.id);
+              if (existingIndex === -1) {
+                mergedList.push(folderItem);
+              } else {
+                const localItem = mergedList[existingIndex];
+                const localUpdate = localItem && localItem.updatedAt ? new Date(localItem.updatedAt).getTime() : 0;
+                const folderUpdate = folderItem.updatedAt ? new Date(folderItem.updatedAt).getTime() : 0;
+                
+                if (folderUpdate > localUpdate) {
+                  mergedList[existingIndex] = { ...localItem, ...folderItem };
+                } else {
+                  mergedList[existingIndex] = { ...folderItem, ...localItem };
+                }
+              }
+            }
+            
+            const json = JSON.stringify(mergedList, null, 2);
+            await fs.writeFile(localPath, json, 'utf-8');
+            await fs.writeFile(folderPath, json, 'utf-8');
+          }
+        } else if (localData) {
+          // If no folder data but local data exists, copy it to the folder
+          const json = JSON.stringify(localData, null, 2);
+          await fs.writeFile(folderPath, json, 'utf-8');
+        }
+      }
+      log.info('DataManager: Successfully synced local databases with working directory:', this.baseDir);
+    } catch (err) {
+      log.error('DataManager: Failed during syncAndLoadFromBaseDir:', err);
     }
   }
 
@@ -175,6 +255,25 @@ class DataManager {
       }
       
       log.info(`DataManager: Successfully saved ${filename} atomically.`);
+
+      // If config.json is saved, update internal baseDir reference dynamically
+      if (filename === 'config.json') {
+        this.baseDir = data ? data.baseDir : null;
+        log.info('DataManager: Dynamically updated baseDir to:', this.baseDir);
+      }
+      
+      // If baseDir is configured, duplicate/sync the file as requested!
+      if (this.baseDir) {
+        try {
+          await fs.mkdir(this.baseDir, { recursive: true });
+          const targetFolderPath = path.join(this.baseDir, filename);
+          const json = JSON.stringify(data, null, 2);
+          await fs.writeFile(targetFolderPath, json, 'utf-8');
+          log.info(`DataManager: Duplicated/Synced ${filename} to working directory: ${targetFolderPath}`);
+        } catch (syncErr) {
+          log.error(`DataManager: Failed to sync ${filename} to working directory:`, syncErr);
+        }
+      }
     } catch (e) {
       log.error(`DataManager: Failed to save ${filename}:`, e);
       
