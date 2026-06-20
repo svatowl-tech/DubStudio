@@ -2,7 +2,7 @@
   "name": "anime-dub-manager",
   "version": "1.1.0",
   "description": "Гибридное кроссплатформенное десктопное приложение для студии озвучки и фандаба.",
-  "author": "Svat.Owl",
+  "author": "Svat.Owl <Svat.Owl@gmail.com>",
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",

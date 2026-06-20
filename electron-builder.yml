@@ -63,6 +63,7 @@ linux:
     - deb
   category: Video
   icon: assets/icon.png
+  maintainer: "Svat.Owl <Svat.Owl@gmail.com>"
 
 asarUnpack:
   - "**/node_modules/ffmpeg-static/**/*"
