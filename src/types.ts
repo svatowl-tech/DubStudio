@@ -36,6 +36,10 @@ export interface Episode {
   vkPostTemplate?: string;
   finalTgPostTemplate?: string;
   linksTemplate?: string;
+  startMessageTemplate?: string;
+  soundEngineerMessageTemplate?: string;
+  fixesMessageTemplate?: string;
+  statusMessageTemplate?: string;
   tgPostLink?: string;
   vkPostLink?: string;
   assignments: RoleAssignment[];
@@ -96,6 +100,10 @@ export interface Project {
   vkPostTemplate?: string;
   finalTgPostTemplate?: string;
   linksTemplate?: string;
+  startMessageTemplate?: string;
+  soundEngineerMessageTemplate?: string;
+  fixesMessageTemplate?: string;
+  statusMessageTemplate?: string;
   nextEpisodeDate?: string;
   episodes: Episode[];
   createdAt: string;

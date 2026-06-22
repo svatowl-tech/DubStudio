@@ -20,20 +20,20 @@ import {
   AlertCircle,
   Mic,
 } from "lucide-react";
-import TranslatePanel from "./TranslatePanel";
-import AssOcrPanel from "./AssOcrPanel";
-import AssWhisperPanel from "./AssWhisperPanel";
-import AssDiarizationPanel from "./AssDiarizationPanel";
+import TranslatePanel from "../components/TranslatePanel";
+import AssOcrPanel from "../components/AssOcrPanel";
+import AssWhisperPanel from "../components/AssWhisperPanel";
+import AssDiarizationPanel from "../components/AssDiarizationPanel";
 import { Participant, Episode, RoleAssignment } from "../types";
 import { sanitizeFolderName } from "../lib/pathUtils";
 import { getParticipants } from "../services/dbService";
-import RawSubtitleEditor from "./RawSubtitleEditor";
+import RawSubtitleEditor from "../components/RawSubtitleEditor";
 import { exportMappingToJson, importMappingFromJson } from "../lib/mappingExport";
 import { ipcSafe } from "../lib/ipcSafe";
 import { latinToCyrillic, polivanovToHepburn } from "../lib/translit";
 import { generateStartEpisodeMessage } from "../lib/templates";
-import { ExportModal } from './ExportModal';
-import { ConfirmModal } from './ui/ConfirmModal';
+import { ExportModal } from '../components/ExportModal';
+import { ConfirmModal } from '../components/ui/ConfirmModal';
 import { SIGN_KEYWORDS, GROUP_KEYWORDS } from "../constants";
 import { toast } from 'sonner';
 

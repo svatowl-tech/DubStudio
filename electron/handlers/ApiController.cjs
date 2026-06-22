@@ -71,6 +71,32 @@ function registerApiHandlers(getData, saveData) {
         if (seriesDetails.year) {
           project.year = seriesDetails.year;
         }
+
+        let existingLinks = {};
+        try {
+          if (project.links) existingLinks = JSON.parse(project.links);
+        } catch(e) {}
+        
+        if (seriesDetails.url) {
+          existingLinks['anime365'] = seriesDetails.url;
+        }
+        
+        if (Array.isArray(seriesDetails.links)) {
+          seriesDetails.links.forEach((l) => {
+            const titleUpper = (l.title || '').trim().toUpperCase();
+            if (titleUpper.includes('ШИКИМОРИ') || titleUpper.includes('SHIKIMORI')) {
+              existingLinks['shikimori'] = l.url;
+            } else if (titleUpper.includes('MYANIMELIST')) {
+              existingLinks['mal'] = l.url;
+            } else if (titleUpper.includes('ANILIST')) {
+              existingLinks['anilist'] = l.url;
+            } else if (titleUpper.includes('ANIDB')) {
+              existingLinks['animedb'] = l.url;
+            }
+          });
+        }
+        
+        project.links = JSON.stringify(existingLinks);
       }
     }
 
@@ -125,6 +151,28 @@ function registerApiHandlers(getData, saveData) {
                 }
               }
             }
+
+            // Deduplicate assignments and keep the latest (last) assignment for each character
+            if (ep.assignments && Array.isArray(ep.assignments)) {
+              let newAssignments = [];
+              const seenChars = new Map();
+              for (let i = ep.assignments.length - 1; i >= 0; i--) {
+                const as = ep.assignments[i];
+                if (as.substituteId) {
+                  newAssignments.unshift(as); // Keep substitutes always
+                } else {
+                  if (!seenChars.has(as.characterName)) {
+                    seenChars.set(as.characterName, true);
+                    newAssignments.unshift(as);
+                  }
+                }
+              }
+              if (newAssignments.length !== ep.assignments.length) {
+                ep.assignments = newAssignments;
+                changed = true;
+              }
+            }
+
             if (changed) {
               ep.updatedAt = new Date().toISOString();
               updatedEpisodesCount++;

@@ -28,7 +28,16 @@ export default function TaskQueuePanel() {
       }
     });
 
-    return () => removeListener();
+    const removeProgressListener = ipcSafe.on('task-progress', (data: { id: string, progress: number, eta: number | null }) => {
+      setTasks(prevTasks => prevTasks.map(task => 
+        task.id === data.id ? { ...task, progress: data.progress, eta: data.eta } : task
+      ));
+    });
+
+    return () => {
+      removeListener();
+      removeProgressListener();
+    };
   }, []);
 
   const activeTasksCount = tasks.filter(t => t.status === 'running' || t.status === 'pending').length;

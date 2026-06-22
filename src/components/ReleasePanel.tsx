@@ -5,7 +5,8 @@ import {
 } from 'lucide-react';
 import { getParticipants } from '../services/dbService';
 import { Participant, Episode } from '../types';
-import { ipcSafe } from '../lib/ipcSafe';
+import { ipcSafe, isWeb } from '../lib/ipcSafe';
+import { DesktopRequiredMessage } from './DesktopRequiredMessage';
 import { 
   generateTGPostMessage, 
   generateVKPostMessage, 
@@ -650,7 +651,12 @@ export default function ReleasePanel({ currentEpisode, onRefresh }: ReleasePanel
           </div>
 
           <div className="flex flex-col md:flex-row gap-4">
-            <button
+            {isWeb ? (
+              <div className="w-full">
+                 <DesktopRequiredMessage title="Сборка релиза недоступна" />
+              </div>
+            ) : (
+             <button
               onClick={handleBuildRelease}
             disabled={isBuilding}
             className="flex items-center justify-center gap-3 px-8 py-4 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 disabled:opacity-50 text-white rounded-2xl font-bold shadow-xl shadow-purple-500/20 transition-all group relative overflow-hidden"
@@ -670,10 +676,11 @@ export default function ReleasePanel({ currentEpisode, onRefresh }: ReleasePanel
                 <span>Собрать релиз</span>
               </>
             )}
-          </button>
-        </div>
-      </div>
-    </div>
+           </button>
+           )}
+         </div>
+       </div>
+     </div>
 
       {/* Episode Post Links section */}
       <div className="bg-neutral-900 border border-neutral-800 rounded-2xl overflow-hidden shadow-xl mb-6">
@@ -1114,6 +1121,7 @@ export default function ReleasePanel({ currentEpisode, onRefresh }: ReleasePanel
                       <span>{'{releaseTypeLabel}'} - Закадр/Рекаст</span>
                       <span>{'{progress}'} - 1/12</span>
                       <span>{'{episodeNumber}'}</span>
+                      <span>{'{nextEpisodeNumber}'}</span>
                       <span>{'{totalEpisodes}'}</span>
                       <span>{'{projectSlug}'} - хештег</span>
                     </div>

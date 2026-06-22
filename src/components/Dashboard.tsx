@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { Plus, X, CheckCircle2, Clock, AlertCircle, Mic, FileAudio, UserPlus, Link as LinkIcon, MessageSquare, ExternalLink, Calendar, FileText, Image as ImageIcon, Database, FolderPlus, ChevronRight, Save, Loader2, FileVideo, Activity, Users, Settings2, Hash, Globe, User, Download, Languages, Zap, RefreshCw } from 'lucide-react';
+import { Plus, X, CheckCircle2, Clock, AlertCircle, Mic, FileAudio, UserPlus, Link as LinkIcon, MessageSquare, ExternalLink, Calendar, FileText, Image as ImageIcon, Database, FolderPlus, FolderOpen, ChevronRight, Save, Loader2, FileVideo, Activity, Users, Settings2, Hash, Globe, User, Download, Languages, Zap, RefreshCw } from 'lucide-react';
 import { toast } from 'sonner';
 import { getParticipants } from '../services/dbService';
 import { Participant, Project, Episode, EpisodeStatus, ReleaseType, RoleAssignment } from '../types';
@@ -12,6 +12,7 @@ import CreateEpisodeModal from './dashboard/CreateEpisodeModal';
 import CharacterManagementModal from './dashboard/CharacterManagementModal';
 import AssignDubbersModal from './dashboard/AssignDubbersModal';
 import AssignSoundEngineerModal from './dashboard/AssignSoundEngineerModal';
+import { NotificationTemplatesModal } from './dashboard/NotificationTemplatesModal';
 import { useEpisodeSync } from './dashboard/useEpisodeSync';
 import { useProjectAutoUpdate } from '../hooks/useProjectAutoUpdate';
 import { SIGN_KEYWORDS } from '../constants';
@@ -79,6 +80,7 @@ export default function Dashboard({
   const [characterName, setCharacterName] = useState('');
 
   const [isAssignDubbersModalOpen, setIsAssignDubbersModalOpen] = useState(false);
+  const [isNotificationTemplatesModalOpen, setIsNotificationTemplatesModalOpen] = useState(false);
 
   const [isUploading, setIsUploading] = useState(false);
   const [transcodingProgress, setTranscodingProgress] = useState<number | null>(null);
@@ -1613,6 +1615,25 @@ export default function Dashboard({
                 </div>
                 <div className="flex items-center gap-3">
                   <button
+                    onClick={() => {
+                      const projectTitle = sanitizeFolderName(selectedProject.title || 'Project');
+                      ipcSafe.invoke('open-path', projectTitle);
+                    }}
+                    className="px-3 py-1 bg-neutral-800 hover:bg-neutral-700 text-neutral-300 rounded-full text-xs font-bold border border-neutral-700 flex items-center gap-1.5 cursor-pointer transition-all active:scale-95 duration-100 font-sans"
+                    title="Открыть рабочую папку проекта"
+                  >
+                    <FolderOpen className="w-3.5 h-3.5" />
+                    Папка проекта
+                  </button>
+                  <button
+                    onClick={() => setIsNotificationTemplatesModalOpen(true)}
+                    className="px-3 py-1 bg-neutral-800 hover:bg-neutral-700 text-neutral-300 rounded-full text-xs font-bold border border-neutral-700 flex items-center gap-1.5 cursor-pointer transition-all active:scale-95 duration-100 font-sans"
+                    title="Настроить шаблоны уведомлений в Telegram"
+                  >
+                    <MessageSquare className="w-3.5 h-3.5" />
+                    Шаблоны уведомлений
+                  </button>
+                  <button
                     onClick={handleUpdateProjectData}
                     disabled={isUpdatingProjectData}
                     className="px-3 py-1 bg-neutral-800 hover:bg-neutral-700 disabled:opacity-50 text-neutral-300 rounded-full text-xs font-bold border border-neutral-700 flex items-center gap-1.5 cursor-pointer transition-all active:scale-95 duration-100 font-sans"
@@ -1642,6 +1663,32 @@ export default function Dashboard({
                   {selectedProject.synopsis}
                 </div>
               )}
+              
+              {selectedProject.links && (() => {
+                try {
+                  const parsedLinks = JSON.parse(selectedProject.links);
+                  const validLinks = Object.entries(parsedLinks).filter(([k, v]) => v && typeof v === 'string' && (k === 'shikimori' || k === 'anime365' || k === 'mal' || k === 'animedb' || k === 'kodik' || k === 'vk' || k === 'tg'));
+                  if (validLinks.length > 0) {
+                    return (
+                      <div className="flex flex-wrap gap-2 pt-1 pb-1">
+                        {validLinks.map(([key, url]) => (
+                          <a 
+                            key={key} 
+                            href={url as string} 
+                            target="_blank" 
+                            rel="noopener noreferrer" 
+                            className="px-2.5 py-1 bg-neutral-900 border border-neutral-700 hover:border-neutral-500 hover:bg-neutral-800 text-neutral-300 rounded-md text-[10px] font-bold uppercase tracking-wider transition-colors flex items-center gap-1.5"
+                          >
+                            <ExternalLink className="w-3 h-3" />
+                            {key}
+                          </a>
+                        ))}
+                      </div>
+                    );
+                  }
+                } catch(e) {}
+                return null;
+              })()}
               
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4 pt-2">
                 <div className="bg-neutral-950 p-3 rounded-xl border border-neutral-800">
@@ -3032,6 +3079,20 @@ export default function Dashboard({
             </div>
           </div>
         </div>
+      )}
+
+      {selectedProject && isNotificationTemplatesModalOpen && (
+        <NotificationTemplatesModal
+          isOpen={isNotificationTemplatesModalOpen}
+          onClose={() => setIsNotificationTemplatesModalOpen(false)}
+          project={selectedProject}
+          latestEpisode={selectedProject.episodes?.[selectedProject.episodes.length - 1]}
+          onSaveProject={async (projectId, updates) => {
+            const updated = { ...selectedProject, ...updates };
+            await ipcSafe.invoke('save-project', updated);
+            onRefresh();
+          }}
+        />
       )}
 
       <ConfirmModal 

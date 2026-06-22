@@ -15,7 +15,9 @@ function registerSystemHandlers(getData, saveData, mainWindow, taskQueue) {
 
   ipcMain.handle('open-path', wrapIpcHandler(async (event, filePath) => {
     if (!filePath) throw new Error('Missing path');
-    const fullPath = path.isAbsolute(filePath) ? filePath : path.join(app.getPath('userData'), filePath);
+    const config = (await getData('config.json')) || {};
+    const baseDir = config.baseDir || app.getPath('userData');
+    const fullPath = path.isAbsolute(filePath) ? filePath : path.join(baseDir, filePath);
     await shell.openPath(fullPath);
     return true;
   }));

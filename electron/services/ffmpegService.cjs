@@ -149,12 +149,14 @@ function bakeSubtitles(videoPath, finalAssPath, outputPath, onProgress, onComman
       
       const scaledW = Math.round((origW * 1.02) / 2) * 2;
       const scaledH = Math.round((origH * 1.02) / 2) * 2;
-      filters.push(`hflip,scale=${scaledW}:${scaledH},crop=${origW}:${origH}`);
+      filters.push('hflip');
+      filters.push(`scale=${scaledW}:${scaledH}`);
+      filters.push(`crop=${origW}:${origH}`);
     }
     filters.push(`ass=filename='${escapedAssPath}'`);
 
     command
-      .videoFilters(filters.join(','))
+      .videoFilters(filters)
       .output(oPath)
       .format('mp4')
       .outputOptions('-pix_fmt yuv420p')
@@ -255,7 +257,7 @@ function transcodeToMp4(videoPath, outputPath, onProgress, onCommand, options = 
       
       const scaledW = Math.round((origW * 1.02) / 2) * 2;
       const scaledH = Math.round((origH * 1.02) / 2) * 2;
-      command.videoFilters(`hflip,scale=${scaledW}:${scaledH},crop=${origW}:${origH}`);
+      command.videoFilters(['hflip', `scale=${scaledW}:${scaledH}`, `crop=${origW}:${origH}`]);
     }
 
     if (options.audioStreamIndex !== undefined) {

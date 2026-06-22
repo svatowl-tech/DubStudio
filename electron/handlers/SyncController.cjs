@@ -61,14 +61,19 @@ function registerSyncHandlers(getData, saveData, dataPath) {
       if (item.isDirectory()) {
          await syncDir(yandexService, token, localPath, remotePath, mode);
       } else if (item.isFile()) {
-        try {
-          if (mode === 'push') {
-            await yandexService.uploadFile(token, localPath, remotePath);
-          } else {
-            await yandexService.downloadFile(token, remotePath, localPath);
+        const ext = path.extname(item.name).toLowerCase();
+        const isMediaFile = ['.mp4', '.mkv', '.avi', '.mov', '.ts', '.m4a', '.wav'].includes(ext);
+        
+        if (!isMediaFile) {
+          try {
+            if (mode === 'push') {
+              await yandexService.uploadFile(token, localPath, remotePath);
+            } else {
+              await yandexService.downloadFile(token, remotePath, localPath);
+            }
+          } catch (e) {
+            log.error(`Sync error for ${item.name}:`, e.message);
           }
-        } catch (e) {
-          log.error(`Sync error for ${item.name}:`, e.message);
         }
       }
     }
@@ -82,11 +87,11 @@ function registerSyncHandlers(getData, saveData, dataPath) {
     const results = [];
 
     // 1. Sync data JSONs
-    await yandexService.ensureFolder(config.yandexToken, 'app:/AnimeDubManagerData');
+    await yandexService.ensureFolder(config.yandexToken, 'disk:/AnimeDubManagerData');
     const jsonFiles = ['participants.json', 'projects.json', 'episodes.json', 'config.json'];
     for (const file of jsonFiles) {
       const localPath = path.join(dataPath, file);
-      const remotePath = `app:/AnimeDubManagerData/${file}`;
+      const remotePath = `disk:/AnimeDubManagerData/${file}`;
       try {
         await fs.access(localPath);
         await yandexService.uploadFile(config.yandexToken, localPath, remotePath);
@@ -99,7 +104,7 @@ function registerSyncHandlers(getData, saveData, dataPath) {
     // 2. Sync projects in baseDir
     if (config.baseDir) {
       try {
-        await syncDir(yandexService, config.yandexToken, config.baseDir, 'app:/AnimeDubManagerProjects', 'push');
+        await syncDir(yandexService, config.yandexToken, config.baseDir, 'disk:/AnimeDubManagerProjects', 'push');
         results.push({ folder: 'projects', status: 'pushed' });
       } catch (e) {
         log.error('Failed to sync projects:', e);
@@ -121,7 +126,7 @@ function registerSyncHandlers(getData, saveData, dataPath) {
     const jsonFiles = ['participants.json', 'projects.json', 'episodes.json', 'config.json'];
     for (const file of jsonFiles) {
       const localPath = path.join(dataPath, file);
-      const remotePath = `app:/AnimeDubManagerData/${file}`;
+      const remotePath = `disk:/AnimeDubManagerData/${file}`;
       try {
         const meta = await yandexService.getFileMeta(config.yandexToken, remotePath);
         if (meta) {
@@ -152,12 +157,20 @@ function registerSyncHandlers(getData, saveData, dataPath) {
               await fs.mkdir(itemLocalPath, { recursive: true });
               await pullDirRecursive(itemRemotePath, itemLocalPath);
             } else {
-              await yandexService.downloadFile(config.yandexToken, itemRemotePath, itemLocalPath);
+              const ext = path.extname(item.name).toLowerCase();
+              const isMediaFile = ['.mp4', '.mkv', '.avi', '.mov', '.ts', '.m4a', '.wav'].includes(ext);
+              if (!isMediaFile) {
+                try {
+                  await yandexService.downloadFile(config.yandexToken, itemRemotePath, itemLocalPath);
+                } catch(e) {
+                   log.error(`Failed to download ${item.name}:`, e.message);
+                }
+              }
             }
           }
         }
 
-        await pullDirRecursive('app:/AnimeDubManagerProjects', config.baseDir);
+        await pullDirRecursive('disk:/AnimeDubManagerProjects', config.baseDir);
         results.push({ folder: 'projects', status: 'pulled' });
       } catch (e) {
         log.error('Failed to pull projects:', e);

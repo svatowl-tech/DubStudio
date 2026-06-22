@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { X, FolderOpen, Cloud } from 'lucide-react';
 import { Episode } from '../types';
-import { ipcSafe } from '../lib/ipcSafe';
+import { ipcSafe, isWeb } from '../lib/ipcSafe';
+import { DesktopRequiredMessage } from './DesktopRequiredMessage';
 
 interface ExportModalProps {
   isOpen: boolean;
@@ -67,26 +68,32 @@ export const ExportModal: React.FC<ExportModalProps> = ({
           </button>
         </div>
         
-        <div className="mb-6">
-          <label className="block text-sm font-medium text-neutral-400 mb-2">Папка экспорта</label>
-          <div className="flex gap-2">
-            <input
-              type="text"
-              value={targetDir}
-              readOnly
-              className="flex-grow bg-neutral-950 border border-neutral-800 rounded-lg px-4 py-2 text-sm text-white focus:outline-none focus:border-indigo-500"
-              placeholder="Выберите папку..."
-            />
-            <button 
-              onClick={handleSelectFolder} 
-              disabled={isExporting}
-              className="p-2 bg-neutral-800 hover:bg-neutral-700 text-white rounded-lg border border-neutral-700 transition-colors disabled:opacity-30"
-              title="Выбрать папку"
-            >
-              <FolderOpen className="w-5 h-5" />
-            </button>
+        {isWeb ? (
+          <div className="mb-4">
+             <DesktopRequiredMessage title="Экспорт видео недоступен" />
           </div>
-        </div>
+        ) : (
+          <>
+            <div className="mb-6">
+              <label className="block text-sm font-medium text-neutral-400 mb-2">Папка экспорта</label>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={targetDir}
+                  readOnly
+                  className="flex-grow bg-neutral-950 border border-neutral-800 rounded-lg px-4 py-2 text-sm text-white focus:outline-none focus:border-indigo-500"
+                  placeholder="Выберите папку..."
+                />
+                <button 
+                  onClick={handleSelectFolder} 
+                  disabled={isExporting}
+                  className="p-2 bg-neutral-800 hover:bg-neutral-700 text-white rounded-lg border border-neutral-700 transition-colors disabled:opacity-30"
+                  title="Выбрать папку"
+                >
+                  <FolderOpen className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
 
         <div className="mb-6">
           <label className="flex items-center gap-3 cursor-pointer group">
@@ -227,6 +234,8 @@ export const ExportModal: React.FC<ExportModalProps> = ({
             </div>
           </div>
         )}
+        </>
+        )}
         
         <div className="flex justify-end gap-3">
           <button 
@@ -235,8 +244,9 @@ export const ExportModal: React.FC<ExportModalProps> = ({
             title="Отменить экспорт и закрыть окно"
             className="px-4 py-2 bg-neutral-800 hover:bg-neutral-700 text-white rounded-lg text-sm font-medium transition-colors border border-neutral-700 disabled:opacity-30"
           >
-            Отмена
+            {isWeb ? 'Закрыть' : 'Отмена'}
           </button>
+          {!isWeb && (
           <button 
             onClick={() => onExport(targetDir, skipConversion, smartExport, uploadToYandex, additionalProcessing)} 
             title="Начать экспорт"
@@ -245,6 +255,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
           >
             {isExporting ? 'Экспортируем...' : 'Экспорт'}
           </button>
+          )}
         </div>
       </div>
     </div>

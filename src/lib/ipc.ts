@@ -80,6 +80,55 @@ export const ipcRenderer: {
   }
 };
 
+function parseMemoryAss(text: string) {
+  const lines: any[] = [];
+  const actorsSet = new Set<string>();
+  const stylesSet = new Set<string>();
+  const textLines = text.split(/\r?\n/);
+  let isEvents = false;
+  let rawLineIndex = 0;
+  
+  for (const line of textLines) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('[Events]')) {
+      isEvents = true;
+      continue;
+    }
+    if (trimmed.startsWith('[')) {
+      isEvents = false;
+    }
+    
+    if (isEvents && trimmed.startsWith('Dialogue:')) {
+      rawLineIndex++;
+      const prefixLength = 'Dialogue:'.length;
+      const parts = trimmed.substring(prefixLength).split(',');
+      if (parts.length >= 9) {
+        const start = parts[1].trim();
+        const end = parts[2].trim();
+        const style = parts[3].trim();
+        const name = parts[4].trim();
+        const textVal = parts.slice(9).join(',').trim();
+        lines.push({
+          rawLineIndex,
+          start,
+          end,
+          style,
+          name,
+          text: textVal
+        });
+        if (name) actorsSet.add(name);
+        if (style) stylesSet.add(style);
+      }
+    }
+  }
+  
+  return {
+    lines,
+    actors: Array.from(actorsSet),
+    styles: Array.from(stylesSet)
+  };
+}
+
 export let isStorageSynced = false;
 
 export async function syncAndLoadFromDir() {
@@ -341,16 +390,9 @@ function handleIpcMock(channel: string, args: any[]): any {
     })();
   }
   
-  if (channel === 'cloud-sync-status') {
-    return { connected: false, enabled: false };
-  }
-
-  if (channel === 'yandex-get-auth-url') {
-    return 'https://oauth.yandex.ru/authorize?response_type=code&client_id=mock';
-  }
-
-  if (channel === 'cloud-push' || channel === 'cloud-pull') {
-    return { success: true, results: [] };
+  if (channel === 'yandex-get-auth-url' || channel === 'yandex-exchange-token' || channel === 'yandex-disconnect' || channel === 'cloud-sync-status' || channel === 'cloud-push' || channel === 'cloud-pull') {
+    // DO NOT mock. Let it fall through to the API fallback or fail.
+    return undefined;
   }
   
   const entityMatch = channel.match(/^(get|save|delete)-(project|episode|participant)s?$/);
@@ -513,6 +555,14 @@ function handleIpcMock(channel: string, args: any[]): any {
   if (channel === 'get-raw-subtitles') {
     return (async () => {
       const filePath = args[0];
+      if (filePath === 'standalone.ass') {
+        const { idb } = await import('./idb');
+        const text = await idb.get('standalone_sub_text');
+        if (text) {
+          return parseMemoryAss(text);
+        }
+      }
+      
       if (filePath) {
         try {
           const { readFromLocalFolder } = await import('./webFileSystem');

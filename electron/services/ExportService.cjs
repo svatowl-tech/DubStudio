@@ -80,7 +80,7 @@ class ExportService {
           additionalProcessing
         });
       } else {
-        const suffix = episode.subPath ? '_[с надписями]' : (additionalProcessing ? '_[обработка]' : '_[обработка]');
+        const suffix = episode.subPath ? '_[с надписями]' : (additionalProcessing ? '_[обработка]' : '_[копия]');
         let outVideoPath = path.join(targetDir, `${baseVideoName}${suffix}${ext}`);
 
         if (path.resolve(outVideoPath) === path.resolve(episode.rawPath)) {
@@ -135,7 +135,7 @@ class ExportService {
         );
         
         const folderName = `Dabber_${episode.project?.title || 'Project'}_Ep${episode.number}`;
-        const remotePath = `app:/AnimeDubManagerData/Exports/${folderName}`;
+        const remotePath = `disk:/AnimeDubManagerData/Exports/${folderName}`;
         
         await yandexService.ensureFolder(config.yandexToken, remotePath);
         
@@ -294,7 +294,7 @@ class ExportService {
         );
         
         const folderName = `SoundEngineer_${episode.project?.title || 'Project'}_Ep${episode.number}`;
-        const remotePath = `app:/AnimeDubManagerData/Exports/${folderName}`;
+        const remotePath = `disk:/AnimeDubManagerData/Exports/${folderName}`;
         
         await yandexService.ensureFolder(config.yandexToken, remotePath);
         

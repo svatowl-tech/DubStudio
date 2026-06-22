@@ -9,6 +9,24 @@ const axiosInstance = axios.create({
   }
 });
 
+// Configure retry for 429 Too Many Requests
+axiosInstance.interceptors.response.use(null, async (error) => {
+  const config = error.config;
+  if (!config) return Promise.reject(error);
+  
+  if (error.response && error.response.status === 429) {
+    config.__retryCount = config.__retryCount || 0;
+    if (config.__retryCount < 3) {
+      config.__retryCount += 1;
+      const delay = 1000 * config.__retryCount;
+      console.log(`Rate limited by API. Retrying in ${delay}ms... (Attempt ${config.__retryCount}/3)`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+      return axiosInstance(config);
+    }
+  }
+  return Promise.reject(error);
+});
+
 async function searchAnime(query) {
   try {
     const response = await axiosInstance.get(`${SHIKIMORI_BASE}/animes`, {
@@ -215,15 +233,28 @@ async function getEpisodeTitle(title, originalTitle, episodeNumber, anime365Id) 
       if (jikanRes.data && jikanRes.data.data && jikanRes.data.data.length > 0) {
         const malId = jikanRes.data.data[0].mal_id;
         if (malId) {
-          // Fetch episodes list
-          const episodesRes = await axiosInstance.get(`${JIKAN_BASE}/anime/${malId}/episodes`);
-          if (episodesRes.data && episodesRes.data.data && Array.isArray(episodesRes.data.data)) {
-            const epData = episodesRes.data.data.find(ep => ep.mal_id === episodeNumber || ep.episode_id === episodeNumber);
-            if (epData) {
+          // Fetch specific episode exactly
+          try {
+            const epRes = await axiosInstance.get(`${JIKAN_BASE}/anime/${malId}/episodes/${episodeNumber}`);
+            if (epRes.data && epRes.data.data) {
+              const epData = epRes.data.data;
               matchedTitle = epData.title || epData.title_romanji || epData.title_japanese;
               if (matchedTitle) {
                 console.log(`[Episode Title] Found on Jikan for ep ${episodeNumber}: ${matchedTitle}`);
                 return matchedTitle;
+              }
+            }
+          } catch (e) {
+            // Direct fetch sometimes fails if Jikan hasn't mapped the direct endpoint, fallback silently
+            const episodesRes = await axiosInstance.get(`${JIKAN_BASE}/anime/${malId}/episodes`);
+            if (episodesRes.data && episodesRes.data.data && Array.isArray(episodesRes.data.data)) {
+              const epData = episodesRes.data.data.find(ep => ep.mal_id === episodeNumber || ep.episode_id === episodeNumber);
+              if (epData) {
+                matchedTitle = epData.title || epData.title_romanji || epData.title_japanese;
+                if (matchedTitle) {
+                  console.log(`[Episode Title] Found on Jikan (from list) for ep ${episodeNumber}: ${matchedTitle}`);
+                  return matchedTitle;
+                }
               }
             }
           }
@@ -302,6 +333,28 @@ async function getEpisodesMetadata(title, originalTitle, anime365Id) {
               }
               if (epTitle) metadataMap[epNum].title = epTitle;
               if (calendarAiringDate) metadataMap[epNum].airingDate = calendarAiringDate;
+            }
+          }
+          
+          // Fallback for explicitly missing titles in metadataMap (e.g. latest episode or paginated)
+          const missingKeys = Object.entries(metadataMap).filter(([k, v]) => !v.title).map(([k]) => parseInt(k)).filter(n => !isNaN(n));
+          if (missingKeys.length > 0 && missingKeys.length < 10) {
+            for (const epNum of missingKeys) {
+              try {
+                const epRes = await axiosInstance.get(`${JIKAN_BASE}/anime/${malId}/episodes/${epNum}`);
+                if (epRes.data && epRes.data.data) {
+                  const epData = epRes.data.data;
+                  const epTitle = epData.title || epData.title_romanji || epData.title_japanese;
+                  if (epTitle) {
+                    if (!metadataMap[epNum]) metadataMap[epNum] = {};
+                    metadataMap[epNum].title = epTitle;
+                  }
+                }
+                // Sleep to avoid rate limiting (Jikan is 3 req/sec)
+                await new Promise(r => setTimeout(r, 340));
+              } catch(e) {
+                console.log(`[Episodes Metadata] Failed to fetch exact ep ${epNum} from Jikan`);
+              }
             }
           }
         }
